@@ -1,0 +1,139 @@
+openapi: 3.1.0
+info:
+  title: Short Video Platform — Upload API
+  version: v1
+  description: >
+    Milestone 2 surface (brief section 7.1, section 12.2). The build fails when a
+    controller and this document disagree, so change both in the same commit.
+
+servers:
+  - url: http://localhost:5173
+    description: Vite dev server (proxies /api, /internal and /media to the backend)
+  - url: http://localhost:8080
+    description: Backend directly (no cookie-bearing browser flows)
+
+paths:
+  /api/v1/uploads:
+    post:
+      summary: Create an upload session
+      description: >
+        One transaction creates the upload session and the video draft together
+        (brief section 7.1), so an immutable persisted owner exists before any
+        byte is stored. Returns a presigned MinIO PUT URL; the browser uploads
+        directly to MinIO, cookie-free.
+      operationId: createUpload
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateUploadResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+
+  /api/v1/uploads/{uploadId}/complete:
+    post:
+      summary: Mark the direct-to-MinIO upload complete
+      description: >
+        Idempotent and owner-checked (brief section 12.2): a redelivered
+        completion for an already-completed session returns the same result
+        without reapplying anything or emitting a second event. Verifies the
+        stored object's size server-side; never trusts client-declared size.
+      operationId: completeUpload
+      parameters:
+        - name: uploadId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: Completed (or already completed — same result, no-op)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: Not the owner of this upload
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409':
+          description: Uploaded object is missing or its size is outside the allowed range
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '410':
+          description: Upload session has expired
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/uploads/{uploadId}:
+    get:
+      summary: Read an upload session (owner-only)
+      operationId: getUpload
+      parameters:
+        - name: uploadId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Problem:
+      description: RFC 7807 problem detail
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    CreateUploadResponse:
+      type: object
+      required: [uploadId, videoId, uploadUrl, expiresAt]
+      properties:
+        uploadId: { type: string, format: uuid }
+        videoId: { type: string, format: uuid }
+        uploadUrl:
+          type: string
+          description: Presigned MinIO PUT URL, 15-minute expiry. Never a processed/ read URL (Rule 18).
+        expiresAt: { type: string, format: date-time }
+
+    UploadResponse:
+      type: object
+      required: [uploadId, videoId, status]
+      properties:
+        uploadId: { type: string, format: uuid }
+        videoId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [PENDING, COMPLETED, EXPIRED]
+        completedSizeBytes: { type: integer, format: int64, nullable: true }
+
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+security:
+  - bearerAuth: []

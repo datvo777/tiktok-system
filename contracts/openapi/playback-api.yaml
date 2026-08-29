@@ -1,0 +1,87 @@
+openapi: 3.1.0
+info:
+  title: Short Video Platform — Media Gateway API
+  version: v1
+  description: >
+    Milestone 2 surface (brief section 8). The build fails when a controller and
+    this document disagree, so change both in the same commit. This is the only
+    read path for processed media (Rule 18); the MinIO bucket is never
+    anonymously readable and no presigned read URL is ever issued for a
+    processed/ object.
+
+servers:
+  - url: http://localhost:5173
+    description: Vite dev server (proxies /api, /internal and /media to the backend)
+  - url: http://localhost:8080
+    description: Backend directly (no cookie-bearing browser flows)
+
+paths:
+  /media/videos/{videoId}/{processingVersion}/{assetPath}:
+    get:
+      summary: Fetch a processed HLS asset
+      description: >
+        Authorized on every request, not cached (brief section 8): trusted
+        persisted video state, then Redis active deny, then durable PostgreSQL
+        revocation, then (public mode only) a durable eligibility allow. Streamed
+        with a bounded buffer directly from MinIO — never buffered whole in the
+        JVM (Rule 19). Media requests carry cookies, not headers (Rule 17); a
+        Bearer Authorization header is ignored on this path.
+      operationId: getMediaAsset
+      security:
+        - sessionCookie: []
+          playbackCookie: []
+      parameters:
+        - name: videoId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: processingVersion
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: assetPath
+          in: path
+          required: true
+          schema: { type: string }
+        - name: Range
+          in: header
+          required: false
+          schema: { type: string, example: 'bytes=0-1023' }
+      responses:
+        '200':
+          description: Full object
+          content:
+            application/vnd.apple.mpegurl: {}
+            video/mp2t: {}
+        '206':
+          description: Partial content for the requested byte range
+          headers:
+            Content-Range:
+              schema: { type: string, example: 'bytes 0-1023/227856' }
+        '400':
+          description: Malformed asset path. No media bytes.
+        '401':
+          description: Missing, expired, or mismatched playback/session cookies. No media bytes.
+        '403':
+          description: Confirmed revocation or ineligibility. No media bytes.
+        '404':
+          description: Authorized request for a missing object. No media bytes.
+        '503':
+          description: Unable to establish safety because PostgreSQL is unavailable or inconclusive. No media bytes.
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sv_session
+      description: Who the viewer is.
+    playbackCookie:
+      type: apiKey
+      in: cookie
+      name: sv_playback
+      description: >
+        What this session may fetch. Path-scoped to
+        /media/videos/{videoId}/{processingVersion}/ — the scope controls only
+        when the browser sends the cookie, not authorization; every claim is
+        re-verified on every request.

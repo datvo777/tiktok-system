@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: media-worker
+  threads:
+    virtual:
+      enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      group-id: media-worker
+      auto-offset-reset: earliest
+      # The Video module owns idempotence via its inbox; the worker still commits
+      # only after a job completes.
+      enable-auto-commit: false
+
+server:
+  port: 8090
+
+shortvideo:
+  worker:
+    max-concurrent-jobs: ${WORKER_MAX_CONCURRENT_JOBS:2}
+    job-timeout: ${WORKER_JOB_TIMEOUT_SECONDS:900}s
+    ffmpeg-path: ffmpeg
+    ffprobe-path: ffprobe
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    bucket: ${MINIO_BUCKET:short-video}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    com.shortvideo: DEBUG

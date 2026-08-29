@@ -1,0 +1,162 @@
+openapi: 3.1.0
+info:
+  title: Short Video Platform — Video API
+  version: v1
+  description: >
+    Milestone 2 surface (brief section 7.1, section 8, section 12.3). The build
+    fails when a controller and this document disagree, so change both in the
+    same commit. Publish/publication-intent endpoints land in Milestone 3.
+
+servers:
+  - url: http://localhost:5173
+    description: Vite dev server (proxies /api, /internal and /media to the backend)
+  - url: http://localhost:8080
+    description: Backend directly (no cookie-bearing browser flows)
+
+paths:
+  /api/v1/videos/{videoId}:
+    get:
+      summary: Processing status; restricted to the owner while private
+      description: >
+        The client polls this until READY or FAILED (brief section 12.3).
+        pollAfterMs is a hint; the client applies its own backoff ceiling and
+        gives up after 10 minutes.
+      operationId: getVideo
+      parameters:
+        - name: videoId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VideoResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404':
+          description: Unknown video, or the caller is not its owner while it is private
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/videos/{videoId}/preview-playback-session:
+    post:
+      summary: Owner-only preview session
+      description: >
+        Does not require moderation approval or public publication (brief section
+        8): active non-revoked owner account, READY processing, local durability,
+        and an active asset are sufficient. Sets the path-scoped sv_playback
+        cookie.
+      operationId: createPreviewPlaybackSession
+      parameters:
+        - name: videoId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Session issued
+          headers:
+            Set-Cookie:
+              description: 'sv_playback=<jwt>; HttpOnly; SameSite=Lax; Path=/media/videos/{videoId}/{processingVersion}/'
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaybackSessionResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: Not ready, owner account inactive, or a source is revoked
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /api/v1/videos/{videoId}/public-playback-session:
+    post:
+      summary: Public playback session
+      description: >
+        Requires the full eligibility invariant (brief section 8): the durable
+        eligibility projection must explicitly allow both the video and its
+        creator account. Unknown or missing eligibility state denies (Rule 9) —
+        this always denies until Milestone 3 adds moderation and publication.
+      operationId: createPublicPlaybackSession
+      parameters:
+        - name: videoId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Session issued
+          headers:
+            Set-Cookie:
+              description: 'sv_playback=<jwt>; HttpOnly; SameSite=Lax; Path=/media/videos/{videoId}/{processingVersion}/'
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaybackSessionResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: Video or creator account is not eligible, or a source is revoked
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Problem:
+      description: RFC 7807 problem detail
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    VideoResponse:
+      type: object
+      required: [videoId, processingState, durabilityState]
+      properties:
+        videoId: { type: string, format: uuid }
+        processingState:
+          type: string
+          enum: [CREATED, UPLOADING, UPLOADED, TRANSCODING, READY, FAILED, EXPIRED]
+        processingVersion: { type: integer, nullable: true }
+        durabilityState:
+          type: string
+          enum: [PENDING, DURABLE]
+        failureClass:
+          type: string
+          nullable: true
+          enum: [TERMINAL, TRANSIENT]
+        pollAfterMs:
+          type: integer
+          format: int64
+          nullable: true
+
+    PlaybackSessionResponse:
+      type: object
+      required: [videoId, processingVersion, mode, expiresAt]
+      properties:
+        videoId: { type: string, format: uuid }
+        processingVersion: { type: integer }
+        mode:
+          type: string
+          enum: [OWNER_PREVIEW, PUBLIC]
+        expiresAt: { type: string, format: date-time }
+
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+security:
+  - bearerAuth: []

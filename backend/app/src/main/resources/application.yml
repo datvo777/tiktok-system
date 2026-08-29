@@ -1,0 +1,125 @@
+spring:
+  application:
+    name: short-video-backend
+
+  # Blocking I/O on virtual threads: the media gateway holds a thread per stream
+  # in Milestone 2, so the constraint to watch is bytes and connections, not threads.
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:short_video}
+    username: ${POSTGRES_APP_USER:short_video_app}
+    password: ${POSTGRES_APP_PASSWORD:short_video_app}
+    hikari:
+      maximum-pool-size: 20
+      connection-timeout: 5000
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. Hibernate never alters it.
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+
+  flyway:
+    enabled: true
+    # Each module owns its migrations (brief section 9).
+    locations: classpath:db/migration/platform,classpath:db/migration/account,classpath:db/migration/upload,classpath:db/migration/video,classpath:db/migration/eligibility,classpath:db/migration/moderation,classpath:db/migration/publication,classpath:db/migration/social,classpath:db/migration/appeal,classpath:db/migration/notification
+    schemas: platform
+    default-schema: platform
+    create-schemas: true
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      group-id: short-video-backend
+      auto-offset-reset: earliest
+      # Durable consumers commit their DB transaction before acknowledging the
+      # offset (Rule 5); the listener container factory below acks per record
+      # only after the listener method returns without exception.
+      enable-auto-commit: false
+
+server:
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
+
+shortvideo:
+  jwt:
+    secret: ${JWT_SECRET:local-dev-secret-change-me-at-least-32-bytes-long}
+    issuer: ${JWT_ISSUER:short-video-local}
+    audience: ${JWT_AUDIENCE:short-video-web}
+    ttl: ${JWT_TTL_SECONDS:1800}s
+    session-cookie-name: ${SESSION_COOKIE_NAME:sv_session}
+    # Local development is plain HTTP. Set true for anything beyond localhost.
+    cookie-secure: false
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    bucket: ${MINIO_BUCKET:short-video}
+  outbox:
+    enabled: true
+    relay-id: relay-1
+    batch-size: 100
+    lease: 60s
+    poll-interval: 500ms
+    publish-timeout: 30s
+    max-attempts: 10
+  playback:
+    cookie-name: ${PLAYBACK_COOKIE_NAME:sv_playback}
+    ttl: ${PLAYBACK_COOKIE_TTL_SECONDS:300}s
+    cookie-secure: false
+  media:
+    stream-buffer-bytes: ${MEDIA_STREAM_BUFFER_BYTES:131072}
+    max-concurrent-streams: ${MEDIA_MAX_CONCURRENT_STREAMS:32}
+  feed:
+    candidate-pool-size: 200
+    page-size: 20
+    cache-ttl: 30s
+    freshness-weight: 10
+    like-weight: 1
+    comment-weight: 2
+    followed-creator-boost: 15
+    exploration-weight: 5
+  reconciliation:
+    interval: 5m
+  lifecycle:
+    cleanup-interval: 5m
+  opensearch:
+    endpoint: ${OPENSEARCH_ENDPOINT:http://localhost:9200}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        readiness:
+          include: db,redis,minio,kafka
+  metrics:
+    tags:
+      application: short-video-backend
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    root: INFO
+    com.shortvideo: DEBUG

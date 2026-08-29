@@ -1,0 +1,19 @@
+# Used by Testcontainers-backed integration tests.
+spring:
+  flyway:
+    clean-disabled: false
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+shortvideo:
+  jwt:
+    secret: test-secret-value-that-is-at-least-32-bytes
+  outbox:
+    # Tests assert on raw outbox rows; the relay is started explicitly where needed.
+    enabled: false
+
+logging:
+  structured:
+    format:
+      console:
