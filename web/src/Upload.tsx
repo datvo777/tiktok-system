@@ -25,6 +25,34 @@ const GIVE_UP_AFTER_MS = 10 * 60 * 1000;
 // rejection or reinstatement is reflected without a manual page reload.
 const POST_READY_POLL_MS = 5000;
 
+// The media worker's ffmpeg step detects the real container from the file's
+// bytes, not its extension or a client-supplied MIME type — so it already
+// accepts far more than MP4. This list is a deliberate, tested allowlist
+// (not "whatever ffmpeg happens to decode"), covering what people actually
+// export from a Mac: QuickTime's native .mov, iTunes/Apple's .m4v, and the
+// common web/legacy formats alongside .mp4 itself.
+const ACCEPTED_VIDEO_TYPES: Record<string, string[]> = {
+  '.mp4': ['video/mp4'],
+  '.mov': ['video/quicktime'],
+  '.m4v': ['video/x-m4v', 'video/mp4'],
+  '.webm': ['video/webm'],
+  '.avi': ['video/x-msvideo'],
+  '.mkv': ['video/x-matroska'],
+};
+const ACCEPT_ATTR = Object.keys(ACCEPTED_VIDEO_TYPES)
+  .concat(...Object.values(ACCEPTED_VIDEO_TYPES))
+  .join(',');
+
+// Belt-and-suspenders on top of the file input's `accept` filter: some
+// browser/OS combinations report an empty or generic MIME type for a picked
+// file, so fall back to the extension rather than trust `type` alone.
+function isAcceptedVideo(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return Object.entries(ACCEPTED_VIDEO_TYPES).some(
+    ([ext, mimeTypes]) => name.endsWith(ext) || mimeTypes.includes(file.type),
+  );
+}
+
 const STATE_BADGE: Record<string, { variant: string; label: string }> = {
   CREATED: { variant: 'badge-neutral', label: 'Created' },
   UPLOADING: { variant: 'badge-info', label: 'Uploading' },
@@ -93,7 +121,23 @@ export function Upload() {
       </p>
 
       <div className="btn-row">
-        <input type="file" accept="video/mp4" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <input
+          type="file"
+          accept={ACCEPT_ATTR}
+          onChange={(e) => {
+            const selected = e.target.files?.[0] ?? null;
+            if (selected && !isAcceptedVideo(selected)) {
+              setFile(null);
+              setLog(
+                `"${selected.name}" isn't a supported video file. Pick one of: ${Object.keys(ACCEPTED_VIDEO_TYPES).join(', ')}.`,
+              );
+              e.target.value = '';
+              return;
+            }
+            setFile(selected);
+            if (selected) setLog(`Picked ${selected.name}.`);
+          }}
+        />
         <button
           className="btn-primary"
           disabled={!file || upload.isPending}
