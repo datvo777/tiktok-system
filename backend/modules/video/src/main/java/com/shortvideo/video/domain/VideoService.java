@@ -22,7 +22,9 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory {
@@ -39,18 +41,21 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private final OutboxWriter outboxWriter;
     private final MinioAssetVerifier assetVerifier;
     private final DurableRevocationWriter revocationWriter;
+    private final TransactionTemplate transactions;
 
     public VideoService(
             VideoJpaRepository repository,
             SupersededAssetJpaRepository supersededAssetRepository,
             OutboxWriter outboxWriter,
             MinioAssetVerifier assetVerifier,
-            DurableRevocationWriter revocationWriter) {
+            DurableRevocationWriter revocationWriter,
+            PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.supersededAssetRepository = supersededAssetRepository;
         this.outboxWriter = outboxWriter;
         this.assetVerifier = assetVerifier;
         this.revocationWriter = revocationWriter;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
     /** Called by the Upload module inside its own transaction (brief section 7.1). No event here: nothing consumes "drafted" yet. */
@@ -166,17 +171,23 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * un-quarantine action, which shares the same "restore only if still valid"
      * semantics.
      */
-    @Transactional
     void restoreIfValid(String videoId) {
         VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
         if (video == null) {
             return;
         }
+        // Outside the transaction: verify() stats every asset in MinIO, and holding
+        // a pooled connection across that network I/O is what turns a slow object
+        // store into connection-pool exhaustion. See restoreFromQuarantine.
         boolean assetsValid = assetVerifier.verify(video.getMasterPlaylistKey(), video.getVariantPlaylists());
-        if (!video.restoreIfValid(assetsValid)) {
-            return;
-        }
-        appendLifecycleSnapshotEvent(repository.saveAndFlush(video));
+
+        transactions.executeWithoutResult(status -> {
+            VideoEntity fresh = repository.findById(UUID.fromString(videoId)).orElse(null);
+            if (fresh == null || !fresh.restoreIfValid(assetsValid)) {
+                return;
+            }
+            appendLifecycleSnapshotEvent(repository.saveAndFlush(fresh));
+        });
     }
 
     /** Admin lifecycle hold, independent of moderation (brief section 18, Milestone 6). */
@@ -194,21 +205,35 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, saved.getAggregateVersion(), reason));
     }
 
-    /** Reverses an admin quarantine, only if the assets are still verifiably present. */
-    @Transactional
+    /**
+     * Reverses an admin quarantine, only if the assets are still verifiably present.
+     *
+     * <p>The MinIO check runs before the transaction opens: {@code verify()} stats
+     * the master playlist and every variant, so performing it with a connection
+     * checked out pins that connection across several round trips to a system that
+     * can be slow or down. Re-reading the entity inside the transaction keeps the
+     * write itself guarded by optimistic locking, so the brief gap between checking
+     * the assets and applying the decision cannot produce a lost update.
+     */
     public void restoreFromQuarantine(String videoId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
-        long previousVersion = video.getAggregateVersion();
         boolean assetsValid = assetVerifier.verify(video.getMasterPlaylistKey(), video.getVariantPlaylists());
-        if (!video.restoreIfValid(assetsValid)) {
-            throw new VideoExceptions.VideoNotReady("Assets are not verifiably present; cannot restore");
-        }
-        VideoEntity saved = repository.saveAndFlush(video);
-        appendLifecycleSnapshotEvent(saved);
-        revocationWriter.clear(new RevocationClearCommand(
-                RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, previousVersion));
+
+        transactions.executeWithoutResult(status -> {
+            VideoEntity fresh = repository
+                    .findById(UUID.fromString(videoId))
+                    .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
+            long previousVersion = fresh.getAggregateVersion();
+            if (!fresh.restoreIfValid(assetsValid)) {
+                throw new VideoExceptions.VideoNotReady("Assets are not verifiably present; cannot restore");
+            }
+            VideoEntity saved = repository.saveAndFlush(fresh);
+            appendLifecycleSnapshotEvent(saved);
+            revocationWriter.clear(new RevocationClearCommand(
+                    RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, previousVersion));
+        });
     }
 
     /** Admin takedown (brief section 18 "remove video"): schedules the current version's assets for deletion. */

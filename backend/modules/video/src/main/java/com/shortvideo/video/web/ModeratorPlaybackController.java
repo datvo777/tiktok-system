@@ -1,5 +1,6 @@
 package com.shortvideo.video.web;
 
+import java.util.UUID;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationSubjects;
@@ -59,10 +60,10 @@ public class ModeratorPlaybackController {
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Admin-only preview session; requires processing to be READY, nothing else")
     public ResponseEntity<PlaybackSessionResponse> moderatorPreview(
-            @PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
 
         VideoPlaybackView video = videoService
-                .findForPlayback(videoId)
+                .findForPlayback(videoId.toString())
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
 
         if (video.currentProcessingVersion() == null || !video.ownerPreviewEligible(video.currentProcessingVersion())) {
@@ -73,13 +74,13 @@ public class ModeratorPlaybackController {
         requireNotRevoked(RevocationSubjects.ACCOUNT, video.ownerAccountId());
 
         int processingVersion = video.currentProcessingVersion();
-        var issued = tokenService.issue(caller.accountId(), videoId, processingVersion, PlaybackMode.MODERATOR_PREVIEW);
-        var cookie = playbackCookies.cookie(issued.token(), issued.expiresAt(), videoId, processingVersion);
+        var issued = tokenService.issue(caller.accountId(), videoId.toString(), processingVersion, PlaybackMode.MODERATOR_PREVIEW);
+        var cookie = playbackCookies.cookie(issued.token(), issued.expiresAt(), videoId.toString(), processingVersion);
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, cookie.toString())
                 .body(new PlaybackSessionResponse(
-                        videoId, processingVersion, PlaybackMode.MODERATOR_PREVIEW, issued.expiresAt()));
+                        videoId.toString(), processingVersion, PlaybackMode.MODERATOR_PREVIEW, issued.expiresAt()));
     }
 
     private void requireNotRevoked(String subjectType, String subjectId) {

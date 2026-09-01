@@ -10,20 +10,70 @@ import com.shortvideo.publication.domain.PublicationExceptions;
 import com.shortvideo.social.domain.SocialExceptions;
 import com.shortvideo.upload.domain.UploadExceptions;
 import com.shortvideo.video.domain.VideoExceptions;
+import jakarta.validation.ConstraintViolationException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authorization.AuthorizationDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+/**
+ * Extends {@link ResponseEntityExceptionHandler} so Spring MVC's own exception
+ * family keeps its correct status codes. A bare {@code @RestControllerAdvice} with
+ * an {@code @ExceptionHandler(Exception.class)} catch-all swallows them: malformed
+ * JSON ({@code HttpMessageNotReadableException}), a non-numeric path variable or
+ * query parameter ({@code MethodArgumentTypeMismatchException}), an unsupported
+ * method or media type — all of which are 4xx — were being reported as 500.
+ */
 @RestControllerAdvice
-public class GlobalExceptionHandler {
+public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * Authorization failures must reach Spring Security's {@code accessDeniedHandler},
+     * which is what actually renders the 403 configured in {@code SecurityConfig}.
+     *
+     * <p>This advice runs inside {@code DispatcherServlet}, which is <em>before</em>
+     * {@code ExceptionTranslationFilter} in the chain. Without this handler the
+     * catch-all below claimed every {@code @PreAuthorize} denial first and answered
+     * 500 — access was still correctly refused, but the status was wrong, the
+     * denial was logged as an unhandled server error, and the admin client's
+     * "403 means no ADMIN role" branch was unreachable. Rethrowing lets the
+     * exception continue out to the filter that knows how to translate it.
+     */
+    @ExceptionHandler({AccessDeniedException.class, AuthorizationDeniedException.class})
+    public void authorizationDenied(RuntimeException e) {
+        throw e;
+    }
+
+    /**
+     * Raised by {@code @Validated} on method parameters — e.g. the {@code @Min}/
+     * {@code @Max} bounds on the moderation queue's page size. Distinct from
+     * {@link MethodArgumentNotValidException}, which covers {@code @Valid} request
+     * bodies, and previously fell through to the catch-all as a 500.
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ProblemDetail constraintViolation(ConstraintViolationException e) {
+        ProblemDetail detail = problem(HttpStatus.BAD_REQUEST, "Validation failed", "One or more parameters are invalid");
+        Map<String, String> errors = new LinkedHashMap<>();
+        e.getConstraintViolations()
+                .forEach(violation -> errors.putIfAbsent(
+                        violation.getPropertyPath().toString(), violation.getMessage()));
+        detail.setProperty("errors", errors);
+        return detail;
+    }
 
     @ExceptionHandler(AccountExceptions.EmailAlreadyRegistered.class)
     public ProblemDetail conflict(AccountExceptions.EmailAlreadyRegistered e) {
@@ -140,14 +190,24 @@ public class GlobalExceptionHandler {
         return problem(HttpStatus.BAD_REQUEST, "Invalid cursor", e.getMessage());
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ProblemDetail validation(MethodArgumentNotValidException e) {
+    /**
+     * An override rather than a second {@code @ExceptionHandler}: the base class
+     * already maps this type, and declaring it again here is an ambiguous mapping
+     * that fails at context startup. Overriding keeps the per-field {@code errors}
+     * map the clients rely on.
+     */
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException e,
+            HttpHeaders headers,
+            HttpStatusCode status,
+            WebRequest request) {
         ProblemDetail detail = problem(HttpStatus.BAD_REQUEST, "Validation failed", "One or more fields are invalid");
         Map<String, String> errors = new LinkedHashMap<>();
         e.getBindingResult().getFieldErrors()
                 .forEach(fieldError -> errors.putIfAbsent(fieldError.getField(), fieldError.getDefaultMessage()));
         detail.setProperty("errors", errors);
-        return detail;
+        return ResponseEntity.badRequest().body(detail);
     }
 
     @ExceptionHandler(Exception.class)

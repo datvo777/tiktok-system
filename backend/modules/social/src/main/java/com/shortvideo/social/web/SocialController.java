@@ -1,5 +1,6 @@
 package com.shortvideo.social.web;
 
+import java.util.UUID;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.social.domain.SocialService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -27,25 +28,25 @@ public class SocialController {
 
     @PostMapping("/{videoId}/likes")
     @Operation(summary = "Like a video; idempotent")
-    public ResponseEntity<Void> like(@PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
-        socialService.like(videoId, caller.accountId());
+    public ResponseEntity<Void> like(@PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        socialService.like(videoId.toString(), caller.accountId());
         return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/{videoId}/likes")
     @Operation(summary = "Unlike a video; idempotent")
-    public ResponseEntity<Void> unlike(@PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
-        socialService.unlike(videoId, caller.accountId());
+    public ResponseEntity<Void> unlike(@PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        socialService.unlike(videoId.toString(), caller.accountId());
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{videoId}/comments")
     @Operation(summary = "Comment on a video")
     public ResponseEntity<SocialDtos.CommentResponse> comment(
-            @PathVariable String videoId,
+            @PathVariable UUID videoId,
             @AuthenticationPrincipal AuthenticatedAccount caller,
             @Valid @RequestBody SocialDtos.CreateCommentRequest request) {
-        var comment = socialService.comment(videoId, caller.accountId(), request.body());
+        var comment = socialService.comment(videoId.toString(), caller.accountId(), request.body());
         return ResponseEntity.status(201).body(SocialDtos.CommentResponse.from(comment));
     }
 }

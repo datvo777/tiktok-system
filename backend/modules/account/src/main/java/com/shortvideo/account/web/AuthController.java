@@ -7,6 +7,7 @@ import com.shortvideo.account.domain.AccountService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.SessionCookies;
+import com.shortvideo.shared.security.SessionTokenDenyList;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -27,11 +28,17 @@ public class AuthController {
     private final AccountService accountService;
     private final JwtService jwtService;
     private final SessionCookies sessionCookies;
+    private final SessionTokenDenyList denyList;
 
-    public AuthController(AccountService accountService, JwtService jwtService, SessionCookies sessionCookies) {
+    public AuthController(
+            AccountService accountService,
+            JwtService jwtService,
+            SessionCookies sessionCookies,
+            SessionTokenDenyList denyList) {
         this.accountService = accountService;
         this.jwtService = jwtService;
         this.sessionCookies = sessionCookies;
+        this.denyList = denyList;
     }
 
     /**
@@ -67,11 +74,21 @@ public class AuthController {
         return AccountDtos.MeResponse.from(account, caller.roles());
     }
 
+    /**
+     * Clearing the cookie only ends the session for a client that cooperates — the
+     * same token is also handed to the SPA in the login response, and a stateless
+     * token stays valid until it expires. Revoking the {@code jti} is what actually
+     * ends the session for both transports.
+     *
+     * <p>Playback cookies are path-scoped to a single video and expire in minutes,
+     * so they are left to lapse rather than enumerated here.
+     */
     @PostMapping("/logout")
-    @Operation(summary = "Clear the session cookie")
-    public ResponseEntity<Void> logout() {
-        // Playback cookies are path-scoped and short-lived; Milestone 2 clears them
-        // here too once playback sessions exist.
+    @Operation(summary = "End the session and revoke the current token")
+    public ResponseEntity<Void> logout(@AuthenticationPrincipal AuthenticatedAccount caller) {
+        if (caller != null) {
+            denyList.revoke(caller.tokenId(), caller.expiresAt());
+        }
         return ResponseEntity.noContent()
                 .header(HttpHeaders.SET_COOKIE, sessionCookies.clearSession().toString())
                 .build();

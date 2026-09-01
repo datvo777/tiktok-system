@@ -5,6 +5,7 @@ import com.shortvideo.shared.security.AuthenticatedAccount;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,8 +37,8 @@ public class NotificationController {
     @PostMapping("/{notificationId}/read")
     @Operation(summary = "Mark one of the caller's own notifications as read")
     public ResponseEntity<Void> markRead(
-            @PathVariable String notificationId, @AuthenticationPrincipal AuthenticatedAccount caller) {
-        notificationService.markRead(notificationId, caller.accountId());
+            @PathVariable UUID notificationId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        notificationService.markRead(notificationId.toString(), caller.accountId());
         return ResponseEntity.noContent().build();
     }
 }

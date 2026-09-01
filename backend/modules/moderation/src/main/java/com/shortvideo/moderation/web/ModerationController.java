@@ -1,5 +1,6 @@
 package com.shortvideo.moderation.web;
 
+import java.util.UUID;
 import com.shortvideo.moderation.domain.ModerationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -44,16 +45,16 @@ public class ModerationController {
     @PostMapping("/{videoId}/approve")
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Approve (PENDING) or reinstate (REJECTED) a video")
-    public ResponseEntity<Void> approve(@PathVariable String videoId) {
-        moderationService.approve(videoId);
+    public ResponseEntity<Void> approve(@PathVariable UUID videoId) {
+        moderationService.approve(videoId.toString());
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{videoId}/reject")
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Reject a video; immediately revokes playback")
-    public ResponseEntity<Void> reject(@PathVariable String videoId, @Valid @RequestBody ModerationDtos.RejectRequest request) {
-        moderationService.reject(videoId, request.reason());
+    public ResponseEntity<Void> reject(@PathVariable UUID videoId, @Valid @RequestBody ModerationDtos.RejectRequest request) {
+        moderationService.reject(videoId.toString(), request.reason());
         return ResponseEntity.noContent().build();
     }
 }

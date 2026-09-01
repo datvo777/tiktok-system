@@ -1,5 +1,6 @@
 package com.shortvideo.account.web;
 
+import java.util.UUID;
 import com.shortvideo.account.api.AccountState;
 import com.shortvideo.account.domain.AccountService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -32,8 +33,8 @@ public class InternalAccountController {
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Suspend an account")
     public AccountDtos.AccountResponse suspend(
-            @PathVariable String accountId, @Valid @RequestBody AccountDtos.SuspendRequest request) {
+            @PathVariable UUID accountId, @Valid @RequestBody AccountDtos.SuspendRequest request) {
         return AccountDtos.AccountResponse.from(
-                accountService.changeState(accountId, AccountState.SUSPENDED, request.reason()));
+                accountService.changeState(accountId.toString(), AccountState.SUSPENDED, request.reason()));
     }
 }

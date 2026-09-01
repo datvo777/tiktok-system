@@ -1,5 +1,6 @@
 package com.shortvideo.video.web;
 
+import java.util.UUID;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.video.domain.VideoService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,7 +25,7 @@ public class VideoController {
     @GetMapping("/{videoId}")
     @Operation(summary = "Processing status; restricted to the owner while private")
     public VideoDtos.VideoResponse get(
-            @PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
-        return VideoDtos.VideoResponse.from(videoService.findForPolling(videoId, caller.accountId()));
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        return VideoDtos.VideoResponse.from(videoService.findForPolling(videoId.toString(), caller.accountId()));
     }
 }

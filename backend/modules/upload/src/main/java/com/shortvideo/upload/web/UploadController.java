@@ -5,6 +5,7 @@ import com.shortvideo.upload.domain.UploadService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.net.URI;
+import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,16 +37,16 @@ public class UploadController {
     @PostMapping("/{uploadId}/complete")
     @Operation(summary = "Mark the direct-to-MinIO upload complete; idempotent and owner-checked")
     public UploadDtos.UploadResponse complete(
-            @PathVariable String uploadId,
+            @PathVariable UUID uploadId,
             @AuthenticationPrincipal AuthenticatedAccount caller,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
-        return UploadDtos.UploadResponse.from(uploadService.complete(uploadId, caller.accountId(), idempotencyKey));
+        return UploadDtos.UploadResponse.from(uploadService.complete(uploadId.toString(), caller.accountId(), idempotencyKey));
     }
 
     @GetMapping("/{uploadId}")
     @Operation(summary = "Read an upload session; owner-only")
     public UploadDtos.UploadResponse get(
-            @PathVariable String uploadId, @AuthenticationPrincipal AuthenticatedAccount caller) {
-        return UploadDtos.UploadResponse.from(uploadService.find(uploadId, caller.accountId()));
+            @PathVariable UUID uploadId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        return UploadDtos.UploadResponse.from(uploadService.find(uploadId.toString(), caller.accountId()));
     }
 }
