@@ -8,7 +8,7 @@
 # Milestone 3 timing test. The gateway is the only read path.
 set -e
 
-mc alias set local "http://minio:9000" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+mc alias set local "${MINIO_INTERNAL_ENDPOINT:-http://minio:9000}" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
 mc mb --ignore-existing "local/$MINIO_BUCKET"
 
 # Assert the bucket is not anonymously readable. Fails the stack loudly if a
