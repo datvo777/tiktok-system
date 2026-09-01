@@ -1,18 +1,15 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { getMe, login, logout, probeMedia, register } from './api';
+import { ApiError, getMe, login, logout, register } from './api';
 import { Feed } from './Feed';
 import { Notifications } from './Notifications';
 import { SearchPanel } from './SearchPanel';
 import { Upload } from './Upload';
 
-const SAMPLE_VIDEO_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
-
 export function App() {
   const [email, setEmail] = useState('creator@example.com');
   const [password, setPassword] = useState('correct-horse-battery');
   const [status, setStatus] = useState<string>('');
-  const [mediaStatus, setMediaStatus] = useState<string>('');
   const queryClient = useQueryClient();
 
   // The session cookie survives a page refresh even though React state
@@ -26,11 +23,25 @@ export function App() {
     setStatus(me.data ? `Signed in as ${me.data.displayName}.` : 'Not signed in.');
   }, [me.isPending, me.data]);
 
+  /**
+   * A 401 mid-session means the token expired or was revoked (a logout
+   * elsewhere, or an account suspension). Clearing the `me` query is what flips
+   * the UI to signed-out; previously the app kept claiming "Signed in" while
+   * every request failed, and the polling panels kept retrying against a dead
+   * session.
+   */
+  useEffect(() => {
+    if (me.error instanceof ApiError && me.error.isUnauthenticated) {
+      queryClient.setQueryData(['me'], null);
+    }
+  }, [me.error, queryClient]);
+
   async function run(label: string, action: () => Promise<string>) {
     try {
       setStatus(`${label}...`);
-      setStatus(await action());
+      const message = await action();
       await queryClient.invalidateQueries({ queryKey: ['me'] });
+      setStatus(message);
     } catch (error) {
       setStatus(`${label} failed: ${(error as Error).message}`);
     }
@@ -95,7 +106,10 @@ export function App() {
             onClick={() =>
               run('Logout', async () => {
                 await logout();
-                return 'Signed out; session cookie cleared.';
+                // Logout revokes the token server-side, so anything cached for
+                // the old session is now unreachable as well as stale.
+                queryClient.clear();
+                return 'Signed out; session cookie cleared and token revoked.';
               })
             }
           >
@@ -103,36 +117,29 @@ export function App() {
           </button>
         </div>
 
-        <div className="log-panel">
-          {status}
-          {mediaStatus ? `\n${mediaStatus}` : ''}
-        </div>
+        <div className="log-panel">{status}</div>
       </section>
 
-      <section className="card">
-        <div className="card-head">
-          <h2>Media gateway probe</h2>
-        </div>
-        <p className="card-desc">
-          Sends a request with no Authorization header, exactly like hls.js. Expect <code>401</code> without a
-          playback cookie for this unknown sample video — real playback comes from Upload below, which requests a
-          real preview session first.
-        </p>
-        <button
-          className="btn-sm"
-          onClick={async () => {
-            const code = await probeMedia(SAMPLE_VIDEO_ID);
-            setMediaStatus(`GET /media/videos/${SAMPLE_VIDEO_ID}/1/master.m3u8 responded ${code}`);
-          }}
-        >
-          Probe /media
-        </button>
-      </section>
-
-      <Upload />
-      <Feed />
-      <SearchPanel />
-      <Notifications />
+      {/*
+        Rendered only when signed in. These panels poll and fetch on mount, so
+        showing them to a signed-out visitor produced a burst of 401s on first
+        paint and every 10 seconds thereafter.
+      */}
+      {signedIn ? (
+        <>
+          <Upload />
+          <Feed />
+          <SearchPanel />
+          <Notifications />
+        </>
+      ) : (
+        <section className="card">
+          <div className="card-head">
+            <h2>Feed, upload, search and notifications</h2>
+          </div>
+          <p className="card-desc">Sign in to load them.</p>
+        </section>
+      )}
     </div>
   );
 }

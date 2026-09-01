@@ -46,7 +46,13 @@ export function Feed() {
           ← Previous
         </button>
         <span className="pager-label">page {page}</span>
-        <button className="btn-sm" onClick={() => setPage((p) => p + 1)}>
+        {/* Disabled on the last page: Next was previously always enabled, so a
+            user could page indefinitely into empty results. */}
+        <button
+          className="btn-sm"
+          onClick={() => setPage((p) => p + 1)}
+          disabled={!feed.data?.hasMore || feed.isFetching}
+        >
           Next →
         </button>
       </div>
@@ -61,7 +67,12 @@ function FeedCard({ item }: { item: FeedItem }) {
   const [comment, setComment] = useState('');
   const queryClient = useQueryClient();
 
-  useEffect(() => () => detachHls(videoRef.current), []);
+  // See the same cleanup in Upload.tsx: the ref is already null once passive
+  // effect cleanups run on unmount, so the element must be captured here.
+  useEffect(() => {
+    const element = videoRef.current;
+    return () => detachHls(element);
+  }, []);
 
   const play = useMutation({
     mutationFn: () => createPublicSession(item.videoId),
@@ -73,9 +84,21 @@ function FeedCard({ item }: { item: FeedItem }) {
     onError: (error) => setLog(`Denied: ${(error as Error).message}`),
   });
 
+  /**
+   * The intended next state is captured before the request rather than toggled
+   * in onSuccess: two quick clicks both read the same stale `liked` and both
+   * flipped it, so the button could end up disagreeing with the server. The feed
+   * response carries no per-viewer like state, so this is still optimistic —
+   * it just no longer races itself.
+   */
   const like = useMutation({
-    mutationFn: () => (liked ? unlikeVideo(item.videoId) : likeVideo(item.videoId)),
-    onSuccess: () => setLiked((v) => !v),
+    mutationFn: async () => {
+      const next = !liked;
+      if (next) await likeVideo(item.videoId);
+      else await unlikeVideo(item.videoId);
+      return next;
+    },
+    onSuccess: (next) => setLiked(next),
   });
 
   const submitComment = useMutation({

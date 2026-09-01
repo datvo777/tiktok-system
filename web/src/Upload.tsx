@@ -7,7 +7,7 @@ import {
   createUpload,
   getVideo,
   publishVideo,
-  putToPresignedUrl,
+  postToPresignedUrl,
   submitAppeal,
   type AppealResponse,
   type PublicationResponse,
@@ -73,7 +73,15 @@ export function Upload() {
   const upload = useMutation({
     mutationFn: async (selected: File) => {
       const session = await createUpload();
-      await putToPresignedUrl(session.uploadUrl, selected);
+      // Checked before spending the upload: the policy caps the body server-side
+      // too, but failing here explains why instead of surfacing EntityTooLarge.
+      if (selected.size > session.maxBytes) {
+        throw new Error(
+          `That file is ${(selected.size / 1_048_576).toFixed(0)} MB; the limit is ` +
+            `${(session.maxBytes / 1_048_576).toFixed(0)} MB.`,
+        );
+      }
+      await postToPresignedUrl(session, selected);
       await completeUpload(session.uploadId);
       return session.videoId;
     },
@@ -241,7 +249,15 @@ function AppealPanel({ videoId, onLog }: { videoId: string; onLog: (message: str
 function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string) => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  useEffect(() => () => detachHls(videoRef.current), []);
+  // The element is captured while the effect runs, not read at cleanup time:
+  // React detaches refs during the commit phase, before passive effect cleanups
+  // are flushed, so `videoRef.current` is already null by then and detachHls was
+  // silently doing nothing — leaving every hls.js instance alive with its
+  // MediaSource, segment loaders and retry timers still running.
+  useEffect(() => {
+    const element = videoRef.current;
+    return () => detachHls(element);
+  }, []);
 
   const session = useMutation({
     mutationFn: () => createPreviewSession(videoId),
