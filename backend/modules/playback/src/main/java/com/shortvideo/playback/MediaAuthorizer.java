@@ -14,6 +14,8 @@ import com.shortvideo.shared.security.PlaybackMode;
 import com.shortvideo.shared.security.PlaybackTokenService;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import com.shortvideo.video.api.VideoPlaybackView;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.dao.DataAccessException;
@@ -40,6 +42,8 @@ class MediaAuthorizer {
     private final EligibilityDirectory eligibilityDirectory;
     private final RevocationCache revocationCache;
     private final DurableRevocationReader revocationReader;
+    private final MeterRegistry meterRegistry;
+    private final Timer.Builder revocationCheckTimerBuilder;
 
     MediaAuthorizer(
             PlaybackTokenService tokenService,
@@ -47,16 +51,45 @@ class MediaAuthorizer {
             AccountDirectory accountDirectory,
             EligibilityDirectory eligibilityDirectory,
             RevocationCache revocationCache,
-            DurableRevocationReader revocationReader) {
+            DurableRevocationReader revocationReader,
+            MeterRegistry meterRegistry) {
         this.tokenService = tokenService;
         this.videoDirectory = videoDirectory;
         this.accountDirectory = accountDirectory;
         this.eligibilityDirectory = eligibilityDirectory;
         this.revocationCache = revocationCache;
         this.revocationReader = revocationReader;
+        this.meterRegistry = meterRegistry;
+        this.revocationCheckTimerBuilder = Timer.builder("media.revocation_check")
+                .description("Latency of the durable revocation check on the media authorization path")
+                .publishPercentileHistogram();
     }
 
+    /**
+     * Timed end-to-end and tagged by outcome, so p50/p95/p99 latency and the
+     * allow/deny/error mix are both visible under concurrent load (brief
+     * section 20, Milestone 8: "revocation latency distributions are measured
+     * under concurrent load").
+     */
     void authorize(HttpServletRequest request, MediaObjectKey key, AuthenticatedAccount viewer) {
+        Timer.Sample sample = Timer.start(meterRegistry);
+        String outcome = "error";
+        try {
+            doAuthorize(request, key, viewer);
+            outcome = "allow";
+        } catch (MediaAuthorizationException.Unauthorized | MediaAuthorizationException.Forbidden e) {
+            outcome = "deny";
+            throw e;
+        } finally {
+            sample.stop(Timer.builder("media.authorization")
+                    .description("End-to-end media gateway authorization latency, by outcome")
+                    .tag("outcome", outcome)
+                    .publishPercentileHistogram()
+                    .register(meterRegistry));
+        }
+    }
+
+    private void doAuthorize(HttpServletRequest request, MediaObjectKey key, AuthenticatedAccount viewer) {
         PlaybackClaims claims = extractClaims(request);
 
         if (!claims.videoId().equals(key.videoId()) || claims.processingVersion() != key.processingVersion()) {
@@ -124,8 +157,13 @@ class MediaAuthorizer {
     }
 
     private void requireNotRevoked(String subjectType, String subjectId) {
-        boolean denied = revocationCache.isDenied(subjectType, subjectId)
-                || revocationReader.isActive(subjectType, subjectId);
+        Timer.Sample sample = Timer.start(meterRegistry);
+        boolean denied;
+        try {
+            denied = revocationCache.isDenied(subjectType, subjectId) || revocationReader.isActive(subjectType, subjectId);
+        } finally {
+            sample.stop(revocationCheckTimerBuilder.tag("subject_type", subjectType).register(meterRegistry));
+        }
         if (denied) {
             throw new MediaAuthorizationException.Forbidden("Playback is restricted for " + subjectType);
         }

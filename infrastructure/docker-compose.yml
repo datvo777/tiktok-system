@@ -165,6 +165,19 @@ services:
       retries: 20
       start_period: 30s
 
+  # Milestone 8: OpenTelemetry traces. All-in-one Jaeger accepts OTLP directly
+  # (no separate collector needed for a local single-node stack) and serves its
+  # own UI, matching the "do not emulate a production cluster" guidance.
+  jaeger:
+    image: jaegertracing/all-in-one:1.65.0
+    container_name: sv-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+
   prometheus:
     image: prom/prometheus:v3.2.1
     container_name: sv-prometheus
@@ -184,6 +197,9 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
     ports:
       - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
 
 volumes:
   postgres-data:

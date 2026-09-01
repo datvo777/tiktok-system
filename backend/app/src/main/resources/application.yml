@@ -115,6 +115,23 @@ management:
   metrics:
     tags:
       application: short-video-backend
+    distribution:
+      percentiles-histogram:
+        "[http.server.requests]": true
+        "[media.authorization]": true
+        "[media.revocation_check]": true
+      percentiles:
+        "[http.server.requests]": 0.5, 0.95, 0.99
+        "[media.authorization]": 0.5, 0.95, 0.99
+        "[media.revocation_check]": 0.5, 0.95, 0.99
+  tracing:
+    sampling:
+      # Sample everything locally (brief Milestone 8: OpenTelemetry traces).
+      # A production deployment would sample a small fraction instead.
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
 
 logging:
   structured:
