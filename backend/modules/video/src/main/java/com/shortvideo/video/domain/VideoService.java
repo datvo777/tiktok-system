@@ -66,6 +66,17 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 saved.getCreatedAt());
     }
 
+    /** Called by the Upload module's expired-session reaper (brief section 7.1). No event: nothing consumed "drafted" either. */
+    @Override
+    @Transactional
+    public void expireDraft(String videoId) {
+        VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
+        if (video == null || !video.expireDraft()) {
+            return;
+        }
+        repository.saveAndFlush(video);
+    }
+
     /**
      * Consumes {@code video.upload.completed}: assigns processingVersion and
      * dispatches the transcode command in the same transaction/version bump (brief

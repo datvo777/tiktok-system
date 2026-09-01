@@ -119,6 +119,21 @@ public class VideoEntity {
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * CREATED -> EXPIRED: the owning upload session's presigned URL expired
+     * without a completed upload, so this draft will never receive a source
+     * object. A no-op once processing has actually started, so a completed
+     * upload racing the reaper is never downgraded.
+     */
+    public boolean expireDraft() {
+        if (this.processingState != ProcessingState.CREATED) {
+            return false;
+        }
+        this.processingState = ProcessingState.EXPIRED;
+        this.updatedAt = Instant.now();
+        return true;
+    }
+
     /** ACTIVE -> REJECTED_RETAINED: the asset stays in place pending a possible appeal (brief section 18, Milestone 6). */
     public boolean retainAsRejected() {
         if (this.assetLifecycleState != AssetLifecycleState.ACTIVE) {

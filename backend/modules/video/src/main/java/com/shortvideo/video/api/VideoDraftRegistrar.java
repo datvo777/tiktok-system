@@ -8,4 +8,12 @@ package com.shortvideo.video.api;
 public interface VideoDraftRegistrar {
 
     VideoDraft createDraft(String ownerAccountId);
+
+    /**
+     * Called by the Upload module's expired-session reaper when a draft's
+     * upload never completed. A no-op if the draft has already moved past
+     * CREATED (upload completed, or already expired) — safe to call more than
+     * once.
+     */
+    void expireDraft(String videoId);
 }

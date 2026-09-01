@@ -68,6 +68,8 @@ shortvideo:
     access-key: ${MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${MINIO_SECRET_KEY:minioadmin}
     bucket: ${MINIO_BUCKET:short-video}
+  upload:
+    cleanup-interval: 15m
   outbox:
     enabled: true
     relay-id: relay-1

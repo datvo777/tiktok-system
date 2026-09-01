@@ -102,7 +102,14 @@ export function App() {
             style={{ marginTop: '0.75rem' }}
             onClick={async () => {
               await logout();
-              await queryClient.invalidateQueries({ queryKey: ['me'] });
+              // `removeQueries` only deletes the cache entry -- it never
+              // calls the Query's own reset(), so an already-mounted
+              // observer (this component) keeps its stale reference and
+              // never re-renders or refetches. `resetQueries` calls
+              // query.reset() (clears state, notifies observers) and then
+              // refetches active queries, which correctly resolves to a 401
+              // with no stale data left behind to mask it.
+              await queryClient.resetQueries({ queryKey: ['me'] });
             }}
           >
             Sign out
@@ -126,7 +133,7 @@ export function App() {
               className="btn-ghost"
               onClick={async () => {
                 await logout();
-                await queryClient.invalidateQueries({ queryKey: ['me'] });
+                await queryClient.resetQueries({ queryKey: ['me'] });
               }}
             >
               Sign out
