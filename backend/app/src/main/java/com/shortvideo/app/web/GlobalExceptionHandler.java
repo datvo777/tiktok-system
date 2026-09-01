@@ -9,6 +9,8 @@ import com.shortvideo.playback.MediaAuthorizationException;
 import com.shortvideo.playback.MediaRangeNotSatisfiableException;
 import com.shortvideo.playback.MediaStreamsExhaustedException;
 import com.shortvideo.publication.domain.PublicationExceptions;
+import com.shortvideo.search.domain.SearchUnavailableException;
+import com.shortvideo.shared.security.TooManyLoginAttemptsException;
 import com.shortvideo.social.domain.SocialExceptions;
 import com.shortvideo.upload.domain.UploadExceptions;
 import com.shortvideo.video.domain.VideoExceptions;
@@ -75,6 +77,32 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                         violation.getPropertyPath().toString(), violation.getMessage()));
         detail.setProperty("errors", errors);
         return detail;
+    }
+
+    /**
+     * Raised before any password verification, so a throttled caller costs the
+     * server nothing. Retry-After tells a well-behaved client when to come back
+     * instead of leaving it to spin.
+     */
+    @ExceptionHandler(TooManyLoginAttemptsException.class)
+    public ResponseEntity<ProblemDetail> tooManyLoginAttempts(TooManyLoginAttemptsException e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Too many attempts",
+                        "Too many sign-in attempts. Wait a moment and try again."));
+    }
+
+    @ExceptionHandler(SearchUnavailableException.class)
+    public ProblemDetail searchUnavailable(SearchUnavailableException e) {
+        // A dependency being down, not this service failing — 503 tells the client to retry.
+        return problem(HttpStatus.SERVICE_UNAVAILABLE, "Search unavailable", "Search is temporarily unavailable");
+    }
+
+    @ExceptionHandler(UploadExceptions.TooManyOpenUploads.class)
+    public ProblemDetail tooManyOpenUploads(UploadExceptions.TooManyOpenUploads e) {
+        return problem(HttpStatus.CONFLICT, "Too many open uploads", e.getMessage());
     }
 
     @ExceptionHandler(AccountExceptions.EmailAlreadyRegistered.class)

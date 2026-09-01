@@ -30,6 +30,13 @@ public class UploadService {
     private static final long DEFAULT_MIN_BYTES = 1;
     private static final long DEFAULT_MAX_BYTES = 500L * 1024 * 1024;
 
+    /**
+     * Generous for a person — nobody legitimately uploads five videos at once from
+     * a browser — and low enough that opening sessions in a loop stops being a way
+     * to accumulate write allowance against the bucket.
+     */
+    private static final int MAX_OPEN_SESSIONS_PER_ACCOUNT = 5;
+
     private final UploadJpaRepository repository;
     private final OutboxWriter outboxWriter;
     private final VideoDraftRegistrar videoDraftRegistrar;
@@ -59,6 +66,18 @@ public class UploadService {
      */
     @Transactional
     public UploadSessionCreated createSession(String accountId) {
+        // The per-object size cap in the presigned policy bounds one upload; it does
+        // not bound how many an account may have in flight. Without this, opening
+        // sessions in a loop is an unbounded write allowance against the bucket, and
+        // each one also creates a video draft row.
+        UUID owner = UUID.fromString(accountId);
+        long open = repository.countByAccountIdAndStatusAndExpiresAtAfter(
+                owner, UploadStatus.PENDING, Instant.now());
+        if (open >= MAX_OPEN_SESSIONS_PER_ACCOUNT) {
+            throw new UploadExceptions.TooManyOpenUploads(
+                    "You already have " + open + " uploads in progress. Finish or abandon one before starting another.");
+        }
+
         VideoDraft draft = videoDraftRegistrar.createDraft(accountId);
 
         UUID uploadId = UUID.randomUUID();
@@ -68,7 +87,7 @@ public class UploadService {
         UploadSessionEntity session = new UploadSessionEntity(
                 uploadId,
                 UUID.fromString(draft.videoId()),
-                UUID.fromString(accountId),
+                owner,
                 objectKey,
                 DEFAULT_MIN_BYTES,
                 DEFAULT_MAX_BYTES,

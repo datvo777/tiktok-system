@@ -22,9 +22,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Negative authorization and error-contract coverage.
@@ -40,22 +37,17 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
-@Testcontainers
 class AuthorizationIT {
-
-    @Container
-    @SuppressWarnings("resource")
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17.4-alpine")
-            .withDatabaseName("short_video")
-            .withUsername("short_video_app")
-            .withPassword("short_video_app");
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
+        TestDatabase.register(registry);
+        // Not reachable in this test; nothing here publishes, and the relay is off
+        // under the "test" profile.
         registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
+        // The rate limiter would otherwise throttle the repeated logins these
+        // tests perform. Its own behaviour is covered by LoginRateLimiterIT.
+        registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
     }
 
     @Autowired

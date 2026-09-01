@@ -76,6 +76,22 @@ export async function getMe(): Promise<MeResponse> {
   });
 }
 
+/**
+ * Extends the session without re-entering a password. The server revokes the old
+ * token as part of issuing the new one, so this replaces the session rather than
+ * adding a second live credential.
+ */
+export async function refreshSession(): Promise<LoginResponse> {
+  return request(
+    '/api/v1/auth/refresh',
+    (payload) => {
+      const o = obj('refresh', payload);
+      return { accountId: str('refresh', o, 'accountId'), expiresAt: str('refresh', o, 'expiresAt') };
+    },
+    { method: 'POST' },
+  );
+}
+
 export async function logout(): Promise<void> {
   // Reports failure now: logout revokes the session server-side, so silently
   // swallowing an error would leave the user believing they had signed out.

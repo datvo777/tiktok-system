@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { ApiError, getMe, login, logout, register } from './api';
+import { ApiError, getMe, login, logout, refreshSession, register } from './api';
 import { Feed } from './Feed';
 import { Notifications } from './Notifications';
 import { SearchPanel } from './SearchPanel';
@@ -35,6 +35,24 @@ export function App() {
       queryClient.setQueryData(['me'], null);
     }
   }, [me.error, queryClient]);
+
+  /**
+   * Extends the session periodically while the tab is in use, so a 30-minute TTL
+   * does not sign an active user out mid-task. Well inside the TTL, and it stops
+   * on the first failure rather than retrying — a refusal means the session is
+   * genuinely over (revoked, or the account suspended), and hammering it would
+   * only turn one dead session into repeated failed requests.
+   */
+  useEffect(() => {
+    if (!signedIn) return;
+    const timer = setInterval(
+      () => {
+        void refreshSession().catch(() => queryClient.setQueryData(['me'], null));
+      },
+      10 * 60 * 1000,
+    );
+    return () => clearInterval(timer);
+  }, [signedIn, queryClient]);
 
   async function run(label: string, action: () => Promise<string>) {
     try {
