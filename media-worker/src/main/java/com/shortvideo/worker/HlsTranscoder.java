@@ -40,6 +40,15 @@ class HlsTranscoder {
                 "-map", "0:v:0",
                 "-map", "0:a:0?",
                 "-c:v", "libx264",
+                // Force 8-bit 4:2:0 + a browser-decodable profile regardless of the
+                // source's pixel format: an untouched 10-bit/4:4:4 source (as
+                // ffmpeg test patterns can be) otherwise gets carried straight
+                // through into a High 4:4:4 Predictive stream that no browser's
+                // MSE/H.264 decoder can play (surfaces as a black frame and an
+                // hls.js "mediaSourceRequiresReset" error, not an ffmpeg failure).
+                "-pix_fmt", "yuv420p",
+                "-profile:v", "high",
+                "-level:v", "4.0",
                 "-c:a", "aac",
                 "-b:a", "128k",
                 "-b:v", "1200k",

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   commentOnVideo,
   createPublicSession,
@@ -8,7 +8,7 @@ import {
   unlikeVideo,
   type FeedItem,
 } from './api';
-import { attachHls } from './Upload';
+import { attachHls, detachHls } from './Upload';
 
 export function Feed() {
   const [page, setPage] = useState(0);
@@ -60,6 +60,8 @@ function FeedCard({ item }: { item: FeedItem }) {
   const [liked, setLiked] = useState(false);
   const [comment, setComment] = useState('');
   const queryClient = useQueryClient();
+
+  useEffect(() => () => detachHls(videoRef.current), []);
 
   const play = useMutation({
     mutationFn: () => createPublicSession(item.videoId),

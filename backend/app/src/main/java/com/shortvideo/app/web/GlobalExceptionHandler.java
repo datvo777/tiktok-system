@@ -135,6 +135,11 @@ public class GlobalExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Invalid follow", e.getMessage());
     }
 
+    @ExceptionHandler(ModerationExceptions.InvalidCursor.class)
+    public ProblemDetail invalidCursor(ModerationExceptions.InvalidCursor e) {
+        return problem(HttpStatus.BAD_REQUEST, "Invalid cursor", e.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ProblemDetail validation(MethodArgumentNotValidException e) {
         ProblemDetail detail = problem(HttpStatus.BAD_REQUEST, "Validation failed", "One or more fields are invalid");

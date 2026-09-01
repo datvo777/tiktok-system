@@ -37,6 +37,25 @@ export async function login(email: string, password: string): Promise<LoginRespo
   return response.json();
 }
 
+export type MeResponse = {
+  accountId: string;
+  displayName: string;
+  state: string;
+  roles: string[];
+};
+
+/**
+ * Checked once on load: the session cookie survives a page refresh even
+ * though React state doesn't, so this is how the app tells "actually signed
+ * out" apart from "just reloaded the page." Throws (401) if there's no valid
+ * session.
+ */
+export async function getMe(): Promise<MeResponse> {
+  const response = await fetch('/api/v1/auth/me');
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}
+
 export async function logout(): Promise<void> {
   await fetch('/api/v1/auth/logout', { method: 'POST' });
 }

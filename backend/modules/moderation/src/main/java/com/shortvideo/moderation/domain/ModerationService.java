@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -111,6 +112,36 @@ public class ModerationService implements ModerationDirectory {
                 .map(r -> new ModerationView(
                         r.getVideoId().toString(), r.getCreatorId().toString(), r.getState(), r.getCreatedAt()))
                 .toList();
+    }
+
+    /**
+     * Keyset-paged pending queue for the admin UI (a queue of thousands should
+     * never be fetched in one response). {@code cursor} is an opaque string
+     * previously returned as {@code nextCursor}; {@code null} starts from the
+     * oldest pending item.
+     */
+    @Transactional(readOnly = true)
+    public ModerationPage listPending(String cursor, int limit) {
+        PendingCursor after = PendingCursor.decode(cursor);
+        // Fetch one extra row to learn whether another page follows, without a
+        // separate count query.
+        List<ModerationEntity> rows = repository.findPageAfter(
+                ModerationState.PENDING, after.createdAt(), after.videoId(), PageRequest.of(0, limit + 1));
+
+        boolean hasMore = rows.size() > limit;
+        List<ModerationEntity> page = hasMore ? rows.subList(0, limit) : rows;
+
+        List<ModerationView> items = page.stream()
+                .map(r -> new ModerationView(
+                        r.getVideoId().toString(), r.getCreatorId().toString(), r.getState(), r.getCreatedAt()))
+                .toList();
+
+        String nextCursor = hasMore
+                ? new PendingCursor(page.get(page.size() - 1).getCreatedAt(), page.get(page.size() - 1).getVideoId())
+                        .encode()
+                : null;
+
+        return new ModerationPage(items, nextCursor);
     }
 
     /**

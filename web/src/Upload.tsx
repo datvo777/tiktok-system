@@ -241,6 +241,8 @@ function AppealPanel({ videoId, onLog }: { videoId: string; onLog: (message: str
 function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string) => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  useEffect(() => () => detachHls(videoRef.current), []);
+
   const session = useMutation({
     mutationFn: () => createPreviewSession(videoId),
     onMutate: () => onLog('Requesting preview session...'),
@@ -305,6 +307,15 @@ function PublishButton({ videoId, onLog }: { videoId: string; onLog: (message: s
   );
 }
 
+// hls.js attaches a MediaSource to the <video> element. Destroying one
+// instance and immediately attaching a *new* MediaSource to the same element
+// is a known race in some browsers — the old one isn't always fully released
+// before the new attach, which is exactly what "mediaSourceRequiresReset"
+// means. Reuse one instance per element across repeated Preview/Play clicks
+// (loadSource() again instead of destroy()+new Hls()) to sidestep the race
+// rather than try to win it.
+const activeHlsByElement = new WeakMap<HTMLVideoElement, Hls>();
+
 /**
  * Shared by owner preview and public feed playback — both are just an HLS URL
  * once the right session cookie has been set (brief section 8).
@@ -319,12 +330,16 @@ export function attachHls(
   if (!video) return;
 
   if (Hls.isSupported()) {
-    const hls = new Hls();
+    let hls = activeHlsByElement.get(video);
+    if (!hls) {
+      hls = new Hls();
+      activeHlsByElement.set(video, hls);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) onLog(`Playback error: ${data.type} — ${data.details}`);
+      });
+    }
     hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) onLog(`Playback error: ${data.type} — ${data.details}`);
-    });
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
     // Safari's native HLS: no headers on this request either (Rule 17), the
     // cookies set moments ago are what authorize it.
@@ -332,4 +347,11 @@ export function attachHls(
   } else {
     onLog('This browser supports neither MSE (hls.js) nor native HLS playback.');
   }
+}
+
+/** Tears down any hls.js instance attached to this element, e.g. before it unmounts. */
+export function detachHls(video: HTMLVideoElement | null) {
+  if (!video) return;
+  activeHlsByElement.get(video)?.destroy();
+  activeHlsByElement.delete(video);
 }

@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { login, logout, probeMedia, register } from './api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { getMe, login, logout, probeMedia, register } from './api';
 import { Feed } from './Feed';
 import { Notifications } from './Notifications';
 import { SearchPanel } from './SearchPanel';
@@ -10,14 +11,26 @@ const SAMPLE_VIDEO_ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
 export function App() {
   const [email, setEmail] = useState('creator@example.com');
   const [password, setPassword] = useState('correct-horse-battery');
-  const [status, setStatus] = useState<string>('Not signed in.');
+  const [status, setStatus] = useState<string>('');
   const [mediaStatus, setMediaStatus] = useState<string>('');
-  const [signedIn, setSignedIn] = useState(false);
+  const queryClient = useQueryClient();
+
+  // The session cookie survives a page refresh even though React state
+  // doesn't -- check it once on load instead of always showing "Not signed
+  // in" right after a reload of an otherwise still-valid session.
+  const me = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false });
+  const signedIn = !!me.data;
+
+  useEffect(() => {
+    if (me.isPending) return;
+    setStatus(me.data ? `Signed in as ${me.data.displayName}.` : 'Not signed in.');
+  }, [me.isPending, me.data]);
 
   async function run(label: string, action: () => Promise<string>) {
     try {
       setStatus(`${label}...`);
       setStatus(await action());
+      await queryClient.invalidateQueries({ queryKey: ['me'] });
     } catch (error) {
       setStatus(`${label} failed: ${(error as Error).message}`);
     }
@@ -69,9 +82,8 @@ export function App() {
             className="btn-primary"
             onClick={() =>
               run('Login', async () => {
-                const session = await login(email, password);
-                setSignedIn(true);
-                return `Signed in as ${session.accountId}. Session cookie set (HttpOnly, so JS cannot read it).`;
+                await login(email, password);
+                return 'Signed in. Session cookie set (HttpOnly, so JS cannot read it).';
               })
             }
           >
@@ -83,7 +95,6 @@ export function App() {
             onClick={() =>
               run('Logout', async () => {
                 await logout();
-                setSignedIn(false);
                 return 'Signed out; session cookie cleared.';
               })
             }

@@ -1,7 +1,10 @@
 package com.shortvideo.account.web;
 
+import com.shortvideo.account.api.AccountView;
 import com.shortvideo.account.domain.AccountEntity;
+import com.shortvideo.account.domain.AccountExceptions;
 import com.shortvideo.account.domain.AccountService;
+import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.SessionCookies;
 import io.swagger.v3.oas.annotations.Operation;
@@ -9,6 +12,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -46,6 +51,20 @@ public class AuthController {
                 .header(HttpHeaders.SET_COOKIE, sessionCookies.session(issued.token(), issued.expiresAt()).toString())
                 .body(new AccountDtos.LoginResponse(
                         account.getAccountId().toString(), issued.token(), issued.expiresAt()));
+    }
+
+    /**
+     * A client checks this once on load instead of assuming "signed out" after
+     * every page refresh — the session cookie already carries a valid identity
+     * across reloads; only the client's own in-memory state was ever lost.
+     */
+    @GetMapping("/me")
+    @Operation(summary = "Who the current session cookie/bearer token belongs to")
+    public AccountDtos.MeResponse me(@AuthenticationPrincipal AuthenticatedAccount caller) {
+        AccountView account = accountService
+                .find(caller.accountId())
+                .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
+        return AccountDtos.MeResponse.from(account, caller.roles());
     }
 
     @PostMapping("/logout")

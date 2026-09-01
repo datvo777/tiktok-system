@@ -117,6 +117,8 @@ class MediaAuthorizer {
                 authorizeOwnerPreview(video, viewer, key.processingVersion());
             } else if (PlaybackMode.PUBLIC.equals(claims.mode())) {
                 authorizePublic(key.videoId());
+            } else if (PlaybackMode.MODERATOR_PREVIEW.equals(claims.mode())) {
+                authorizeModeratorPreview(video, viewer, key.processingVersion());
             } else {
                 throw new MediaAuthorizationException.Forbidden("Unknown playback mode");
             }
@@ -138,6 +140,21 @@ class MediaAuthorizer {
                 .orElse(false);
         if (!ownerActive) {
             throw new MediaAuthorizationException.Forbidden("Owner account is not active");
+        }
+    }
+
+    /**
+     * Ownership is irrelevant here — the whole point is letting a moderator
+     * watch someone else's pending content. Re-checks the ADMIN role
+     * independently of the token's mode claim, the same way owner-preview
+     * re-checks ownership rather than trusting the mode alone.
+     */
+    private void authorizeModeratorPreview(VideoPlaybackView video, AuthenticatedAccount viewer, int requestedVersion) {
+        if (!viewer.roles().contains("ADMIN")) {
+            throw new MediaAuthorizationException.Forbidden("Viewer is not an admin");
+        }
+        if (!video.ownerPreviewEligible(requestedVersion)) {
+            throw new MediaAuthorizationException.Forbidden("Video is not ready for preview");
         }
     }
 

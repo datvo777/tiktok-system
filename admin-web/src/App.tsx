@@ -1,9 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import Hls from 'hls.js';
+import { useEffect, useRef, useState } from 'react';
 import {
   approve,
   approveAppeal,
+  createModeratorPreviewSession,
   denyAppeal,
+  getMe,
   listPending,
   listPendingAppeals,
   login,
@@ -19,10 +22,26 @@ import {
 export function App() {
   const [email, setEmail] = useState('admin@example.com');
   const [password, setPassword] = useState('correct-horse-battery');
-  const [signedIn, setSignedIn] = useState(false);
   const [status, setStatus] = useState('');
+  const queryClient = useQueryClient();
 
-  if (!signedIn) {
+  // The session cookie survives a page refresh even though React state
+  // doesn't -- check it once on load instead of assuming signed-out and
+  // forcing a re-login every time the page reloads.
+  const me = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false });
+
+  if (me.isPending) {
+    return (
+      <div className="auth-screen">
+        <div className="admin-brand">
+          <span className="admin-brand-mark">A</span>
+          Short Video Admin
+        </div>
+      </div>
+    );
+  }
+
+  if (!me.data) {
     return (
       <div className="auth-screen">
         <div className="admin-brand" style={{ marginBottom: '1.5rem' }}>
@@ -51,8 +70,8 @@ export function App() {
               try {
                 setStatus('Signing in...');
                 await login(email, password);
-                setSignedIn(true);
                 setStatus('');
+                await queryClient.invalidateQueries({ queryKey: ['me'] });
               } catch (error) {
                 setStatus(`Sign in failed: ${(error as Error).message}`);
               }
@@ -67,6 +86,32 @@ export function App() {
     );
   }
 
+  if (!me.data.roles.includes('ADMIN')) {
+    return (
+      <div className="auth-screen">
+        <div className="admin-brand" style={{ marginBottom: '1.5rem' }}>
+          <span className="admin-brand-mark">A</span>
+          Short Video Admin
+        </div>
+        <section className="card">
+          <p className="error-text">
+            Signed in as {me.data.displayName}, but this account does not have the ADMIN role.
+          </p>
+          <button
+            className="btn-ghost"
+            style={{ marginTop: '0.75rem' }}
+            onClick={async () => {
+              await logout();
+              await queryClient.invalidateQueries({ queryKey: ['me'] });
+            }}
+          >
+            Sign out
+          </button>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="admin-shell">
       <div className="admin-topbar">
@@ -74,15 +119,18 @@ export function App() {
           <span className="admin-brand-mark">A</span>
           Short Video Admin
         </div>
-        <button
-          className="btn-ghost"
-          onClick={async () => {
-            await logout();
-            setSignedIn(false);
-          }}
-        >
-          Sign out
-        </button>
+        <div className="btn-row">
+          <span className="count-tag">{me.data.displayName}</span>
+          <button
+            className="btn-ghost"
+            onClick={async () => {
+              await logout();
+              await queryClient.invalidateQueries({ queryKey: ['me'] });
+            }}
+          >
+            Sign out
+          </button>
+        </div>
       </div>
 
       <PendingVideos />
@@ -96,7 +144,20 @@ function PendingVideos() {
   const queryClient = useQueryClient();
   const [reasons, setReasons] = useState<Record<string, string>>({});
 
-  const pending = useQuery({ queryKey: ['pending'], queryFn: listPending, refetchInterval: 5000 });
+  // Keyset pagination only ever hands back a "next" cursor, so Prev/Next
+  // navigation is a client-side stack of the cursors already seen: cursorPath[i]
+  // is the cursor that fetches page i (cursorPath[0] is undefined, the first
+  // page). "Next" grows the stack; "Prev" just moves the index back onto a
+  // cursor that's still there.
+  const [cursorPath, setCursorPath] = useState<(string | undefined)[]>([undefined]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const cursor = cursorPath[pageIndex];
+
+  const pending = useQuery({
+    queryKey: ['pending', cursor],
+    queryFn: () => listPending(cursor),
+    refetchInterval: 5000,
+  });
 
   const approveMutation = useMutation({
     mutationFn: approve,
@@ -107,13 +168,21 @@ function PendingVideos() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pending'] }),
   });
 
-  const videos: PendingVideo[] = pending.data ?? [];
+  const videos: PendingVideo[] = pending.data?.items ?? [];
+  const nextCursor = pending.data?.nextCursor ?? null;
+
+  const goNext = () => {
+    if (!nextCursor) return;
+    setCursorPath((path) => (pageIndex + 1 < path.length ? path : [...path, nextCursor]));
+    setPageIndex((i) => i + 1);
+  };
+  const goPrev = () => setPageIndex((i) => Math.max(0, i - 1));
 
   return (
     <section className="card">
       <div className="card-head">
         <h2>Pending moderation</h2>
-        <span className="count-tag">{videos.length}</span>
+        <span className="count-tag">page {pageIndex + 1}</span>
       </div>
 
       {pending.isPending && <p className="card-desc">Loading...</p>}
@@ -124,7 +193,9 @@ function PendingVideos() {
             : `Failed to load: ${(pending.error as Error).message}`}
         </p>
       )}
-      {pending.isSuccess && videos.length === 0 && <div className="empty-state">Nothing waiting for a decision.</div>}
+      {pending.isSuccess && videos.length === 0 && pageIndex === 0 && (
+        <div className="empty-state">Nothing waiting for a decision.</div>
+      )}
 
       <ul className="item-list">
         {videos.map((video) => (
@@ -136,6 +207,7 @@ function PendingVideos() {
               <br />
               waiting since {video.createdAt}
             </div>
+            <ModeratorPreview videoId={video.videoId} />
             <div className="item-actions">
               <button className="btn-primary" onClick={() => approveMutation.mutate(video.videoId)} disabled={approveMutation.isPending}>
                 Approve
@@ -156,7 +228,102 @@ function PendingVideos() {
           </li>
         ))}
       </ul>
+
+      {(pageIndex > 0 || nextCursor) && (
+        <div className="btn-row" style={{ marginTop: '1rem', justifyContent: 'center' }}>
+          <button className="btn-ghost" onClick={goPrev} disabled={pageIndex === 0 || pending.isFetching}>
+            ← Prev
+          </button>
+          <button className="btn-ghost" onClick={goNext} disabled={!nextCursor || pending.isFetching}>
+            Next →
+          </button>
+        </div>
+      )}
     </section>
+  );
+}
+
+/** Admin-only playback so a moderator can actually watch a video before deciding on it. */
+function ModeratorPreview({ videoId }: { videoId: string }) {
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  // One hls.js instance for this component's whole lifetime, reused across
+  // repeated Preview clicks via loadSource() instead of destroy()+new Hls().
+  // Destroying and immediately re-attaching a *new* MediaSource to the same
+  // element is a known race in some browsers -- the old one isn't always
+  // fully released before the new attach, which is exactly what
+  // "mediaSourceRequiresReset" means. Reusing one instance sidesteps the race
+  // entirely instead of trying to win it. Only destroyed when this component
+  // itself unmounts (the row leaving the pending-moderation list).
+  const hlsRef = useRef<Hls | null>(null);
+
+  useEffect(
+    () => () => {
+      hlsRef.current?.destroy();
+      hlsRef.current = null;
+    },
+    [],
+  );
+
+  const session = useMutation({
+    mutationFn: () => createModeratorPreviewSession(videoId),
+    onSuccess: (result) => {
+      setError(null);
+      const url = `/media/videos/${videoId}/${result.processingVersion}/master.m3u8`;
+      const el = videoRef.current;
+      if (!el) return;
+      if (Hls.isSupported()) {
+        if (!hlsRef.current) {
+          const hls = new Hls();
+          hlsRef.current = hls;
+          hls.attachMedia(el);
+          hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (data.fatal) setError(`Playback error: ${data.type} — ${data.details}`);
+          });
+        }
+        hlsRef.current.loadSource(url);
+      } else if (el.canPlayType('application/vnd.apple.mpegurl')) {
+        el.src = url;
+      } else {
+        setError('This browser supports neither MSE (hls.js) nor native HLS playback.');
+      }
+    },
+    onError: (err) => setError((err as Error).message),
+  });
+
+  return (
+    <div style={{ marginTop: '0.5rem' }}>
+      <button
+        className="btn-ghost"
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+          } else {
+            setOpen(true);
+            session.mutate();
+          }
+        }}
+      >
+        {open ? 'Hide preview' : '▶ Preview'}
+      </button>
+      {/* Always mounted once first opened, so the video element and its hls.js
+          instance persist across show/hide instead of tearing down and
+          racing a rebuild on every click. */}
+      <video
+        ref={videoRef}
+        controls
+        style={{
+          display: open ? 'block' : 'none',
+          marginTop: '0.5rem',
+          maxWidth: '320px',
+          borderRadius: 8,
+          background: '#000',
+        }}
+      />
+      {open && session.isPending && <p className="item-meta">Requesting preview session...</p>}
+      {open && error && <p className="error-text">{error}</p>}
+    </div>
   );
 }
 
