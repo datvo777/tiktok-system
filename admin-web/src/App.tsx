@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Hls from 'hls.js';
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   approve,
   approveAppeal,
@@ -113,35 +113,82 @@ export function App() {
   }
 
   return (
-    <div className="admin-shell">
-      <div className="admin-topbar">
-        <div className="admin-brand">
-          <span className="admin-brand-mark">A</span>
-          Short Video Admin
+    <ToastProvider>
+      <div className="admin-shell">
+        <div className="admin-topbar">
+          <div className="admin-brand">
+            <span className="admin-brand-mark">A</span>
+            Short Video Admin
+          </div>
+          <div className="btn-row">
+            <span className="count-tag">{me.data.displayName}</span>
+            <button
+              className="btn-ghost"
+              onClick={async () => {
+                await logout();
+                await queryClient.invalidateQueries({ queryKey: ['me'] });
+              }}
+            >
+              Sign out
+            </button>
+          </div>
         </div>
-        <div className="btn-row">
-          <span className="count-tag">{me.data.displayName}</span>
-          <button
-            className="btn-ghost"
-            onClick={async () => {
-              await logout();
-              await queryClient.invalidateQueries({ queryKey: ['me'] });
-            }}
-          >
-            Sign out
-          </button>
-        </div>
-      </div>
 
-      <PendingVideos />
-      <PendingAppeals />
-      <LifecycleActions />
-    </div>
+        <PendingVideos />
+        <PendingAppeals />
+        <LifecycleActions />
+      </div>
+    </ToastProvider>
+  );
+}
+
+type Toast = { id: number; kind: 'success' | 'error'; message: string };
+type PushToast = (kind: 'success' | 'error', message: string) => void;
+
+const ToastContext = createContext<PushToast | null>(null);
+
+/** Approve/reject-style mutations are otherwise silent: the row leaving the
+    list is the only success signal, and a failure has no signal at all. */
+function useToast(): PushToast {
+  const ctx = useContext(ToastContext);
+  if (!ctx) throw new Error('useToast must be used within ToastProvider');
+  return ctx;
+}
+
+function ToastProvider({ children }: { children: React.ReactNode }) {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const nextId = useRef(0);
+
+  const pushToast: PushToast = (kind, message) => {
+    const id = ++nextId.current;
+    setToasts((current) => [...current, { id, kind, message }]);
+    setTimeout(() => setToasts((current) => current.filter((t) => t.id !== id)), 4000);
+  };
+
+  return (
+    <ToastContext.Provider value={pushToast}>
+      {children}
+      <div className="toast-viewport">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast ${t.kind === 'error' ? 'toast-error' : 'toast-success'}`}>
+            {t.message}
+            <button
+              className="toast-dismiss"
+              aria-label="Dismiss"
+              onClick={() => setToasts((current) => current.filter((x) => x.id !== t.id))}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+    </ToastContext.Provider>
   );
 }
 
 function PendingVideos() {
   const queryClient = useQueryClient();
+  const pushToast = useToast();
   const [reasons, setReasons] = useState<Record<string, string>>({});
 
   // Keyset pagination only ever hands back a "next" cursor, so Prev/Next
@@ -161,11 +208,19 @@ function PendingVideos() {
 
   const approveMutation = useMutation({
     mutationFn: approve,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pending'] }),
+    onSuccess: () => {
+      pushToast('success', 'Video approved.');
+      queryClient.invalidateQueries({ queryKey: ['pending'] });
+    },
+    onError: (error) => pushToast('error', `Approve failed: ${(error as Error).message}`),
   });
   const rejectMutation = useMutation({
     mutationFn: ({ videoId, reason }: { videoId: string; reason: string }) => reject(videoId, reason),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pending'] }),
+    onSuccess: () => {
+      pushToast('success', 'Video rejected.');
+      queryClient.invalidateQueries({ queryKey: ['pending'] });
+    },
+    onError: (error) => pushToast('error', `Reject failed: ${(error as Error).message}`),
   });
 
   const videos: PendingVideo[] = pending.data?.items ?? [];
@@ -329,17 +384,26 @@ function ModeratorPreview({ videoId }: { videoId: string }) {
 
 function PendingAppeals() {
   const queryClient = useQueryClient();
+  const pushToast = useToast();
   const [reasons, setReasons] = useState<Record<string, string>>({});
 
   const pending = useQuery({ queryKey: ['pending-appeals'], queryFn: listPendingAppeals, refetchInterval: 5000 });
 
   const approveMutation = useMutation({
     mutationFn: ({ videoId, reason }: { videoId: string; reason: string }) => approveAppeal(videoId, reason),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pending-appeals'] }),
+    onSuccess: () => {
+      pushToast('success', 'Appeal approved.');
+      queryClient.invalidateQueries({ queryKey: ['pending-appeals'] });
+    },
+    onError: (error) => pushToast('error', `Approve appeal failed: ${(error as Error).message}`),
   });
   const denyMutation = useMutation({
     mutationFn: ({ videoId, reason }: { videoId: string; reason: string }) => denyAppeal(videoId, reason),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pending-appeals'] }),
+    onSuccess: () => {
+      pushToast('success', 'Appeal denied.');
+      queryClient.invalidateQueries({ queryKey: ['pending-appeals'] });
+    },
+    onError: (error) => pushToast('error', `Deny appeal failed: ${(error as Error).message}`),
   });
 
   if (pending.isError) return null; // already surfaced by PendingVideos above

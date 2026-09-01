@@ -16,10 +16,20 @@ interface ModerationJpaRepository extends JpaRepository<ModerationEntity, UUID> 
      * queue can grow into the thousands, so we page it instead of ever loading
      * the whole thing (unlike {@code findByStateOrderByCreatedAtAsc}, kept only
      * for existing tests that don't care about scale).
+     *
+     * <p>Native query: Postgres can only push the cursor condition into the
+     * {@code (state, created_at, video_id)} index as a true seek when it's
+     * written as a row comparison. The equivalent JPQL {@code (createdAt >
+     * :x or (createdAt = :x and videoId > :y))} looks identical but the
+     * planner can't recognize it as one — it falls back to filtering every
+     * row from the start of the state partition, i.e. an ever-growing scan
+     * as the queue drains, exactly what keyset pagination is meant to avoid.
      */
-    @Query("select m from ModerationEntity m where m.state = :state "
-            + "and (m.createdAt > :afterCreatedAt or (m.createdAt = :afterCreatedAt and m.videoId > :afterId)) "
-            + "order by m.createdAt asc, m.videoId asc")
+    @Query(
+            value = "select * from moderation.moderation_record where state = :#{#state.name()} "
+                    + "and (created_at, video_id) > (:afterCreatedAt, :afterId) "
+                    + "order by created_at asc, video_id asc",
+            nativeQuery = true)
     List<ModerationEntity> findPageAfter(
             @Param("state") ModerationState state,
             @Param("afterCreatedAt") Instant afterCreatedAt,
