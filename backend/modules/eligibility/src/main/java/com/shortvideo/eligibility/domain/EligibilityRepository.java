@@ -147,6 +147,25 @@ class EligibilityRepository {
             LIMIT ?
             """;
 
+    /**
+     * The join replaces one {@code findAccountEligibility} round trip per candidate.
+     * An INNER JOIN is what keeps Rule 9 intact: a creator with no projection row
+     * drops the video from the candidate set rather than letting it through
+     * unchecked.
+     */
+    private static final String FIND_ELIGIBLE_WITH_ELIGIBLE_CREATOR = """
+            SELECT v.video_id, v.creator_id, v.processing_state, v.processing_version, v.durability_state,
+                   v.moderation_state, v.publication_state, v.publication_intent_requested, v.asset_lifecycle_state,
+                   v.legal_serving_state, v.is_video_eligible, v.processing_version_source,
+                   v.moderation_version_source, v.publication_version_source, v.updated_at
+            FROM eligibility.video_eligibility v
+            JOIN eligibility.account_eligibility a ON a.account_id = v.creator_id
+            WHERE v.is_video_eligible = true
+              AND a.is_account_eligible = true
+            ORDER BY v.updated_at DESC
+            LIMIT ?
+            """;
+
     private final JdbcTemplate jdbc;
 
     EligibilityRepository(JdbcTemplate jdbc) {
@@ -227,6 +246,10 @@ class EligibilityRepository {
 
     java.util.List<VideoEligibilityView> findEligible(int limit) {
         return jdbc.query(FIND_ELIGIBLE, EligibilityRepository::mapVideo, limit);
+    }
+
+    java.util.List<VideoEligibilityView> findEligibleWithEligibleCreator(int limit) {
+        return jdbc.query(FIND_ELIGIBLE_WITH_ELIGIBLE_CREATOR, EligibilityRepository::mapVideo, limit);
     }
 
     java.util.List<String> allVideoIds(int limit) {

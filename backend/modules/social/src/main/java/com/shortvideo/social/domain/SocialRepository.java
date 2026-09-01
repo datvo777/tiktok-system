@@ -3,6 +3,11 @@ package com.shortvideo.social.domain;
 import com.shortvideo.social.api.SocialCounts;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -43,6 +48,31 @@ class SocialRepository {
 
     private static final String IS_FOLLOWING =
             "SELECT EXISTS (SELECT 1 FROM social.follow WHERE follower_id = ? AND followee_id = ?)";
+
+    /**
+     * One grouped pass per relation instead of two correlated subqueries per video.
+     * {@code = ANY(?)} takes the whole id list as a single array parameter, so the
+     * SQL text is constant regardless of page size — no {@code IN (?,?,…)} built by
+     * string concatenation, and no statement-cache churn.
+     *
+     * <p>The two relations are counted separately and merged in Java rather than
+     * joined: joining likes to comments on video_id multiplies the rows and inflates
+     * both counts.
+     */
+    private static final String LIKE_COUNTS_FOR = """
+            SELECT video_id, count(*) AS c FROM social.video_like
+            WHERE video_id = ANY(?) GROUP BY video_id
+            """;
+
+    private static final String COMMENT_COUNTS_FOR = """
+            SELECT video_id, count(*) AS c FROM social.comment
+            WHERE video_id = ANY(?) GROUP BY video_id
+            """;
+
+    private static final String FOLLOWED_AMONG = """
+            SELECT followee_id FROM social.follow
+            WHERE follower_id = ? AND followee_id = ANY(?)
+            """;
 
     private static final String FOLLOWER_COUNT = "SELECT count(*) FROM social.follow WHERE followee_id = ?";
 
@@ -104,6 +134,48 @@ class SocialRepository {
         Boolean following = jdbc.queryForObject(
                 IS_FOLLOWING, Boolean.class, UUID.fromString(followerId), UUID.fromString(followeeId));
         return Boolean.TRUE.equals(following);
+    }
+
+    /** @return counts keyed by videoId, zero-filled for videos with no activity. */
+    Map<String, SocialCounts> countsForAll(Collection<String> videoIds) {
+        if (videoIds.isEmpty()) {
+            return Map.of();
+        }
+        UUID[] ids = videoIds.stream().map(UUID::fromString).toArray(UUID[]::new);
+
+        Map<String, Long> likes = countBy(LIKE_COUNTS_FOR, ids);
+        Map<String, Long> comments = countBy(COMMENT_COUNTS_FOR, ids);
+
+        Map<String, SocialCounts> counts = new HashMap<>();
+        for (String videoId : videoIds) {
+            counts.put(
+                    videoId,
+                    new SocialCounts(
+                            videoId,
+                            likes.getOrDefault(videoId, 0L),
+                            comments.getOrDefault(videoId, 0L)));
+        }
+        return counts;
+    }
+
+    private Map<String, Long> countBy(String sql, UUID[] ids) {
+        Map<String, Long> byVideo = new HashMap<>();
+        jdbc.query(
+                sql,
+                rs -> {
+                    byVideo.put(rs.getString("video_id"), rs.getLong("c"));
+                },
+                (Object) ids);
+        return byVideo;
+    }
+
+    Set<String> followedAmong(String followerId, Collection<String> creatorIds) {
+        if (creatorIds.isEmpty()) {
+            return Set.of();
+        }
+        UUID[] ids = creatorIds.stream().map(UUID::fromString).toArray(UUID[]::new);
+        return new HashSet<>(
+                jdbc.queryForList(FOLLOWED_AMONG, String.class, UUID.fromString(followerId), ids));
     }
 
     long followerCount(String accountId) {

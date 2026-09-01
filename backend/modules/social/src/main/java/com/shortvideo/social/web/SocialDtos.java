@@ -16,11 +16,12 @@ public final class SocialDtos {
         }
     }
 
+    /** No account state: see {@link CreatorProfileView}. */
     public record CreatorProfileResponse(
-            String accountId, String displayName, String accountState, long followerCount, long followingCount) {
+            String accountId, String displayName, long followerCount, long followingCount) {
         public static CreatorProfileResponse from(CreatorProfileView view) {
             return new CreatorProfileResponse(
-                    view.accountId(), view.displayName(), view.accountState(), view.followerCount(), view.followingCount());
+                    view.accountId(), view.displayName(), view.followerCount(), view.followingCount());
         }
     }
 

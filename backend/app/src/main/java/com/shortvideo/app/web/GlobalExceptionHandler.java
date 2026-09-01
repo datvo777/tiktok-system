@@ -6,6 +6,8 @@ import com.shortvideo.moderation.domain.ModerationExceptions;
 import com.shortvideo.notification.domain.NotificationExceptions;
 import com.shortvideo.playback.InvalidMediaPathException;
 import com.shortvideo.playback.MediaAuthorizationException;
+import com.shortvideo.playback.MediaRangeNotSatisfiableException;
+import com.shortvideo.playback.MediaStreamsExhaustedException;
 import com.shortvideo.publication.domain.PublicationExceptions;
 import com.shortvideo.social.domain.SocialExceptions;
 import com.shortvideo.upload.domain.UploadExceptions;
@@ -120,6 +122,28 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(MediaAuthorizationException.ObjectMissing.class)
     public ProblemDetail mediaObjectMissing(MediaAuthorizationException.ObjectMissing e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", "The requested media object was not found");
+    }
+
+    /** RFC 9110 §15.5.17: 416 must carry the object's true size so a client can retry. */
+    @ExceptionHandler(MediaRangeNotSatisfiableException.class)
+    public ResponseEntity<ProblemDetail> mediaRangeNotSatisfiable(MediaRangeNotSatisfiableException e) {
+        return ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                .header(HttpHeaders.CONTENT_RANGE, "bytes */" + e.totalSize())
+                .body(problem(
+                        HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                        "Range not satisfiable",
+                        "The requested byte range lies outside this object"));
+    }
+
+    /** Backpressure, not failure: tell the client to come back rather than truncating a 200. */
+    @ExceptionHandler(MediaStreamsExhaustedException.class)
+    public ResponseEntity<ProblemDetail> mediaStreamsExhausted(MediaStreamsExhaustedException e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "1")
+                .body(problem(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Busy",
+                        "The media gateway is at capacity; retry shortly"));
     }
 
     @ExceptionHandler({VideoExceptions.VideoNotFound.class, UploadExceptions.UploadNotFound.class})

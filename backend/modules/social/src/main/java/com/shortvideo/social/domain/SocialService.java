@@ -11,6 +11,9 @@ import com.shortvideo.shared.outbox.OutboxWriter;
 import com.shortvideo.social.api.SocialCounts;
 import com.shortvideo.social.api.SocialDirectory;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
@@ -78,15 +81,21 @@ public class SocialService implements SocialDirectory {
         repository.unfollow(followerId, followeeId);
     }
 
+    /**
+     * A non-active creator answers "not found" rather than returning their state.
+     * Reporting {@code SUSPENDED} told any signed-in user which accounts had been
+     * actioned — the one place that leaked it, while the login path, the video
+     * reads and the media gateway all take care not to.
+     */
     @Transactional(readOnly = true)
     public CreatorProfileView profile(String accountId) {
         AccountView account = accountDirectory
                 .find(accountId)
+                .filter(AccountView::isEligible)
                 .orElseThrow(() -> new SocialExceptions.CreatorNotFound("No such creator"));
         return new CreatorProfileView(
                 account.accountId(),
                 account.displayName(),
-                account.state().name(),
                 repository.followerCount(accountId),
                 repository.followingCount(accountId));
     }
@@ -101,6 +110,18 @@ public class SocialService implements SocialDirectory {
     @Transactional(readOnly = true)
     public boolean isFollowing(String followerId, String followeeId) {
         return repository.isFollowing(followerId, followeeId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, SocialCounts> countsForAll(Collection<String> videoIds) {
+        return repository.countsForAll(videoIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> followedAmong(String followerId, Collection<String> creatorIds) {
+        return repository.followedAmong(followerId, creatorIds);
     }
 
     private VideoEligibilityView requireEligible(String videoId) {

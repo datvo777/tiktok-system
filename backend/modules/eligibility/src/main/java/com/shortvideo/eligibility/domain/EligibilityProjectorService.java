@@ -94,6 +94,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
 
     @Override
     @Transactional(readOnly = true)
+    public List<VideoEligibilityView> findEligibleVideosWithEligibleCreators(int limit) {
+        return repository.findEligibleWithEligibleCreator(limit);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<String> allTrackedVideoIds(int limit) {
         return repository.allVideoIds(limit);
     }
