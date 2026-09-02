@@ -284,7 +284,7 @@ function AuthScreen() {
   const queryClient = useQueryClient();
 
   const registering = mode === 'register';
-  const canSubmit = email.trim() && password.length >= 12 && (!registering || displayName.trim());
+  const canSubmit = email.trim() && password.length >= 1 && (!registering || displayName.trim());
 
   async function submit() {
     setBusy(true);

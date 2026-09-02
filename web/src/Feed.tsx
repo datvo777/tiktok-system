@@ -6,6 +6,7 @@ import {
   getCreatorProfile,
   getFeed,
   likeVideo,
+  listComments,
   unlikeVideo,
   type FeedItem,
 } from './api';
@@ -297,12 +298,17 @@ function FeedSlide({
     onSuccess: (next) => setLiked(next),
   });
 
+  const comments = useQuery({
+    queryKey: ['comments', item.videoId],
+    queryFn: () => listComments(item.videoId),
+    enabled: commentOpen,
+  });
+
   const submitComment = useMutation({
     mutationFn: () => commentOnVideo(item.videoId, comment),
     onSuccess: () => {
       setComment('');
-      setCommentOpen(false);
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      void queryClient.invalidateQueries({ queryKey: ['comments', item.videoId] });
     },
   });
 
@@ -461,7 +467,7 @@ function FeedSlide({
       </div>
 
       {commentOpen && (
-        <Sheet title="Add a comment" onClose={() => setCommentOpen(false)}>
+        <Sheet title="Comments" onClose={() => setCommentOpen(false)}>
           <div className="comment-composer">
             <input
               autoFocus
@@ -482,6 +488,25 @@ function FeedSlide({
           {submitComment.isError && (
             <div className="status-line is-error">{(submitComment.error as Error).message}</div>
           )}
+
+          <div className="comment-list">
+            {comments.isPending && <div className="comment-list-state">Loading…</div>}
+            {comments.isError && (
+              <div className="status-line is-error">{(comments.error as Error).message}</div>
+            )}
+            {comments.data?.length === 0 && (
+              <div className="comment-list-state">No comments yet. Be the first to say something.</div>
+            )}
+            {comments.data?.map((c) => (
+              <div className="comment-row" key={c.commentId}>
+                <Avatar seed={c.accountId} size="sm" className="comment-avatar" />
+                <div className="comment-row-body">
+                  <span className="comment-row-author">{handleFor(c.accountId)}</span>
+                  <span className="comment-row-text">{c.body}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </Sheet>
       )}
     </div>

@@ -370,21 +370,26 @@ export type CommentResponse = {
   createdAt: string;
 };
 
+function parseComment(context: string, payload: unknown): CommentResponse {
+  const o = obj(context, payload);
+  return {
+    commentId: str(context, o, 'commentId'),
+    videoId: str(context, o, 'videoId'),
+    accountId: str(context, o, 'accountId'),
+    body: str(context, o, 'body'),
+    createdAt: str(context, o, 'createdAt'),
+  };
+}
+
 export async function commentOnVideo(videoId: string, body: string): Promise<CommentResponse> {
-  return request(
-    `/api/v1/videos/${videoId}/comments`,
-    (payload) => {
-      const o = obj('comment', payload);
-      return {
-        commentId: str('comment', o, 'commentId'),
-        videoId: str('comment', o, 'videoId'),
-        accountId: str('comment', o, 'accountId'),
-        body: str('comment', o, 'body'),
-        createdAt: str('comment', o, 'createdAt'),
-      };
-    },
-    jsonBody({ body }),
-  );
+  return request(`/api/v1/videos/${videoId}/comments`, (payload) => parseComment('comment', payload), jsonBody({ body }));
+}
+
+export async function listComments(videoId: string): Promise<CommentResponse[]> {
+  return request(`/api/v1/videos/${videoId}/comments`, (payload) => {
+    const o = obj('comments', payload);
+    return arr('comments.items', o['items']).map((raw, i) => parseComment(`comments.items[${i}]`, raw));
+  });
 }
 
 /** No accountState: only eligible creators have a profile, so the field could only leak suspensions. */

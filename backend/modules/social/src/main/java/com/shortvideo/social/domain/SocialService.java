@@ -12,6 +12,7 @@ import com.shortvideo.social.api.SocialCounts;
 import com.shortvideo.social.api.SocialDirectory;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -60,6 +61,12 @@ public class SocialService implements SocialDirectory {
                 EventTypes.SOCIAL_VIDEO_COMMENTED,
                 new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, comment.commentId()));
         return comment;
+    }
+
+    @Transactional(readOnly = true)
+    public List<CommentView> listComments(String videoId) {
+        requireEligible(videoId);
+        return repository.listComments(videoId);
     }
 
     @Transactional

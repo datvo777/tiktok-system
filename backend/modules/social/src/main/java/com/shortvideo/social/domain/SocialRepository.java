@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -29,6 +30,14 @@ class SocialRepository {
     private static final String ADD_COMMENT = """
             INSERT INTO social.comment (comment_id, video_id, account_id, body, created_at)
             VALUES (?, ?, ?, ?, ?)
+            """;
+
+    private static final String LIST_COMMENTS = """
+            SELECT comment_id, video_id, account_id, body, created_at
+            FROM social.comment
+            WHERE video_id = ?
+            ORDER BY created_at DESC
+            LIMIT 200
             """;
 
     private static final String COUNTS = """
@@ -109,6 +118,18 @@ class SocialRepository {
                 body,
                 Timestamp.from(now));
         return new CommentView(commentId.toString(), videoId, accountId, body, now);
+    }
+
+    List<CommentView> listComments(String videoId) {
+        return jdbc.query(
+                LIST_COMMENTS,
+                (rs, rowNum) -> new CommentView(
+                        rs.getString("comment_id"),
+                        rs.getString("video_id"),
+                        rs.getString("account_id"),
+                        rs.getString("body"),
+                        rs.getTimestamp("created_at").toInstant()),
+                UUID.fromString(videoId));
     }
 
     SocialCounts countsFor(String videoId) {

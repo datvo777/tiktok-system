@@ -5,6 +5,7 @@ import com.shortvideo.social.domain.CreatorProfileView;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.time.Instant;
+import java.util.List;
 
 public final class SocialDtos {
 
@@ -13,6 +14,12 @@ public final class SocialDtos {
     public record CommentResponse(String commentId, String videoId, String accountId, String body, Instant createdAt) {
         public static CommentResponse from(CommentView view) {
             return new CommentResponse(view.commentId(), view.videoId(), view.accountId(), view.body(), view.createdAt());
+        }
+    }
+
+    public record CommentListResponse(List<CommentResponse> items) {
+        public static CommentListResponse from(List<CommentView> views) {
+            return new CommentListResponse(views.stream().map(CommentResponse::from).toList());
         }
     }
 

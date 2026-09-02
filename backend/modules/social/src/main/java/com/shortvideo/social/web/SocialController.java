@@ -9,6 +9,7 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -48,5 +49,11 @@ public class SocialController {
             @Valid @RequestBody SocialDtos.CreateCommentRequest request) {
         var comment = socialService.comment(videoId.toString(), caller.accountId(), request.body());
         return ResponseEntity.status(201).body(SocialDtos.CommentResponse.from(comment));
+    }
+
+    @GetMapping("/{videoId}/comments")
+    @Operation(summary = "List comments on a video, newest first")
+    public ResponseEntity<SocialDtos.CommentListResponse> listComments(@PathVariable UUID videoId) {
+        return ResponseEntity.ok(SocialDtos.CommentListResponse.from(socialService.listComments(videoId.toString())));
     }
 }
