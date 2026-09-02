@@ -151,11 +151,11 @@ class SessionLifecycleIT {
         String token = registerAndLogin();
 
         for (int i = 0; i < 5; i++) {
-            assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, null).getStatusCode())
+            assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, Map.of("title", "Test video")).getStatusCode())
                     .as("session %d should be allowed", i + 1)
                     .isEqualTo(HttpStatus.CREATED);
         }
-        assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, null).getStatusCode())
+        assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, Map.of("title", "Test video")).getStatusCode())
                 .isEqualTo(HttpStatus.CONFLICT);
     }
 

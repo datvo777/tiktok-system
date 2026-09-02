@@ -58,12 +58,18 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
-    /** Called by the Upload module inside its own transaction (brief section 7.1). No event here: nothing consumes "drafted" yet. */
+    /**
+     * Called by the Upload module inside its own transaction (brief section 7.1).
+     * Emits {@link EventTypes#VIDEO_METADATA_SET} so the eligibility projector (and
+     * anything else that ends up caring, e.g. the Feed) learns the title/description
+     * — the only time it will, since these never change after this call.
+     */
     @Override
     @Transactional
-    public VideoDraft createDraft(String ownerAccountId) {
-        VideoEntity video = new VideoEntity(UUID.randomUUID(), UUID.fromString(ownerAccountId));
+    public VideoDraft createDraft(String ownerAccountId, String title, String description) {
+        VideoEntity video = new VideoEntity(UUID.randomUUID(), UUID.fromString(ownerAccountId), title, description);
         VideoEntity saved = repository.saveAndFlush(video);
+        appendMetadataSetEvent(saved);
         return new VideoDraft(
                 saved.getVideoId().toString(),
                 saved.getOwnerAccountId().toString(),
@@ -323,6 +329,16 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 video.getAssetLifecycleState(),
                 video.getLegalServingState(),
                 video.getAggregateVersion()));
+    }
+
+    private void appendMetadataSetEvent(VideoEntity video) {
+        var payload = new VideoEvents.VideoMetadataSet(
+                video.getVideoId().toString(),
+                video.getOwnerAccountId().toString(),
+                video.getTitle(),
+                video.getDescription(),
+                video.getAggregateVersion());
+        append(video, EventTypes.VIDEO_METADATA_SET, payload);
     }
 
     private void appendReadyEvent(VideoEntity video) {

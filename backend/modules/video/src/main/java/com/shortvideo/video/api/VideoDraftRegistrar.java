@@ -7,7 +7,7 @@ package com.shortvideo.video.api;
  */
 public interface VideoDraftRegistrar {
 
-    VideoDraft createDraft(String ownerAccountId);
+    VideoDraft createDraft(String ownerAccountId, String title, String description);
 
     /**
      * Called by the Upload module's expired-session reaper when a draft's

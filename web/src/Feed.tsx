@@ -113,6 +113,8 @@ function FeedCard({ item }: { item: FeedItem }) {
     <div data-testid={`feed-card-${item.videoId}`} className="feed-card">
       <video ref={videoRef} controls className="feed-card-video" />
       <div className="feed-card-body">
+        {item.title && <div className="feed-card-title">{item.title}</div>}
+        {item.description && <div className="feed-card-description">{item.description}</div>}
         <div className="feed-card-ids" title={`video: ${item.videoId}`}>
           {item.videoId}
         </div>

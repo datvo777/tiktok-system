@@ -65,7 +65,7 @@ public class UploadService {
      * 7.1).
      */
     @Transactional
-    public UploadSessionCreated createSession(String accountId) {
+    public UploadSessionCreated createSession(String accountId, String title, String description) {
         // The per-object size cap in the presigned policy bounds one upload; it does
         // not bound how many an account may have in flight. Without this, opening
         // sessions in a loop is an unbounded write allowance against the bucket, and
@@ -78,7 +78,7 @@ public class UploadService {
                     "You already have " + open + " uploads in progress. Finish or abandon one before starting another.");
         }
 
-        VideoDraft draft = videoDraftRegistrar.createDraft(accountId);
+        VideoDraft draft = videoDraftRegistrar.createDraft(accountId, title, description);
 
         UUID uploadId = UUID.randomUUID();
         String objectKey = "uploads/" + accountId + "/" + uploadId + "/original";

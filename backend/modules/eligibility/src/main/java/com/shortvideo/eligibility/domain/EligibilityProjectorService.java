@@ -43,6 +43,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
         repository.recomputeEligibility(videoId);
     }
 
+    /** Never affects {@code is_video_eligible} (Rule 12), so unlike the other three sources this skips recompute. */
+    @Transactional
+    void applyMetadata(String videoId, String creatorId, String title, String description, long sourceVersion) {
+        repository.upsertMetadata(videoId, creatorId, title, description, sourceVersion, Timestamp.from(Instant.now()));
+    }
+
     @Transactional
     void applyAssetLifecycle(String videoId, String creatorId, String assetLifecycleState, long sourceVersion) {
         repository.upsertAssetLifecycle(videoId, creatorId, assetLifecycleState, sourceVersion, Timestamp.from(Instant.now()));

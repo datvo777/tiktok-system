@@ -60,8 +60,8 @@ class FeedScorerTest {
 
     private VideoEligibilityView eligibleVideo(Instant updatedAt) {
         return new VideoEligibilityView(
-                "video-1", "creator-1", "READY", 1, "DURABLE", "APPROVED", "PUBLISHED", true, "ACTIVE", "CLEAR",
-                true, 1, 1, 1, updatedAt);
+                "video-1", "creator-1", "Test title", null, "READY", 1, "DURABLE", "APPROVED", "PUBLISHED", true,
+                "ACTIVE", "CLEAR", true, 1, 1, 1, 1, updatedAt);
     }
 
     private SocialCounts counts(long likes, long comments) {

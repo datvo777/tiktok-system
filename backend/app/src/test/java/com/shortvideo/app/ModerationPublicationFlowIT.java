@@ -128,7 +128,7 @@ class ModerationPublicationFlowIT {
         HttpHeaders adminAuth = registerAdminAndLogin(adminEmail);
 
         // 1. Upload and reach READY (worker played by hand, as in UploadTranscodeFlowIT).
-        ResponseEntity<Map> created = post("/api/v1/uploads", null, creatorAuth);
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), creatorAuth);
         String videoId = (String) created.getBody().get("videoId");
         String uploadId = (String) created.getBody().get("uploadId");
         putToPresignedUrl((String) created.getBody().get("uploadUrl"), "x".getBytes(StandardCharsets.UTF_8));

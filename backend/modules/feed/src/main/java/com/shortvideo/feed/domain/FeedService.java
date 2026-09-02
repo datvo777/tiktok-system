@@ -122,7 +122,7 @@ public class FeedService {
                     counts.getOrDefault(video.videoId(), new SocialCounts(video.videoId(), 0, 0));
             double score = scorer.score(
                     video, videoCounts, followed.contains(video.creatorId()), exploration.nextDouble());
-            scored.add(new ScoredCandidate(video.videoId(), video.creatorId(), score));
+            scored.add(new ScoredCandidate(video.videoId(), video.creatorId(), video.title(), video.description(), score));
         }
 
         scored.sort(Comparator.comparingDouble(ScoredCandidate::score)
@@ -131,11 +131,13 @@ public class FeedService {
                 // the same ranking, reintroducing the instability this method fixes.
                 .thenComparing(ScoredCandidate::videoId));
 
-        return scored.stream().map(c -> new FeedItemView(c.videoId(), c.creatorId())).toList();
+        return scored.stream()
+                .map(c -> new FeedItemView(c.videoId(), c.creatorId(), c.title(), c.description()))
+                .toList();
     }
 
     /** One page of the viewer's ranking, plus whether another page exists. */
     public record FeedPage(List<FeedItemView> items, boolean hasMore) {}
 
-    private record ScoredCandidate(String videoId, String creatorId, double score) {}
+    private record ScoredCandidate(String videoId, String creatorId, String title, String description, double score) {}
 }

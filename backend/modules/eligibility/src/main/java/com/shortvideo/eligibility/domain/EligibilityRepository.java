@@ -75,6 +75,31 @@ class EligibilityRepository {
             WHERE eligibility.video_eligibility.moderation_version_source < EXCLUDED.moderation_version_source
             """;
 
+    /**
+     * Fourth independent source (brief section 17): title/description from
+     * {@code video.metadata.set}, guarded by its own {@code metadata_version_source}
+     * column so it can never be clobbered by — or clobber — a write from
+     * processing, moderation, or publication. This event fires once, at draft
+     * creation, so for most videos this INSERT branch runs before any other
+     * source has written the row at all; the defaults below match the same
+     * "safe unknown state" the other three sources' INSERT branches use.
+     */
+    private static final String UPSERT_METADATA = """
+            INSERT INTO eligibility.video_eligibility (
+                video_id, creator_id, title, description, processing_state, durability_state, asset_lifecycle_state,
+                legal_serving_state, moderation_state, publication_state, publication_intent_requested,
+                is_video_eligible, processing_version_source, moderation_version_source,
+                publication_version_source, metadata_version_source, updated_at
+            ) VALUES (?, ?, ?, ?, 'CREATED', 'PENDING', 'ACTIVE', 'CLEAR', 'PENDING', 'PRIVATE', false, false, 0, 0, 0, ?, ?)
+            ON CONFLICT (video_id) DO UPDATE SET
+                creator_id = EXCLUDED.creator_id,
+                title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                metadata_version_source = EXCLUDED.metadata_version_source,
+                updated_at = EXCLUDED.updated_at
+            WHERE eligibility.video_eligibility.metadata_version_source < EXCLUDED.metadata_version_source
+            """;
+
     private static final String UPSERT_PUBLICATION = """
             INSERT INTO eligibility.video_eligibility (
                 video_id, creator_id, processing_state, durability_state, asset_lifecycle_state,
@@ -106,10 +131,10 @@ class EligibilityRepository {
             """;
 
     private static final String FIND_VIDEO = """
-            SELECT video_id, creator_id, processing_state, processing_version, durability_state,
+            SELECT video_id, creator_id, title, description, processing_state, processing_version, durability_state,
                    moderation_state, publication_state, publication_intent_requested, asset_lifecycle_state,
                    legal_serving_state, is_video_eligible, processing_version_source,
-                   moderation_version_source, publication_version_source, updated_at
+                   moderation_version_source, publication_version_source, metadata_version_source, updated_at
             FROM eligibility.video_eligibility WHERE video_id = ?
             """;
 
@@ -137,10 +162,10 @@ class EligibilityRepository {
             "SELECT account_id FROM eligibility.account_eligibility ORDER BY updated_at LIMIT ?";
 
     private static final String FIND_ELIGIBLE = """
-            SELECT video_id, creator_id, processing_state, processing_version, durability_state,
+            SELECT video_id, creator_id, title, description, processing_state, processing_version, durability_state,
                    moderation_state, publication_state, publication_intent_requested, asset_lifecycle_state,
                    legal_serving_state, is_video_eligible, processing_version_source,
-                   moderation_version_source, publication_version_source, updated_at
+                   moderation_version_source, publication_version_source, metadata_version_source, updated_at
             FROM eligibility.video_eligibility
             WHERE is_video_eligible = true
             ORDER BY updated_at DESC
@@ -154,10 +179,10 @@ class EligibilityRepository {
      * unchecked.
      */
     private static final String FIND_ELIGIBLE_WITH_ELIGIBLE_CREATOR = """
-            SELECT v.video_id, v.creator_id, v.processing_state, v.processing_version, v.durability_state,
+            SELECT v.video_id, v.creator_id, v.title, v.description, v.processing_state, v.processing_version, v.durability_state,
                    v.moderation_state, v.publication_state, v.publication_intent_requested, v.asset_lifecycle_state,
                    v.legal_serving_state, v.is_video_eligible, v.processing_version_source,
-                   v.moderation_version_source, v.publication_version_source, v.updated_at
+                   v.moderation_version_source, v.publication_version_source, v.metadata_version_source, v.updated_at
             FROM eligibility.video_eligibility v
             JOIN eligibility.account_eligibility a ON a.account_id = v.creator_id
             WHERE v.is_video_eligible = true
@@ -193,6 +218,11 @@ class EligibilityRepository {
                 legalServingState,
                 sourceVersion,
                 updatedAt);
+    }
+
+    void upsertMetadata(
+            String videoId, String creatorId, String title, String description, long sourceVersion, Timestamp updatedAt) {
+        jdbc.update(UPSERT_METADATA, videoId, creatorId, title, description, sourceVersion, updatedAt);
     }
 
     void upsertAssetLifecycle(
@@ -264,6 +294,8 @@ class EligibilityRepository {
         return new VideoEligibilityView(
                 rs.getString("video_id"),
                 rs.getString("creator_id"),
+                rs.getString("title"),
+                rs.getString("description"),
                 rs.getString("processing_state"),
                 (Integer) rs.getObject("processing_version"),
                 rs.getString("durability_state"),
@@ -276,6 +308,7 @@ class EligibilityRepository {
                 rs.getLong("processing_version_source"),
                 rs.getLong("moderation_version_source"),
                 rs.getLong("publication_version_source"),
+                rs.getLong("metadata_version_source"),
                 rs.getTimestamp("updated_at").toInstant());
     }
 

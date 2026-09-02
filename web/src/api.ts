@@ -174,7 +174,7 @@ export type PlaybackSessionResponse = {
 };
 
 /** Creates the upload session; the video draft is created in the same transaction (brief section 7.1). */
-export async function createUpload(): Promise<CreateUploadResponse> {
+export async function createUpload(title: string, description: string): Promise<CreateUploadResponse> {
   return request(
     '/api/v1/uploads',
     (payload) => {
@@ -188,7 +188,7 @@ export async function createUpload(): Promise<CreateUploadResponse> {
         expiresAt: str('createUpload', o, 'expiresAt'),
       };
     },
-    { method: 'POST' },
+    jsonBody({ title, description: description || null }),
   );
 }
 
@@ -331,7 +331,7 @@ export async function submitAppeal(videoId: string, reason: string): Promise<App
   );
 }
 
-export type FeedItem = { videoId: string; creatorId: string };
+export type FeedItem = { videoId: string; creatorId: string; title: string | null; description: string | null };
 export type FeedResponse = { page: number; items: FeedItem[]; hasMore: boolean };
 
 export async function getFeed(page = 0): Promise<FeedResponse> {
@@ -345,6 +345,9 @@ export async function getFeed(page = 0): Promise<FeedResponse> {
         return {
           videoId: str(`feed.items[${i}]`, item, 'videoId'),
           creatorId: str(`feed.items[${i}]`, item, 'creatorId'),
+          // Nullable: a video published before this feature shipped has no metadata row.
+          title: nullableStr(`feed.items[${i}]`, item, 'title'),
+          description: nullableStr(`feed.items[${i}]`, item, 'description'),
         };
       }),
     };

@@ -27,6 +27,12 @@ public class VideoEntity {
     @Column(name = "owner_account_id", nullable = false, updatable = false)
     private UUID ownerAccountId;
 
+    @Column(name = "title", length = 150, updatable = false)
+    private String title;
+
+    @Column(name = "description", length = 2000, updatable = false)
+    private String description;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "processing_state", nullable = false, length = 30)
     private ProcessingState processingState;
@@ -78,10 +84,12 @@ public class VideoEntity {
 
     protected VideoEntity() {}
 
-    public VideoEntity(UUID videoId, UUID ownerAccountId) {
+    public VideoEntity(UUID videoId, UUID ownerAccountId, String title, String description) {
         Instant now = Instant.now();
         this.videoId = videoId;
         this.ownerAccountId = ownerAccountId;
+        this.title = title;
+        this.description = description;
         this.processingState = ProcessingState.CREATED;
         this.durabilityState = DurabilityState.PENDING;
         this.assetLifecycleState = AssetLifecycleState.ACTIVE;
@@ -207,6 +215,8 @@ public class VideoEntity {
 
     public UUID getVideoId() { return videoId; }
     public UUID getOwnerAccountId() { return ownerAccountId; }
+    public String getTitle() { return title; }
+    public String getDescription() { return description; }
     public ProcessingState getProcessingState() { return processingState; }
     public Integer getProcessingVersion() { return processingVersion; }
     public DurabilityState getDurabilityState() { return durabilityState; }

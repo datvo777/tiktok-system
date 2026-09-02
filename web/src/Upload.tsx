@@ -65,14 +65,16 @@ const STATE_BADGE: Record<string, { variant: string; label: string }> = {
 
 export function Upload() {
   const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [videoId, setVideoId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [log, setLog] = useState('Pick a video and upload it.');
   const queryClient = useQueryClient();
 
   const upload = useMutation({
-    mutationFn: async (selected: File) => {
-      const session = await createUpload();
+    mutationFn: async ({ selected, title, description }: { selected: File; title: string; description: string }) => {
+      const session = await createUpload(title, description);
       // Checked before spending the upload: the policy caps the body server-side
       // too, but failing here explains why instead of surfacing EntityTooLarge.
       if (selected.size > session.maxBytes) {
@@ -128,6 +130,26 @@ export function Upload() {
         media gateway.
       </p>
 
+      <label className="field">
+        <span className="field-label">Title</span>
+        <input
+          placeholder="Give it a title"
+          value={title}
+          maxLength={150}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </label>
+      <label className="field">
+        <span className="field-label">Description (optional)</span>
+        <textarea
+          placeholder="What's this video about?"
+          value={description}
+          maxLength={2000}
+          rows={2}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+
       <div className="btn-row">
         <input
           type="file"
@@ -148,9 +170,9 @@ export function Upload() {
         />
         <button
           className="btn-primary"
-          disabled={!file || upload.isPending}
+          disabled={!file || !title.trim() || upload.isPending}
           onClick={() => {
-            if (file) upload.mutate(file);
+            if (file) upload.mutate({ selected: file, title: title.trim(), description: description.trim() });
           }}
         >
           {upload.isPending ? 'Uploading...' : 'Upload'}
@@ -190,6 +212,8 @@ export function Upload() {
           setVideoId(null);
           setStartedAt(null);
           setFile(null);
+          setTitle('');
+          setDescription('');
           void queryClient.invalidateQueries({ queryKey: ['video'] });
         }}
       >
@@ -289,34 +313,55 @@ function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string)
   );
 }
 
-function PublishButton({ videoId, onLog }: { videoId: string; onLog: (message: string) => void }) {
-  const [state, setState] = useState<PublicationResponse | null>(null);
+// Moderation can approve (or a rejection/appeal can flip the decision) any time
+// after the initial publish click, on a completely separate admin screen with no
+// way to signal this tab. `requestPublish` on the server is idempotent by design
+// (repeating it after the state already changed returns the current view instead
+// of re-appending an event), so it doubles safely as a status poll here rather
+// than needing a second read endpoint -- otherwise this badge would freeze on
+// whatever state the first response happened to catch, e.g. PUBLISH_PENDING,
+// forever, even once the video is actually live.
+const PUBLISH_POLL_MS = 3000;
 
-  const publish = useMutation({
-    mutationFn: () => publishVideo(videoId),
-    onMutate: () => onLog('Requesting publication...'),
-    onSuccess: (result) => {
-      setState(result);
-      onLog(
-        result.state === 'PUBLISHED'
-          ? 'Published — visible in the public feed.'
-          : `Publication intent recorded; state is ${result.state} until moderation approves it.`,
-      );
-    },
-    onError: (error) => onLog(`Publish failed: ${(error as Error).message}`),
+function PublishButton({ videoId, onLog }: { videoId: string; onLog: (message: string) => void }) {
+  const [requested, setRequested] = useState(false);
+
+  const status = useQuery<PublicationResponse>({
+    queryKey: ['publication', videoId],
+    queryFn: () => publishVideo(videoId),
+    enabled: requested,
+    refetchInterval: (query) => (query.state.data?.state === 'PUBLISH_PENDING' ? PUBLISH_POLL_MS : false),
   });
+
+  useEffect(() => {
+    if (status.isError) {
+      onLog(`Publish failed: ${(status.error as Error).message}`);
+    } else if (status.data) {
+      onLog(
+        status.data.state === 'PUBLISHED'
+          ? 'Published — visible in the public feed.'
+          : `Publication intent recorded; state is ${status.data.state} until moderation approves it.`,
+      );
+    }
+    // onLog is a fresh closure every render; only re-run when the status itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status.data?.state, status.isError]);
 
   return (
     <div className="btn-row" style={{ marginTop: '0.6rem' }}>
-      <button className="btn-primary btn-sm" onClick={() => publish.mutate()} disabled={publish.isPending}>
-        {publish.isPending ? 'Publishing...' : 'Publish'}
+      <button
+        className="btn-primary btn-sm"
+        onClick={() => setRequested(true)}
+        disabled={requested && status.isFetching && !status.data}
+      >
+        {requested && status.isFetching && !status.data ? 'Publishing...' : 'Publish'}
       </button>
-      {state && (
+      {status.data && (
         <span
-          className={`badge ${state.state === 'PUBLISHED' ? 'badge-success' : 'badge-warning'}`}
+          className={`badge ${status.data.state === 'PUBLISHED' ? 'badge-success' : 'badge-warning'}`}
           style={{ textTransform: 'none' }}
         >
-          {state.state}
+          {status.data.state}
         </span>
       )}
     </div>

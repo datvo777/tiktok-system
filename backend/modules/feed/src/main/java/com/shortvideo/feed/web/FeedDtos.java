@@ -6,9 +6,9 @@ import java.util.List;
 
 public final class FeedDtos {
 
-    public record FeedItemResponse(String videoId, String creatorId) {
+    public record FeedItemResponse(String videoId, String creatorId, String title, String description) {
         public static FeedItemResponse from(FeedItemView view) {
-            return new FeedItemResponse(view.videoId(), view.creatorId());
+            return new FeedItemResponse(view.videoId(), view.creatorId(), view.title(), view.description());
         }
     }
 
