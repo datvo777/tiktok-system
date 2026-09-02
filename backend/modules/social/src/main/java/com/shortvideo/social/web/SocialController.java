@@ -52,8 +52,27 @@ public class SocialController {
     }
 
     @GetMapping("/{videoId}/comments")
-    @Operation(summary = "List comments on a video, newest first")
+    @Operation(summary = "List top-level comments on a video, newest first")
     public ResponseEntity<SocialDtos.CommentListResponse> listComments(@PathVariable UUID videoId) {
         return ResponseEntity.ok(SocialDtos.CommentListResponse.from(socialService.listComments(videoId.toString())));
+    }
+
+    @PostMapping("/{videoId}/comments/{commentId}/replies")
+    @Operation(summary = "Reply to a comment on a video")
+    public ResponseEntity<SocialDtos.CommentResponse> reply(
+            @PathVariable UUID videoId,
+            @PathVariable UUID commentId,
+            @AuthenticationPrincipal AuthenticatedAccount caller,
+            @Valid @RequestBody SocialDtos.CreateCommentRequest request) {
+        var reply = socialService.reply(videoId.toString(), commentId.toString(), caller.accountId(), request.body());
+        return ResponseEntity.status(201).body(SocialDtos.CommentResponse.from(reply));
+    }
+
+    @GetMapping("/{videoId}/comments/{commentId}/replies")
+    @Operation(summary = "List replies to a comment, oldest first")
+    public ResponseEntity<SocialDtos.CommentListResponse> listReplies(
+            @PathVariable UUID videoId, @PathVariable UUID commentId) {
+        return ResponseEntity.ok(
+                SocialDtos.CommentListResponse.from(socialService.listReplies(videoId.toString(), commentId.toString())));
     }
 }

@@ -14,5 +14,9 @@ public final class SocialExceptions {
         public CannotFollowSelf(String message) { super(message); }
     }
 
+    public static class CommentNotFound extends RuntimeException {
+        public CommentNotFound(String message) { super(message); }
+    }
+
     private SocialExceptions() {}
 }

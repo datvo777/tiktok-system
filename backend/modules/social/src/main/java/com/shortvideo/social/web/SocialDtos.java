@@ -11,9 +11,23 @@ public final class SocialDtos {
 
     public record CreateCommentRequest(@NotBlank @Size(max = 500) String body) {}
 
-    public record CommentResponse(String commentId, String videoId, String accountId, String body, Instant createdAt) {
+    public record CommentResponse(
+            String commentId,
+            String videoId,
+            String accountId,
+            String body,
+            Instant createdAt,
+            String parentCommentId,
+            long replyCount) {
         public static CommentResponse from(CommentView view) {
-            return new CommentResponse(view.commentId(), view.videoId(), view.accountId(), view.body(), view.createdAt());
+            return new CommentResponse(
+                    view.commentId(),
+                    view.videoId(),
+                    view.accountId(),
+                    view.body(),
+                    view.createdAt(),
+                    view.parentCommentId(),
+                    view.replyCount());
         }
     }
 

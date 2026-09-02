@@ -7,7 +7,10 @@ import {
   getFeed,
   likeVideo,
   listComments,
+  listReplies,
+  replyToComment,
   unlikeVideo,
+  type CommentResponse,
   type FeedItem,
 } from './api';
 import { Sheet } from './App';
@@ -498,17 +501,98 @@ function FeedSlide({
               <div className="comment-list-state">No comments yet. Be the first to say something.</div>
             )}
             {comments.data?.map((c) => (
-              <div className="comment-row" key={c.commentId}>
-                <Avatar seed={c.accountId} size="sm" className="comment-avatar" />
-                <div className="comment-row-body">
-                  <span className="comment-row-author">{handleFor(c.accountId)}</span>
-                  <span className="comment-row-text">{c.body}</span>
-                </div>
-              </div>
+              <CommentThread key={c.commentId} videoId={item.videoId} comment={c} />
             ))}
           </div>
         </Sheet>
       )}
+    </div>
+  );
+}
+
+function CommentThread({ videoId, comment }: { videoId: string; comment: CommentResponse }) {
+  const [repliesOpen, setRepliesOpen] = useState(false);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const queryClient = useQueryClient();
+
+  const replies = useQuery({
+    queryKey: ['replies', videoId, comment.commentId],
+    queryFn: () => listReplies(videoId, comment.commentId),
+    enabled: repliesOpen,
+  });
+
+  const submitReply = useMutation({
+    mutationFn: () => replyToComment(videoId, comment.commentId, replyText),
+    onSuccess: () => {
+      setReplyText('');
+      setReplyOpen(false);
+      setRepliesOpen(true);
+      void queryClient.invalidateQueries({ queryKey: ['replies', videoId, comment.commentId] });
+      void queryClient.invalidateQueries({ queryKey: ['comments', videoId] });
+    },
+  });
+
+  return (
+    <div className="comment-thread">
+      <div className="comment-row">
+        <Avatar seed={comment.accountId} size="sm" className="comment-avatar" />
+        <div className="comment-row-body">
+          <span className="comment-row-author">{handleFor(comment.accountId)}</span>
+          <span className="comment-row-text">{comment.body}</span>
+          <div className="comment-row-actions">
+            <button className="comment-row-action" onClick={() => setReplyOpen((v) => !v)}>
+              Reply
+            </button>
+            {comment.replyCount > 0 && (
+              <button className="comment-row-action" onClick={() => setRepliesOpen((v) => !v)}>
+                {repliesOpen ? 'Hide replies' : `View ${comment.replyCount} ${comment.replyCount === 1 ? 'reply' : 'replies'}`}
+              </button>
+            )}
+          </div>
+
+          {replyOpen && (
+            <div className="comment-composer comment-reply-composer">
+              <input
+                autoFocus
+                placeholder={`Reply to ${handleFor(comment.accountId)}…`}
+                value={replyText}
+                maxLength={500}
+                onChange={(e) => setReplyText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && replyText.trim() && submitReply.mutate()}
+              />
+              <button
+                className="btn-primary"
+                disabled={!replyText.trim() || submitReply.isPending}
+                onClick={() => submitReply.mutate()}
+              >
+                {submitReply.isPending ? 'Posting…' : 'Post'}
+              </button>
+            </div>
+          )}
+          {submitReply.isError && (
+            <div className="status-line is-error">{(submitReply.error as Error).message}</div>
+          )}
+
+          {repliesOpen && (
+            <div className="comment-replies">
+              {replies.isPending && <div className="comment-list-state">Loading…</div>}
+              {replies.isError && (
+                <div className="status-line is-error">{(replies.error as Error).message}</div>
+              )}
+              {replies.data?.map((r) => (
+                <div className="comment-row" key={r.commentId}>
+                  <Avatar seed={r.accountId} size="sm" className="comment-avatar" />
+                  <div className="comment-row-body">
+                    <span className="comment-row-author">{handleFor(r.accountId)}</span>
+                    <span className="comment-row-text">{r.body}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

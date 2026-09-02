@@ -1892,6 +1892,39 @@ textarea {
   overflow-wrap: break-word;
 }
 
+.comment-row-actions {
+  display: flex;
+  gap: 0.9rem;
+  margin-top: 0.3rem;
+}
+
+.comment-row-action {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.comment-row-action:hover {
+  color: var(--text);
+}
+
+.comment-reply-composer {
+  margin-top: 0.6rem;
+}
+
+.comment-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding-left: 0.9rem;
+  border-left: 2px solid var(--border);
+}
+
 /* ==========================================================================
    Error boundary
    ========================================================================== */

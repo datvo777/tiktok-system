@@ -56,17 +56,39 @@ public class SocialService implements SocialDirectory {
     @Transactional
     public CommentView comment(String videoId, String accountId, String body) {
         String videoOwnerId = requireEligible(videoId).creatorId();
-        CommentView comment = repository.addComment(videoId, accountId, body);
+        CommentView comment = repository.addComment(videoId, accountId, body, null);
         append(
                 EventTypes.SOCIAL_VIDEO_COMMENTED,
                 new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, comment.commentId()));
         return comment;
     }
 
+    @Transactional
+    public CommentView reply(String videoId, String parentCommentId, String accountId, String body) {
+        String videoOwnerId = requireEligible(videoId).creatorId();
+        if (!repository.isTopLevelCommentOnVideo(parentCommentId, videoId)) {
+            throw new SocialExceptions.CommentNotFound("No such comment on this video");
+        }
+        CommentView reply = repository.addComment(videoId, accountId, body, parentCommentId);
+        append(
+                EventTypes.SOCIAL_VIDEO_COMMENTED,
+                new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, reply.commentId()));
+        return reply;
+    }
+
     @Transactional(readOnly = true)
     public List<CommentView> listComments(String videoId) {
         requireEligible(videoId);
         return repository.listComments(videoId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<CommentView> listReplies(String videoId, String parentCommentId) {
+        requireEligible(videoId);
+        if (!repository.isTopLevelCommentOnVideo(parentCommentId, videoId)) {
+            throw new SocialExceptions.CommentNotFound("No such comment on this video");
+        }
+        return repository.listReplies(parentCommentId);
     }
 
     @Transactional

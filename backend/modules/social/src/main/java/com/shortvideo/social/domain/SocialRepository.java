@@ -28,16 +28,33 @@ class SocialRepository {
             "SELECT EXISTS (SELECT 1 FROM social.video_like WHERE video_id = ? AND account_id = ?)";
 
     private static final String ADD_COMMENT = """
-            INSERT INTO social.comment (comment_id, video_id, account_id, body, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO social.comment (comment_id, video_id, account_id, body, created_at, parent_comment_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             """;
 
+    /** Top-level comments only, each with the count of its own replies. */
     private static final String LIST_COMMENTS = """
-            SELECT comment_id, video_id, account_id, body, created_at
-            FROM social.comment
-            WHERE video_id = ?
-            ORDER BY created_at DESC
+            SELECT c.comment_id, c.video_id, c.account_id, c.body, c.created_at,
+                   (SELECT count(*) FROM social.comment r WHERE r.parent_comment_id = c.comment_id) AS reply_count
+            FROM social.comment c
+            WHERE c.video_id = ? AND c.parent_comment_id IS NULL
+            ORDER BY c.created_at DESC
             LIMIT 200
+            """;
+
+    private static final String LIST_REPLIES = """
+            SELECT comment_id, video_id, account_id, body, created_at, parent_comment_id
+            FROM social.comment
+            WHERE parent_comment_id = ?
+            ORDER BY created_at ASC
+            LIMIT 200
+            """;
+
+    private static final String IS_TOP_LEVEL_COMMENT_ON_VIDEO = """
+            SELECT EXISTS (
+                SELECT 1 FROM social.comment
+                WHERE comment_id = ? AND video_id = ? AND parent_comment_id IS NULL
+            )
             """;
 
     private static final String COUNTS = """
@@ -107,7 +124,7 @@ class SocialRepository {
         return Boolean.TRUE.equals(liked);
     }
 
-    CommentView addComment(String videoId, String accountId, String body) {
+    CommentView addComment(String videoId, String accountId, String body, String parentCommentId) {
         UUID commentId = UUID.randomUUID();
         Instant now = Instant.now();
         jdbc.update(
@@ -116,8 +133,9 @@ class SocialRepository {
                 UUID.fromString(videoId),
                 UUID.fromString(accountId),
                 body,
-                Timestamp.from(now));
-        return new CommentView(commentId.toString(), videoId, accountId, body, now);
+                Timestamp.from(now),
+                parentCommentId == null ? null : UUID.fromString(parentCommentId));
+        return new CommentView(commentId.toString(), videoId, accountId, body, now, parentCommentId, 0);
     }
 
     List<CommentView> listComments(String videoId) {
@@ -128,8 +146,31 @@ class SocialRepository {
                         rs.getString("video_id"),
                         rs.getString("account_id"),
                         rs.getString("body"),
-                        rs.getTimestamp("created_at").toInstant()),
+                        rs.getTimestamp("created_at").toInstant(),
+                        null,
+                        rs.getLong("reply_count")),
                 UUID.fromString(videoId));
+    }
+
+    List<CommentView> listReplies(String commentId) {
+        return jdbc.query(
+                LIST_REPLIES,
+                (rs, rowNum) -> new CommentView(
+                        rs.getString("comment_id"),
+                        rs.getString("video_id"),
+                        rs.getString("account_id"),
+                        rs.getString("body"),
+                        rs.getTimestamp("created_at").toInstant(),
+                        rs.getString("parent_comment_id"),
+                        0),
+                UUID.fromString(commentId));
+    }
+
+    /** A reply may only target a top-level comment on the same video -- no nested replies-of-replies. */
+    boolean isTopLevelCommentOnVideo(String commentId, String videoId) {
+        Boolean exists = jdbc.queryForObject(
+                IS_TOP_LEVEL_COMMENT_ON_VIDEO, Boolean.class, UUID.fromString(commentId), UUID.fromString(videoId));
+        return Boolean.TRUE.equals(exists);
     }
 
     SocialCounts countsFor(String videoId) {

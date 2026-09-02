@@ -368,6 +368,8 @@ export type CommentResponse = {
   accountId: string;
   body: string;
   createdAt: string;
+  parentCommentId: string | null;
+  replyCount: number;
 };
 
 function parseComment(context: string, payload: unknown): CommentResponse {
@@ -378,7 +380,14 @@ function parseComment(context: string, payload: unknown): CommentResponse {
     accountId: str(context, o, 'accountId'),
     body: str(context, o, 'body'),
     createdAt: str(context, o, 'createdAt'),
+    parentCommentId: nullableStr(context, o, 'parentCommentId'),
+    replyCount: num(context, o, 'replyCount'),
   };
+}
+
+function parseCommentList(context: string, payload: unknown): CommentResponse[] {
+  const o = obj(context, payload);
+  return arr(`${context}.items`, o['items']).map((raw, i) => parseComment(`${context}.items[${i}]`, raw));
 }
 
 export async function commentOnVideo(videoId: string, body: string): Promise<CommentResponse> {
@@ -386,10 +395,19 @@ export async function commentOnVideo(videoId: string, body: string): Promise<Com
 }
 
 export async function listComments(videoId: string): Promise<CommentResponse[]> {
-  return request(`/api/v1/videos/${videoId}/comments`, (payload) => {
-    const o = obj('comments', payload);
-    return arr('comments.items', o['items']).map((raw, i) => parseComment(`comments.items[${i}]`, raw));
-  });
+  return request(`/api/v1/videos/${videoId}/comments`, (payload) => parseCommentList('comments', payload));
+}
+
+export async function replyToComment(videoId: string, commentId: string, body: string): Promise<CommentResponse> {
+  return request(
+    `/api/v1/videos/${videoId}/comments/${commentId}/replies`,
+    (payload) => parseComment('reply', payload),
+    jsonBody({ body }),
+  );
+}
+
+export async function listReplies(videoId: string, commentId: string): Promise<CommentResponse[]> {
+  return request(`/api/v1/videos/${videoId}/comments/${commentId}/replies`, (payload) => parseCommentList('replies', payload));
 }
 
 /** No accountState: only eligible creators have a profile, so the field could only leak suspensions. */

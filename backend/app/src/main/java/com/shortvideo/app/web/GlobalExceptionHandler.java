@@ -237,6 +237,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Invalid follow", e.getMessage());
     }
 
+    @ExceptionHandler(SocialExceptions.CommentNotFound.class)
+    public ProblemDetail commentNotFound(SocialExceptions.CommentNotFound e) {
+        return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
+    }
+
     @ExceptionHandler(ModerationExceptions.InvalidCursor.class)
     public ProblemDetail invalidCursor(ModerationExceptions.InvalidCursor e) {
         return problem(HttpStatus.BAD_REQUEST, "Invalid cursor", e.getMessage());
