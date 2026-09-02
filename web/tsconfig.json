@@ -8,6 +8,14 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    // Index access yields `T | undefined`: this is what catches a lookup in a
+    // Record<string, X> keyed by a value the server chose, which is exactly how
+    // STATE_BADGE[...] and TYPE_ICON[...] could be undefined at runtime while
+    // typed as present.
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,

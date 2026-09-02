@@ -5,6 +5,7 @@ import com.shortvideo.appeal.domain.AppealView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,8 +41,8 @@ public class InternalAppealController {
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Approve an appeal; moderation reinstates the video if it is still rejected")
     public AppealDtos.AppealResponse approve(
-            @PathVariable String appealId, @RequestBody(required = false) AppealDtos.DecisionRequest request) {
-        AppealView view = appealService.approve(appealId, request == null ? null : request.reason());
+            @PathVariable UUID appealId, @RequestBody(required = false) AppealDtos.DecisionRequest request) {
+        AppealView view = appealService.approve(appealId.toString(), request == null ? null : request.reason());
         return AppealDtos.AppealResponse.from(view);
     }
 
@@ -49,8 +50,8 @@ public class InternalAppealController {
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Deny an appeal")
     public AppealDtos.AppealResponse deny(
-            @PathVariable String appealId, @RequestBody(required = false) AppealDtos.DecisionRequest request) {
-        AppealView view = appealService.deny(appealId, request == null ? null : request.reason());
+            @PathVariable UUID appealId, @RequestBody(required = false) AppealDtos.DecisionRequest request) {
+        AppealView view = appealService.deny(appealId.toString(), request == null ? null : request.reason());
         return AppealDtos.AppealResponse.from(view);
     }
 }

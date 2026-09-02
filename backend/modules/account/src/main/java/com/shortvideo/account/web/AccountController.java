@@ -8,6 +8,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.net.URI;
+import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -40,14 +41,14 @@ public class AccountController {
     @GetMapping("/{accountId}")
     @Operation(summary = "Read an account")
     public AccountDtos.AccountResponse get(
-            @PathVariable String accountId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+            @PathVariable UUID accountId, @AuthenticationPrincipal AuthenticatedAccount caller) {
         // Local MVP: a caller may read their own account. Public creator profiles
         // arrive with the profile work in Milestone 4.
-        if (caller == null || !caller.accountId().equals(accountId)) {
+        if (caller == null || !caller.accountId().equals(accountId.toString())) {
             throw new AccountExceptions.AccountNotFound("No such account");
         }
         return accountService
-                .find(accountId)
+                .find(accountId.toString())
                 .map(AccountDtos.AccountResponse::from)
                 .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
     }

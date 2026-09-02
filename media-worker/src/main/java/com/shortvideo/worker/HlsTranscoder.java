@@ -5,15 +5,52 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
 /**
  * FFmpeg/FFprobe orchestration (brief section 14). One 720p rendition for the
  * first version; the master playlist is hand-written so even a single rendition
  * has a proper master/variant structure.
+ *
+ * <p>The input bytes are attacker-controlled: a client uploads whatever it likes
+ * straight to MinIO, and FFmpeg picks its demuxer from the file's content, not
+ * its name or the client-declared MIME type. A file whose contents are an HLS or
+ * {@code concat} playlist can therefore ask FFmpeg to open unrelated URLs —
+ * {@code file:///…} for local disclosure, {@code http://…} for SSRF from inside
+ * the private network — and have the result muxed into a rendition the uploader
+ * can then watch. Current FFmpeg releases refuse both by default, but that
+ * default is the only thing standing in the way and nothing here pins an FFmpeg
+ * version, so the restriction is stated explicitly rather than inherited:
+ *
+ * <ol>
+ *   <li>{@code -protocol_whitelist file} on both the probe and the transcode, so
+ *       no demuxer can reach a network or pipe protocol whatever the container
+ *       claims;
+ *   <li>the probed container must be in {@link #ALLOWED_FORMATS}, so playlist
+ *       formats are rejected outright rather than merely constrained;
+ *   <li>{@code -f} pins the transcode to the demuxer the probe already chose, so
+ *       the two passes cannot disagree about what the file is.
+ * </ol>
  */
 @Component
 class HlsTranscoder {
+
+    /**
+     * Keyed by FFprobe's {@code format_name}, which is the full comma-joined
+     * demuxer name (e.g. {@code mov,mp4,m4a,3gp,3g2,mj2}) and is also accepted
+     * verbatim as an {@code -f} value. Mirrors the browser-side allowlist in
+     * {@code web/src/Upload.tsx}; notably absent are {@code hls}, {@code concat},
+     * {@code image2} and every other format whose job is to reference other URLs.
+     */
+    private static final Set<String> ALLOWED_FORMATS = Set.of(
+            "mov,mp4,m4a,3gp,3g2,mj2", // .mp4, .mov, .m4v
+            "matroska,webm",           // .mkv, .webm
+            "avi");                    // .avi
+
+    private static final List<String> PROTOCOL_WHITELIST = List.of("-protocol_whitelist", "file");
 
     private final ProcessRunner processRunner;
     private final WorkerProperties properties;
@@ -24,7 +61,8 @@ class HlsTranscoder {
     }
 
     TranscodeOutput transcode(Path sourceFile, Path outputDir) throws IOException {
-        double durationSeconds = probeDuration(sourceFile);
+        ProbedSource source = probeSource(sourceFile);
+        double durationSeconds = source.durationSeconds();
 
         Path variantDir = outputDir.resolve("720p");
         Files.createDirectories(variantDir);
@@ -33,6 +71,10 @@ class HlsTranscoder {
         List<String> command = List.of(
                 properties.getFfmpegPath(),
                 "-y",
+                // Input-scoped hardening: both flags must precede -i to apply to
+                // the input. See the class comment.
+                PROTOCOL_WHITELIST.get(0), PROTOCOL_WHITELIST.get(1),
+                "-f", source.formatName(),
                 "-i", sourceFile.toString(),
                 "-preset", "veryfast",
                 "-g", "48",
@@ -40,6 +82,15 @@ class HlsTranscoder {
                 "-map", "0:v:0",
                 "-map", "0:a:0?",
                 "-c:v", "libx264",
+                // Force 8-bit 4:2:0 + a browser-decodable profile regardless of the
+                // source's pixel format: an untouched 10-bit/4:4:4 source (as
+                // ffmpeg test patterns can be) otherwise gets carried straight
+                // through into a High 4:4:4 Predictive stream that no browser's
+                // MSE/H.264 decoder can play (surfaces as a black frame and an
+                // hls.js "mediaSourceRequiresReset" error, not an ffmpeg failure).
+                "-pix_fmt", "yuv420p",
+                "-profile:v", "high",
+                "-level:v", "4.0",
                 "-c:a", "aac",
                 "-b:a", "128k",
                 "-b:v", "1200k",
@@ -70,23 +121,50 @@ class HlsTranscoder {
         return new TranscodeOutput(masterPlaylist, variantPlaylist, "720p/index.m3u8", segmentCount, durationSeconds);
     }
 
-    private double probeDuration(Path sourceFile) throws IOException {
+    /**
+     * Establishes both facts the transcode needs from the source — how long it is
+     * and what container it actually is — in one pass, and refuses anything
+     * outside {@link #ALLOWED_FORMATS} before FFmpeg is ever pointed at it.
+     */
+    private ProbedSource probeSource(Path sourceFile) throws IOException {
         List<String> command = List.of(
                 properties.getFfprobePath(),
                 "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                PROTOCOL_WHITELIST.get(0), PROTOCOL_WHITELIST.get(1),
+                "-show_entries", "format=duration,format_name",
+                // Keys, not just values: FFprobe emits these fields in its own
+                // order (format_name before duration in practice), so positional
+                // parsing silently swaps them.
+                "-of", "default=noprint_wrappers=1",
                 sourceFile.toString());
         ProcessResult result = run(command, properties.getProbeTimeout(), null);
         if (!result.succeeded()) {
             throw new TranscodeFailedException("TERMINAL", "ffprobe failed: " + result.stderrTail());
         }
+
+        Map<String, String> fields = result.stdoutTail().lines()
+                .map(line -> line.split("=", 2))
+                .filter(parts -> parts.length == 2)
+                .collect(Collectors.toMap(parts -> parts[0].trim(), parts -> parts[1].trim(), (first, second) -> second));
+
+        String formatName = fields.get("format_name");
+        if (formatName == null || !ALLOWED_FORMATS.contains(formatName)) {
+            // Deliberately terminal, not transient: retrying will probe the same
+            // bytes and reach the same answer.
+            throw new TranscodeFailedException(
+                    "TERMINAL", "Unsupported source container: " + formatName);
+        }
+
+        String duration = fields.get("duration");
         try {
-            return Double.parseDouble(result.stdoutTail().trim());
-        } catch (NumberFormatException e) {
+            return new ProbedSource(Double.parseDouble(duration), formatName);
+        } catch (NumberFormatException | NullPointerException e) {
             throw new TranscodeFailedException("TERMINAL", "ffprobe returned no duration");
         }
     }
+
+    /** What the probe established about the source, carried into the transcode. */
+    private record ProbedSource(double durationSeconds, String formatName) {}
 
     private ProcessResult run(List<String> command, Duration timeout, Path workingDirectory) throws IOException {
         return processRunner.run(command, timeout, workingDirectory);

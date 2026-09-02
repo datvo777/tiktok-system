@@ -11,6 +11,10 @@ import com.shortvideo.shared.outbox.OutboxWriter;
 import com.shortvideo.social.api.SocialCounts;
 import com.shortvideo.social.api.SocialDirectory;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
@@ -52,11 +56,39 @@ public class SocialService implements SocialDirectory {
     @Transactional
     public CommentView comment(String videoId, String accountId, String body) {
         String videoOwnerId = requireEligible(videoId).creatorId();
-        CommentView comment = repository.addComment(videoId, accountId, body);
+        CommentView comment = repository.addComment(videoId, accountId, body, null);
         append(
                 EventTypes.SOCIAL_VIDEO_COMMENTED,
                 new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, comment.commentId()));
         return comment;
+    }
+
+    @Transactional
+    public CommentView reply(String videoId, String parentCommentId, String accountId, String body) {
+        String videoOwnerId = requireEligible(videoId).creatorId();
+        if (!repository.isTopLevelCommentOnVideo(parentCommentId, videoId)) {
+            throw new SocialExceptions.CommentNotFound("No such comment on this video");
+        }
+        CommentView reply = repository.addComment(videoId, accountId, body, parentCommentId);
+        append(
+                EventTypes.SOCIAL_VIDEO_COMMENTED,
+                new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, reply.commentId()));
+        return reply;
+    }
+
+    @Transactional(readOnly = true)
+    public List<CommentView> listComments(String videoId) {
+        requireEligible(videoId);
+        return repository.listComments(videoId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<CommentView> listReplies(String videoId, String parentCommentId) {
+        requireEligible(videoId);
+        if (!repository.isTopLevelCommentOnVideo(parentCommentId, videoId)) {
+            throw new SocialExceptions.CommentNotFound("No such comment on this video");
+        }
+        return repository.listReplies(parentCommentId);
     }
 
     @Transactional
@@ -78,15 +110,21 @@ public class SocialService implements SocialDirectory {
         repository.unfollow(followerId, followeeId);
     }
 
+    /**
+     * A non-active creator answers "not found" rather than returning their state.
+     * Reporting {@code SUSPENDED} told any signed-in user which accounts had been
+     * actioned — the one place that leaked it, while the login path, the video
+     * reads and the media gateway all take care not to.
+     */
     @Transactional(readOnly = true)
     public CreatorProfileView profile(String accountId) {
         AccountView account = accountDirectory
                 .find(accountId)
+                .filter(AccountView::isEligible)
                 .orElseThrow(() -> new SocialExceptions.CreatorNotFound("No such creator"));
         return new CreatorProfileView(
                 account.accountId(),
                 account.displayName(),
-                account.state().name(),
                 repository.followerCount(accountId),
                 repository.followingCount(accountId));
     }
@@ -101,6 +139,18 @@ public class SocialService implements SocialDirectory {
     @Transactional(readOnly = true)
     public boolean isFollowing(String followerId, String followeeId) {
         return repository.isFollowing(followerId, followeeId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, SocialCounts> countsForAll(Collection<String> videoIds) {
+        return repository.countsForAll(videoIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> followedAmong(String followerId, Collection<String> creatorIds) {
+        return repository.followedAmong(followerId, creatorIds);
     }
 
     private VideoEligibilityView requireEligible(String videoId) {

@@ -8,6 +8,16 @@ spring:
     virtual:
       enabled: true
 
+  task:
+    scheduling:
+      # Spring's default is a single thread for every @Scheduled method. Six jobs
+      # share this pool, and the outbox relay can block a whole drain cycle
+      # publishing a batch of 100 with a 30s per-record timeout. On one thread that
+      # starves the revocation cache rebuilder — the one job whose delay has safety
+      # consequences — along with every cleanup job.
+      pool:
+        size: ${SCHEDULER_POOL_SIZE:4}
+
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:short_video}
     username: ${POSTGRES_APP_USER:short_video_app}
@@ -56,18 +66,26 @@ server:
 
 shortvideo:
   jwt:
-    secret: ${JWT_SECRET:local-dev-secret-change-me-at-least-32-bytes-long}
+    # No default: the application must fail to start rather than sign tokens with
+    # a key that is published in this repository. Generate one with
+    # `openssl rand -base64 48`. The local profile supplies a throwaway value.
+    secret: ${JWT_SECRET}
     issuer: ${JWT_ISSUER:short-video-local}
     audience: ${JWT_AUDIENCE:short-video-web}
     ttl: ${JWT_TTL_SECONDS:1800}s
     session-cookie-name: ${SESSION_COOKIE_NAME:sv_session}
-    # Local development is plain HTTP. Set true for anything beyond localhost.
-    cookie-secure: false
+    # Secure by default: serving a session cookie over plain HTTP should be an
+    # explicit opt-out, and one variable drives both cookies so they cannot drift.
+    cookie-secure: ${COOKIE_SECURE:true}
   minio:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-    access-key: ${MINIO_ACCESS_KEY:minioadmin}
-    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    # The scoped service account, not root: a compromise of this process should
+    # not be able to touch anything outside this one bucket. minio-init mints it.
+    access-key: ${MINIO_APP_ACCESS_KEY:short-video-app}
+    secret-key: ${MINIO_APP_SECRET_KEY:short-video-app-secret}
     bucket: ${MINIO_BUCKET:short-video}
+  upload:
+    cleanup-interval: 15m
   outbox:
     enabled: true
     relay-id: relay-1
@@ -79,7 +97,7 @@ shortvideo:
   playback:
     cookie-name: ${PLAYBACK_COOKIE_NAME:sv_playback}
     ttl: ${PLAYBACK_COOKIE_TTL_SECONDS:300}s
-    cookie-secure: false
+    cookie-secure: ${COOKIE_SECURE:true}
   media:
     stream-buffer-bytes: ${MEDIA_STREAM_BUFFER_BYTES:131072}
     max-concurrent-streams: ${MEDIA_MAX_CONCURRENT_STREAMS:32}
@@ -108,7 +126,12 @@ management:
     health:
       probes:
         enabled: true
-      show-details: always
+      # The detailed report names the datasource URL, broker addresses, disk paths
+      # and free space. "always" served all of that to anyone who could reach the
+      # port. Admins still see it; the liveness and readiness probes stay public
+      # and disclose nothing beyond up/down.
+      show-details: when-authorized
+      roles: ADMIN
       group:
         readiness:
           include: db,redis,minio,kafka
@@ -139,4 +162,29 @@ logging:
       console: ecs
   level:
     root: INFO
+    # INFO by default. DEBUG here logged the viewer's account id and object key on
+    # every HLS segment request — a per-segment line carrying a user identifier —
+    # and it was on in every profile, not just locally. The local profile turns it
+    # back on; the correlation id in the ECS output is the identifier to trace by.
+    com.shortvideo: ${LOG_LEVEL_APP:INFO}
+
+---
+# Activated with SPRING_PROFILES_ACTIVE=local. Everything unsafe for a real
+# deployment lives here rather than in the defaults above.
+spring:
+  config:
+    activate:
+      on-profile: local
+
+shortvideo:
+  jwt:
+    secret: ${JWT_SECRET:local-dev-secret-change-me-at-least-32-bytes-long}
+    # Permits the published placeholder above; refused in every other profile.
+    allow-insecure-secret: true
+    cookie-secure: false
+  playback:
+    cookie-secure: false
+
+logging:
+  level:
     com.shortvideo: DEBUG

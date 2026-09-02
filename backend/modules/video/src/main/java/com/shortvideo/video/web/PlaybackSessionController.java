@@ -1,5 +1,6 @@
 package com.shortvideo.video.web;
 
+import java.util.UUID;
 import com.shortvideo.account.api.AccountDirectory;
 import com.shortvideo.account.api.AccountView;
 import com.shortvideo.eligibility.api.AccountEligibilityView;
@@ -65,10 +66,10 @@ public class PlaybackSessionController {
     @PostMapping("/{videoId}/preview-playback-session")
     @Operation(summary = "Owner-only preview session; does not require moderation or publication")
     public ResponseEntity<VideoDtos.PlaybackSessionResponse> preview(
-            @PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
 
         VideoPlaybackView video = videoService
-                .findForPlayback(videoId)
+                .findForPlayback(videoId.toString())
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
 
         if (!video.ownerAccountId().equals(caller.accountId())) {
@@ -90,24 +91,24 @@ public class PlaybackSessionController {
         requireNotRevoked(RevocationSubjects.ACCOUNT, video.ownerAccountId());
 
         int processingVersion = video.currentProcessingVersion();
-        var issued = tokenService.issue(caller.accountId(), videoId, processingVersion, PlaybackMode.OWNER_PREVIEW);
-        var cookie = playbackCookies.cookie(issued.token(), issued.expiresAt(), videoId, processingVersion);
+        var issued = tokenService.issue(caller.accountId(), videoId.toString(), processingVersion, PlaybackMode.OWNER_PREVIEW);
+        var cookie = playbackCookies.cookie(issued.token(), issued.expiresAt(), videoId.toString(), processingVersion);
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, cookie.toString())
                 .body(new VideoDtos.PlaybackSessionResponse(
-                        videoId, processingVersion, PlaybackMode.OWNER_PREVIEW, issued.expiresAt()));
+                        videoId.toString(), processingVersion, PlaybackMode.OWNER_PREVIEW, issued.expiresAt()));
     }
 
     @PostMapping("/{videoId}/public-playback-session")
     @Operation(summary = "Public session; requires the full eligibility invariant (brief section 8)")
     public ResponseEntity<VideoDtos.PlaybackSessionResponse> publicSession(
-            @PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
 
         // A missing projection row is unknown state and denies (Rule 9) — no
         // distinction is made between "not found" and "not yet eligible".
         VideoEligibilityView videoEligibility = eligibilityDirectory
-                .findVideoEligibility(videoId)
+                .findVideoEligibility(videoId.toString())
                 .filter(VideoEligibilityView::isVideoEligible)
                 .orElseThrow(() -> new VideoExceptions.VideoNotReady("Video is not publicly eligible"));
 
@@ -116,18 +117,18 @@ public class PlaybackSessionController {
                 .filter(AccountEligibilityView::isAccountEligible)
                 .orElseThrow(() -> new VideoExceptions.VideoNotReady("Creator account is not eligible"));
 
-        requireNotRevoked(RevocationSubjects.VIDEO, videoId);
+        requireNotRevoked(RevocationSubjects.VIDEO, videoId.toString());
         requireNotRevoked(RevocationSubjects.ACCOUNT, accountEligibility.accountId());
 
         int processingVersion = videoEligibility.processingVersion();
         String viewerId = caller == null ? "anonymous" : caller.accountId();
-        var issued = tokenService.issue(viewerId, videoId, processingVersion, PlaybackMode.PUBLIC);
-        var cookie = playbackCookies.cookie(issued.token(), issued.expiresAt(), videoId, processingVersion);
+        var issued = tokenService.issue(viewerId, videoId.toString(), processingVersion, PlaybackMode.PUBLIC);
+        var cookie = playbackCookies.cookie(issued.token(), issued.expiresAt(), videoId.toString(), processingVersion);
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, cookie.toString())
                 .body(new VideoDtos.PlaybackSessionResponse(
-                        videoId, processingVersion, PlaybackMode.PUBLIC, issued.expiresAt()));
+                        videoId.toString(), processingVersion, PlaybackMode.PUBLIC, issued.expiresAt()));
     }
 
     private void requireNotRevoked(String subjectType, String subjectId) {

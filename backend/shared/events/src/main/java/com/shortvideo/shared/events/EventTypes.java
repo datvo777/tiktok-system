@@ -12,6 +12,9 @@ public final class EventTypes {
     public static final String VIDEO_PROCESSING_READY = "video.processing.ready";
     public static final String VIDEO_PROCESSING_FAILED = "video.processing.failed";
 
+    /** Title/description set at draft creation (brief section 7.1); these never change afterward. */
+    public static final String VIDEO_METADATA_SET = "video.metadata.set";
+
     /**
      * Routed to {@link Topics#MEDIA_JOBS} instead of {@link Topics#VIDEO_EVENTS} —
      * see {@code TopicResolver}. Still an ordinary outbox event: the Video module

@@ -12,14 +12,19 @@ import com.shortvideo.shared.revocation.RevocationClearCommand;
 import com.shortvideo.shared.revocation.RevocationCommand;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.slf4j.MDC;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class AccountService implements AccountDirectory {
@@ -42,42 +47,74 @@ public class AccountService implements AccountDirectory {
     private final PasswordEncoder passwordEncoder;
     private final OutboxWriter outboxWriter;
     private final DurableRevocationWriter revocationWriter;
+    private final TransactionTemplate transactions;
 
     public AccountService(
             AccountJpaRepository repository,
             PasswordEncoder passwordEncoder,
             OutboxWriter outboxWriter,
-            DurableRevocationWriter revocationWriter) {
+            DurableRevocationWriter revocationWriter,
+            PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.passwordEncoder = passwordEncoder;
         this.outboxWriter = outboxWriter;
         this.revocationWriter = revocationWriter;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
-    /** Authoritative state update and outbox insert commit together. */
-    @Transactional
+    /**
+     * BCrypt at cost 10 is ~100ms of pure CPU. Doing it inside a transaction pins a
+     * pooled connection for that whole time while performing no database work, so
+     * twenty concurrent registrations would hold the entire default pool doing
+     * nothing. The hash is computed first, then a transaction is opened around the
+     * writes that actually need one.
+     *
+     * <p>{@code TransactionTemplate} rather than a second {@code @Transactional}
+     * method on this class: a self-invoked call does not pass through the proxy, so
+     * the annotation would be silently ignored and the outbox insert would no longer
+     * commit atomically with the account row.
+     */
     public AccountView register(String rawEmail, String rawPassword, String displayName) {
         String email = normalise(rawEmail);
-        if (repository.existsByEmail(email)) {
-            throw new AccountExceptions.EmailAlreadyRegistered("Email is already registered");
-        }
+        String passwordHash = passwordEncoder.encode(rawPassword);
+        String trimmedName = displayName.trim();
 
-        AccountEntity account = new AccountEntity(
-                UUID.randomUUID(), email, passwordEncoder.encode(rawPassword), displayName.trim(), DEFAULT_ROLES);
+        return transactions.execute(status -> {
+            if (repository.existsByEmail(email)) {
+                throw new AccountExceptions.EmailAlreadyRegistered("Email is already registered");
+            }
 
-        // Flush so the entity holds its assigned aggregate version before the event
-        // is written; the outbox unique constraint is keyed on that version.
-        AccountEntity saved = repository.saveAndFlush(account);
-        appendStateEvent(saved, EventTypes.ACCOUNT_REGISTERED, "registration");
-        return toView(saved);
+            AccountEntity account =
+                    new AccountEntity(UUID.randomUUID(), email, passwordHash, trimmedName, DEFAULT_ROLES);
+            try {
+                // Flush so the entity holds its assigned aggregate version before
+                // the event is written; the outbox unique constraint is keyed on
+                // that version. The flush also surfaces a lost race here, while it
+                // can still be translated, rather than at commit.
+                AccountEntity saved = repository.saveAndFlush(account);
+                appendStateEvent(saved, EventTypes.ACCOUNT_REGISTERED, "registration");
+                return toView(saved);
+            } catch (DataIntegrityViolationException raceLost) {
+                // existsByEmail is check-then-act with no lock, so two concurrent
+                // registrations for one address both reach the insert.
+                // account_email_key correctly rejects the loser; without this it
+                // surfaces as a 500 while the identical sequential case answers 409.
+                throw new AccountExceptions.EmailAlreadyRegistered("Email is already registered");
+            }
+        });
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * Verifies the password outside any transaction, for the reason given on
+     * {@link #register}. The lookup is a single query and Spring Data already wraps
+     * repository reads in their own transaction, so none is needed here.
+     */
     public AccountEntity authenticate(String rawEmail, String rawPassword) {
-        String email = normalise(rawEmail);
-        Optional<AccountEntity> candidate = repository.findByEmail(email);
+        Optional<AccountEntity> candidate = repository.findByEmail(normalise(rawEmail));
 
         if (candidate.isEmpty()) {
+            // Same work either way, so a failed login does not leak which addresses
+            // are registered through its response time.
             passwordEncoder.matches(rawPassword, DUMMY_HASH);
             throw new AccountExceptions.InvalidCredentials("Invalid email or password");
         }
@@ -133,8 +170,24 @@ public class AccountService implements AccountDirectory {
         }
     }
 
+    /**
+     * {@code roles} is a free-text column, so it is parsed defensively.
+     * {@code Set.of} threw {@code IllegalArgumentException} on a duplicate entry —
+     * a {@code "USER,USER"} row turned every login into a 500 — and untrimmed
+     * splitting turned {@code "USER, ADMIN"} into the authority {@code ROLE_ ADMIN},
+     * which matches nothing and denies an apparently-correct admin with no error to
+     * explain it.
+     */
     public Set<String> rolesOf(AccountEntity account) {
-        return Set.of(account.getRoles().split(","));
+        String roles = account.getRoles();
+        if (roles == null || roles.isBlank()) {
+            return Set.of(DEFAULT_ROLES);
+        }
+        return Arrays.stream(roles.split(","))
+                .map(String::trim)
+                .filter(role -> !role.isEmpty())
+                .map(role -> role.toUpperCase(Locale.ROOT))
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     private void appendStateEvent(AccountEntity account, String eventType, String reason) {

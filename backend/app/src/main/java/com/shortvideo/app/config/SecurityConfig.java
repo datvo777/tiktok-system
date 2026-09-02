@@ -1,11 +1,15 @@
 package com.shortvideo.app.config;
 
+import com.shortvideo.shared.revocation.DurableRevocationReader;
+import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.security.JwtAuthenticationFilter;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.SessionCookies;
+import com.shortvideo.shared.security.SessionTokenDenyList;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -27,8 +31,14 @@ public class SecurityConfig {
     }
 
     @Bean
-    public JwtAuthenticationFilter jwtAuthenticationFilter(JwtService jwtService, SessionCookies sessionCookies) {
-        return new JwtAuthenticationFilter(jwtService, sessionCookies);
+    public JwtAuthenticationFilter jwtAuthenticationFilter(
+            JwtService jwtService,
+            SessionCookies sessionCookies,
+            SessionTokenDenyList denyList,
+            RevocationCache revocationCache,
+            DurableRevocationReader revocationReader) {
+        return new JwtAuthenticationFilter(
+                jwtService, sessionCookies, denyList, revocationCache, revocationReader);
     }
 
     @Bean
@@ -41,11 +51,18 @@ public class SecurityConfig {
                 .cors(cors -> cors.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/v1/accounts").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/accounts").permitAll()
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/logout").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
-                                "/actuator/prometheus").permitAll()
+                        // Container probes only. The aggregate /actuator/health
+                        // response carries datasource URLs, broker addresses and
+                        // disk paths, so it is not public even though liveness and
+                        // readiness are — and neither of those discloses detail.
+                        .requestMatchers("/actuator/health/liveness", "/actuator/health/readiness").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+                        // Everything else actuator exposes — the aggregate health
+                        // report, prometheus, metrics, info — enumerates internal
+                        // topology and is admin-only.
+                        .requestMatchers("/actuator/**").hasRole("ADMIN")
                         .requestMatchers("/internal/**").hasRole("ADMIN")
                         // Media is authenticated by the session cookie only; the
                         // filter ignores bearer tokens on this path (Rule 17).

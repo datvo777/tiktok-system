@@ -130,9 +130,14 @@ services:
       minio:
         condition: service_healthy
     environment:
+      # Root, used only to create the bucket and mint the scoped service account
+      # below. The application never receives these.
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_BUCKET: ${MINIO_BUCKET}
+      # What the backend and worker actually authenticate with.
+      MINIO_APP_ACCESS_KEY: ${MINIO_APP_ACCESS_KEY}
+      MINIO_APP_SECRET_KEY: ${MINIO_APP_SECRET_KEY}
     entrypoint: ["/bin/sh", "/init.sh"]
     volumes:
       - ./minio/init.sh:/init.sh:ro

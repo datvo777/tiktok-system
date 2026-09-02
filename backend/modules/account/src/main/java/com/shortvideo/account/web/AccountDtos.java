@@ -35,5 +35,16 @@ public final class AccountDtos {
      */
     public record LoginResponse(String accountId, String token, Instant expiresAt) {}
 
+    /**
+     * Lets a client answer "am I still signed in, and as whom" on page load
+     * without having to persist the accountId itself — the session cookie
+     * already carries identity, this just confirms it is still valid.
+     */
+    public record MeResponse(String accountId, String displayName, AccountState state, java.util.Set<String> roles) {
+        public static MeResponse from(AccountView view, java.util.Set<String> roles) {
+            return new MeResponse(view.accountId(), view.displayName(), view.state(), roles);
+        }
+    }
+
     private AccountDtos() {}
 }

@@ -1,5 +1,6 @@
 package com.shortvideo.social.web;
 
+import java.util.UUID;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.social.domain.SocialService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -8,6 +9,7 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,25 +29,50 @@ public class SocialController {
 
     @PostMapping("/{videoId}/likes")
     @Operation(summary = "Like a video; idempotent")
-    public ResponseEntity<Void> like(@PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
-        socialService.like(videoId, caller.accountId());
+    public ResponseEntity<Void> like(@PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        socialService.like(videoId.toString(), caller.accountId());
         return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/{videoId}/likes")
     @Operation(summary = "Unlike a video; idempotent")
-    public ResponseEntity<Void> unlike(@PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
-        socialService.unlike(videoId, caller.accountId());
+    public ResponseEntity<Void> unlike(@PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        socialService.unlike(videoId.toString(), caller.accountId());
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{videoId}/comments")
     @Operation(summary = "Comment on a video")
     public ResponseEntity<SocialDtos.CommentResponse> comment(
-            @PathVariable String videoId,
+            @PathVariable UUID videoId,
             @AuthenticationPrincipal AuthenticatedAccount caller,
             @Valid @RequestBody SocialDtos.CreateCommentRequest request) {
-        var comment = socialService.comment(videoId, caller.accountId(), request.body());
+        var comment = socialService.comment(videoId.toString(), caller.accountId(), request.body());
         return ResponseEntity.status(201).body(SocialDtos.CommentResponse.from(comment));
+    }
+
+    @GetMapping("/{videoId}/comments")
+    @Operation(summary = "List top-level comments on a video, newest first")
+    public ResponseEntity<SocialDtos.CommentListResponse> listComments(@PathVariable UUID videoId) {
+        return ResponseEntity.ok(SocialDtos.CommentListResponse.from(socialService.listComments(videoId.toString())));
+    }
+
+    @PostMapping("/{videoId}/comments/{commentId}/replies")
+    @Operation(summary = "Reply to a comment on a video")
+    public ResponseEntity<SocialDtos.CommentResponse> reply(
+            @PathVariable UUID videoId,
+            @PathVariable UUID commentId,
+            @AuthenticationPrincipal AuthenticatedAccount caller,
+            @Valid @RequestBody SocialDtos.CreateCommentRequest request) {
+        var reply = socialService.reply(videoId.toString(), commentId.toString(), caller.accountId(), request.body());
+        return ResponseEntity.status(201).body(SocialDtos.CommentResponse.from(reply));
+    }
+
+    @GetMapping("/{videoId}/comments/{commentId}/replies")
+    @Operation(summary = "List replies to a comment, oldest first")
+    public ResponseEntity<SocialDtos.CommentListResponse> listReplies(
+            @PathVariable UUID videoId, @PathVariable UUID commentId) {
+        return ResponseEntity.ok(
+                SocialDtos.CommentListResponse.from(socialService.listReplies(videoId.toString(), commentId.toString())));
     }
 }

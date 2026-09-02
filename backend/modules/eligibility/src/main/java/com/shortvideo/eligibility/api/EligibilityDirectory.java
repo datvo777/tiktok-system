@@ -22,6 +22,18 @@ public interface EligibilityDirectory {
      */
     List<VideoEligibilityView> findEligibleVideos(int limit);
 
+    /**
+     * As {@link #findEligibleVideos}, but returning only videos whose creator is
+     * also eligible — the join is done in PostgreSQL instead of one
+     * {@code findAccountEligibility} call per candidate.
+     *
+     * <p>Both projections live in this module's own schema, so this stays a
+     * single-module query and does not reach across a module boundary. Rule 9 is
+     * preserved: a video whose creator has no projection row is absent from the
+     * result rather than present-and-unfiltered, so unknown still denies.
+     */
+    List<VideoEligibilityView> findEligibleVideosWithEligibleCreators(int limit);
+
     /** Every video this projection currently tracks, eligible or not (brief section 20, Milestone 5). */
     List<String> allTrackedVideoIds(int limit);
 

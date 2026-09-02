@@ -141,11 +141,35 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 ```bash
 mvn test        # unit tests, no Docker needed
-mvn install     # includes the Testcontainers integration test
+mvn install     # includes the Testcontainers integration tests
 ```
 
-`AccountFlowIT` needs the Docker daemon running (Testcontainers starts its own
-PostgreSQL; it does not use your Compose stack).
+The integration tests start their own PostgreSQL through Testcontainers; they do
+not touch your Compose stack.
+
+**If Testcontainers cannot reach Docker.** Testcontainers needs the Docker
+*API*, which is not always available even where the `docker` CLI works — a
+misbehaving Docker Desktop can answer the CLI while erroring on the daemon
+socket, and CI often supplies a database as a service container with no Docker
+socket inside the job. The PostgreSQL-only suites accept an existing database
+instead:
+
+```bash
+TEST_POSTGRES_URL=jdbc:postgresql://localhost:5432/short_video_test \
+TEST_POSTGRES_USER=short_video_app TEST_POSTGRES_PASSWORD=short_video_app \
+  mvn -pl backend/app test -Dtest='AccountFlowIT,AuthorizationIT,SessionLifecycleIT'
+```
+
+Point that at a scratch database, never a working one — Flyway migrates whatever
+it is given and the tests write freely:
+
+```bash
+docker exec sv-postgres psql -U postgres -c 'CREATE DATABASE short_video_test OWNER short_video_app;'
+```
+
+`ModerationPublicationFlowIT`, `ResilienceIT` and `UploadTranscodeFlowIT` also
+need Kafka and MinIO, and stay on Testcontainers — disposable infrastructure is
+the point for those.
 
 ---
 

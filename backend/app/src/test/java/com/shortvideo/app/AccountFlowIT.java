@@ -20,9 +20,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Milestone 1 acceptance, end to end against a real PostgreSQL.
@@ -34,24 +31,19 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
-@Testcontainers
 class AccountFlowIT {
-
-    @Container
-    @SuppressWarnings("resource")
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17.4-alpine")
-            .withDatabaseName("short_video")
-            .withUsername("short_video_app")
-            .withPassword("short_video_app");
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
+        // Testcontainers by default; TEST_POSTGRES_URL points at an existing
+        // database instead. See TestDatabase.
+        TestDatabase.register(registry);
         // Not reachable in this test; nothing here publishes, and the relay is off
         // under the "test" profile.
         registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
+        // These tests log in repeatedly from one address; throttling is exercised
+        // deliberately in SessionLifecycleIT instead.
+        registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
     }
 
     @Autowired
