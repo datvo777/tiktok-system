@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Hls from 'hls.js';
 import { useEffect, useRef, useState } from 'react';
+import { CheckIcon, FlagIcon, PlayIcon, UploadCloudIcon } from './icons';
 import {
   completeUpload,
   createPreviewSession,
@@ -118,17 +119,25 @@ export function Upload() {
   }, [status.data?.processingState, status.data?.failureClass]);
 
   const badge = status.data ? STATE_BADGE[status.data.processingState] : null;
+  const isFailure = upload.isError || status.data?.processingState === 'FAILED';
+
+  // Shared by the file input and the drop target: the same validation has to
+  // run either way, since a dropped file never passes through `accept`.
+  function pick(selected: File | null) {
+    if (selected && !isAcceptedVideo(selected)) {
+      setFile(null);
+      setLog(
+        `"${selected.name}" isn't a supported video file. Pick one of: ${Object.keys(ACCEPTED_VIDEO_TYPES).join(', ')}.`,
+      );
+      return;
+    }
+    setFile(selected);
+    if (selected) setLog(`Ready to upload ${selected.name}.`);
+  }
 
   return (
-    <section className="card">
-      <div className="card-head">
-        <h2>Upload &amp; preview</h2>
-        <span className="card-eyebrow">Milestone 2</span>
-      </div>
-      <p className="card-desc">
-        Direct-to-MinIO upload, FFmpeg transcode via the media worker, and owner-preview playback through the Spring
-        media gateway.
-      </p>
+    <div>
+      <FilePicker file={file} onPick={pick} />
 
       <label className="field">
         <span className="field-label">Title</span>
@@ -150,53 +159,36 @@ export function Upload() {
         />
       </label>
 
-      <div className="btn-row">
-        <input
-          type="file"
-          accept={ACCEPT_ATTR}
-          onChange={(e) => {
-            const selected = e.target.files?.[0] ?? null;
-            if (selected && !isAcceptedVideo(selected)) {
-              setFile(null);
-              setLog(
-                `"${selected.name}" isn't a supported video file. Pick one of: ${Object.keys(ACCEPTED_VIDEO_TYPES).join(', ')}.`,
-              );
-              e.target.value = '';
-              return;
-            }
-            setFile(selected);
-            if (selected) setLog(`Picked ${selected.name}.`);
-          }}
-        />
-        <button
-          className="btn-primary"
-          disabled={!file || !title.trim() || upload.isPending}
-          onClick={() => {
-            if (file) upload.mutate({ selected: file, title: title.trim(), description: description.trim() });
-          }}
-        >
-          {upload.isPending ? 'Uploading...' : 'Upload'}
-        </button>
-      </div>
+      <button
+        className="btn-primary btn-block"
+        disabled={!file || !title.trim() || upload.isPending}
+        onClick={() => {
+          if (file) upload.mutate({ selected: file, title: title.trim(), description: description.trim() });
+        }}
+      >
+        {upload.isPending ? 'Uploading…' : 'Upload'}
+      </button>
 
       {videoId && (
-        <div className="meta-line">
-          {videoId}
-          {badge && (
-            <>
-              {' '}
-              <span className={`badge ${badge.variant}`}>{badge.label}</span>
-            </>
+        <div className="upload-meta">
+          {badge && <span className={`badge ${badge.variant}`}>{badge.label}</span>}
+          {status.data?.processingVersion != null && (
+            <span className="badge badge-neutral">v{status.data.processingVersion}</span>
           )}
-          {status.data?.processingVersion != null ? ` · v${status.data.processingVersion}` : ''}
+          <span className="mono">{videoId}</span>
         </div>
       )}
 
-      <div className="log-panel">{log}</div>
+      <div className={`status-line${isFailure ? ' is-error' : ''}`}>
+        {upload.isPending && <span className="spinner" style={{ width: 15, height: 15, borderWidth: 2 }} />}
+        {log}
+      </div>
 
       {videoId && status.data?.processingState === 'READY' && (
         <>
+          <div className="step-divider">Preview</div>
           <Preview videoId={videoId} onLog={setLog} />
+          <div className="step-divider">Publish</div>
           <PublishButton videoId={videoId} onLog={setLog} />
         </>
       )}
@@ -207,7 +199,7 @@ export function Upload() {
 
       <button
         className="btn-ghost btn-sm"
-        style={{ marginTop: '0.75rem' }}
+        style={{ marginTop: '1rem' }}
         onClick={() => {
           setVideoId(null);
           setStartedAt(null);
@@ -219,7 +211,56 @@ export function Upload() {
       >
         Reset
       </button>
-    </section>
+    </div>
+  );
+}
+
+/**
+ * The bare `<input type="file">` was the one piece of unstyled browser chrome
+ * left in the app. This wraps it in a real drop target -- the input is still
+ * the thing that opens the picker, it just isn't what you look at.
+ */
+function FilePicker({ file, onPick }: { file: File | null; onPick: (file: File | null) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+
+  return (
+    <button
+      type="button"
+      className={`dropzone${dragging ? ' dragging' : ''}${file ? ' has-file' : ''}`}
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        onPick(e.dataTransfer.files?.[0] ?? null);
+      }}
+    >
+      {file ? <CheckIcon /> : <UploadCloudIcon />}
+      <span>
+        <span className="dropzone-title">{file ? file.name : 'Select or drop a video'}</span>
+        <span className="dropzone-hint">
+          {file
+            ? `${(file.size / 1_048_576).toFixed(1)} MB · click to change`
+            : Object.keys(ACCEPTED_VIDEO_TYPES).join('  ')}
+        </span>
+      </span>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={ACCEPT_ATTR}
+        hidden
+        onChange={(e) => {
+          onPick(e.target.files?.[0] ?? null);
+          // Cleared so re-picking the same file after a rejection still fires.
+          e.target.value = '';
+        }}
+      />
+    </button>
   );
 }
 
@@ -241,7 +282,7 @@ function AppealPanel({ videoId, onLog }: { videoId: string; onLog: (message: str
     return (
       <div className="callout callout-warning">
         <div className="callout-title">
-          ⚑ Appeal {result.state === 'UNDER_APPEAL' ? 'submitted' : result.state.toLowerCase()}
+          <CheckIcon /> Appeal {result.state === 'UNDER_APPEAL' ? 'submitted' : result.state.toLowerCase()}
         </div>
       </div>
     );
@@ -249,7 +290,9 @@ function AppealPanel({ videoId, onLog }: { videoId: string; onLog: (message: str
 
   return (
     <div className="callout callout-warning">
-      <div className="callout-title">⚑ This video was rejected by moderation</div>
+      <div className="callout-title">
+        <FlagIcon /> This video was rejected by moderation
+      </div>
       <p>If you believe this was a mistake, you may appeal the decision.</p>
       <textarea
         value={reason}
@@ -294,21 +337,12 @@ function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string)
   });
 
   return (
-    <div style={{ marginTop: '1rem' }}>
-      <button className="btn-sm" onClick={() => session.mutate()} disabled={session.isPending}>
-        {session.isPending ? 'Requesting session...' : '▶ Preview'}
+    <div>
+      <button className="btn-sm btn-row" onClick={() => session.mutate()} disabled={session.isPending}>
+        <PlayIcon size={14} />
+        {session.isPending ? 'Requesting session…' : 'Play preview'}
       </button>
-      <video
-        ref={videoRef}
-        controls
-        style={{
-          display: 'block',
-          marginTop: '0.6rem',
-          maxWidth: '260px',
-          borderRadius: 'var(--radius-md)',
-          background: '#0d0d14',
-        }}
-      />
+      <video ref={videoRef} controls className="preview-video" />
     </div>
   );
 }
@@ -348,7 +382,7 @@ function PublishButton({ videoId, onLog }: { videoId: string; onLog: (message: s
   }, [status.data?.state, status.isError]);
 
   return (
-    <div className="btn-row" style={{ marginTop: '0.6rem' }}>
+    <div className="btn-row">
       <button
         className="btn-primary btn-sm"
         onClick={() => setRequested(true)}
