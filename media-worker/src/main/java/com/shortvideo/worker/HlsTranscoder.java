@@ -63,6 +63,7 @@ class HlsTranscoder {
     TranscodeOutput transcode(Path sourceFile, Path outputDir) throws IOException {
         ProbedSource source = probeSource(sourceFile);
         double durationSeconds = source.durationSeconds();
+        Dimensions target = targetResolution(source.width(), source.height());
 
         Path variantDir = outputDir.resolve("720p");
         Files.createDirectories(variantDir);
@@ -94,7 +95,11 @@ class HlsTranscoder {
                 "-c:a", "aac",
                 "-b:a", "128k",
                 "-b:v", "1200k",
-                "-s:v", "1280x720",
+                // A fixed 1280x720 stretched every portrait upload into a
+                // squashed landscape frame -- this app's whole point is vertical
+                // video. The target is derived from the source's own aspect
+                // ratio instead, capped at 1280 on the long edge.
+                "-s:v", target.width() + "x" + target.height(),
                 "-hls_time", "4",
                 "-hls_playlist_type", "vod",
                 "-hls_segment_filename", variantDir.resolve("segment_%03d.ts").toString(),
@@ -116,10 +121,37 @@ class HlsTranscoder {
         }
 
         Path masterPlaylist = outputDir.resolve("master.m3u8");
-        Files.writeString(masterPlaylist, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1328000,RESOLUTION=1280x720\n720p/index.m3u8\n");
+        Files.writeString(
+                masterPlaylist,
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1328000,RESOLUTION="
+                        + target.width() + "x" + target.height() + "\n720p/index.m3u8\n");
 
         return new TranscodeOutput(masterPlaylist, variantPlaylist, "720p/index.m3u8", segmentCount, durationSeconds);
     }
+
+    /**
+     * Scales so the longer edge is 1280, preserving the source's own aspect
+     * ratio -- landscape sources land at 1280x720-ish, portrait ones at
+     * 720x1280-ish, instead of every upload being force-fit into one landscape
+     * frame. Both edges are rounded down to even numbers, which libx264's 4:2:0
+     * chroma subsampling requires.
+     */
+    private static Dimensions targetResolution(int sourceWidth, int sourceHeight) {
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            return new Dimensions(1280, 720); // malformed probe data; fall back to the old fixed frame
+        }
+        int maxEdge = 1280;
+        double scale = (double) maxEdge / Math.max(sourceWidth, sourceHeight);
+        int width = evenFloor((int) Math.round(sourceWidth * scale));
+        int height = evenFloor((int) Math.round(sourceHeight * scale));
+        return new Dimensions(Math.max(width, 2), Math.max(height, 2));
+    }
+
+    private static int evenFloor(int value) {
+        return value % 2 == 0 ? value : value - 1;
+    }
+
+    private record Dimensions(int width, int height) {}
 
     /**
      * Establishes both facts the transcode needs from the source — how long it is
@@ -131,7 +163,8 @@ class HlsTranscoder {
                 properties.getFfprobePath(),
                 "-v", "error",
                 PROTOCOL_WHITELIST.get(0), PROTOCOL_WHITELIST.get(1),
-                "-show_entries", "format=duration,format_name",
+                "-select_streams", "v:0",
+                "-show_entries", "format=duration,format_name:stream=width,height",
                 // Keys, not just values: FFprobe emits these fields in its own
                 // order (format_name before duration in practice), so positional
                 // parsing silently swaps them.
@@ -157,14 +190,27 @@ class HlsTranscoder {
 
         String duration = fields.get("duration");
         try {
-            return new ProbedSource(Double.parseDouble(duration), formatName);
+            // Missing width/height (e.g. an audio-only file smuggled past the
+            // container check) falls back to 0x0 -- targetResolution treats that
+            // as malformed and keeps the old fixed frame rather than failing the job.
+            int width = parseIntOrZero(fields.get("width"));
+            int height = parseIntOrZero(fields.get("height"));
+            return new ProbedSource(Double.parseDouble(duration), formatName, width, height);
         } catch (NumberFormatException | NullPointerException e) {
             throw new TranscodeFailedException("TERMINAL", "ffprobe returned no duration");
         }
     }
 
+    private static int parseIntOrZero(String value) {
+        try {
+            return value == null ? 0 : Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
     /** What the probe established about the source, carried into the transcode. */
-    private record ProbedSource(double durationSeconds, String formatName) {}
+    private record ProbedSource(double durationSeconds, String formatName, int width, int height) {}
 
     private ProcessResult run(List<String> command, Duration timeout, Path workingDirectory) throws IOException {
         return processRunner.run(command, timeout, workingDirectory);

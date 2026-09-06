@@ -309,6 +309,9 @@ function PendingVideos() {
 function ModeratorPreview({ videoId }: { videoId: string }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Unknown until the browser reads the stream's actual dimensions -- a fixed
+  // maxWidth alone left a portrait upload tiny and a landscape one uselessly narrow.
+  const [orientation, setOrientation] = useState<'portrait' | 'landscape' | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   // One hls.js instance for this component's whole lifetime, reused across
   // repeated Preview clicks via loadSource() instead of destroy()+new Hls().
@@ -375,10 +378,15 @@ function ModeratorPreview({ videoId }: { videoId: string }) {
       <video
         ref={videoRef}
         controls
+        onLoadedMetadata={(e) => {
+          const { videoWidth, videoHeight } = e.currentTarget;
+          if (videoWidth && videoHeight) setOrientation(videoWidth >= videoHeight ? 'landscape' : 'portrait');
+        }}
         style={{
           display: open ? 'block' : 'none',
           marginTop: '0.5rem',
-          maxWidth: '320px',
+          maxWidth: orientation === 'portrait' ? '180px' : '320px',
+          maxHeight: '400px',
           borderRadius: 8,
           background: '#000',
         }}

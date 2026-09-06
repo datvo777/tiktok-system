@@ -1617,7 +1617,15 @@ textarea {
   margin-top: 0.7rem;
   border-radius: var(--radius-md);
   background: #0a0a0c;
-  object-fit: cover;
+  object-fit: contain;
+}
+
+/* A landscape source stays badly letterboxed in a portrait box even with
+   object-fit: contain -- the box itself needs to match the source's own
+   orientation, decided once the browser reports the real dimensions. */
+.preview-video.preview-video-landscape {
+  max-width: 340px;
+  aspect-ratio: 16 / 9;
 }
 
 .step-divider {

@@ -315,6 +315,9 @@ function AppealPanel({ videoId, onLog }: { videoId: string; onLog: (message: str
 
 function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string) => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Unknown until the browser reads the stream's actual dimensions -- guessing
+  // portrait up front made a landscape upload render squashed into a 9:16 box.
+  const [orientation, setOrientation] = useState<'portrait' | 'landscape' | null>(null);
 
   // The element is captured while the effect runs, not read at cleanup time:
   // React detaches refs during the commit phase, before passive effect cleanups
@@ -342,7 +345,15 @@ function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string)
         <PlayIcon size={14} />
         {session.isPending ? 'Requesting session…' : 'Play preview'}
       </button>
-      <video ref={videoRef} controls className="preview-video" />
+      <video
+        ref={videoRef}
+        controls
+        className={`preview-video${orientation === 'landscape' ? ' preview-video-landscape' : ''}`}
+        onLoadedMetadata={(e) => {
+          const { videoWidth, videoHeight } = e.currentTarget;
+          if (videoWidth && videoHeight) setOrientation(videoWidth >= videoHeight ? 'landscape' : 'portrait');
+        }}
+      />
     </div>
   );
 }
