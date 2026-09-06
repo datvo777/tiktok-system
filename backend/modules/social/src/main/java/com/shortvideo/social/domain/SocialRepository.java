@@ -27,6 +27,11 @@ class SocialRepository {
     private static final String IS_LIKED =
             "SELECT EXISTS (SELECT 1 FROM social.video_like WHERE video_id = ? AND account_id = ?)";
 
+    private static final String SHARE = """
+            INSERT INTO social.video_share (share_id, video_id, account_id, created_at)
+            VALUES (?, ?, ?, ?)
+            """;
+
     private static final String ADD_COMMENT = """
             INSERT INTO social.comment (comment_id, video_id, account_id, body, created_at, parent_comment_id)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -60,7 +65,8 @@ class SocialRepository {
     private static final String COUNTS = """
             SELECT
                 (SELECT count(*) FROM social.video_like WHERE video_id = ?) AS like_count,
-                (SELECT count(*) FROM social.comment WHERE video_id = ?) AS comment_count
+                (SELECT count(*) FROM social.comment WHERE video_id = ?) AS comment_count,
+                (SELECT count(*) FROM social.video_share WHERE video_id = ?) AS share_count
             """;
 
     private static final String FOLLOW = """
@@ -95,6 +101,11 @@ class SocialRepository {
             WHERE video_id = ANY(?) GROUP BY video_id
             """;
 
+    private static final String SHARE_COUNTS_FOR = """
+            SELECT video_id, count(*) AS c FROM social.video_share
+            WHERE video_id = ANY(?) GROUP BY video_id
+            """;
+
     private static final String FOLLOWED_AMONG = """
             SELECT followee_id FROM social.follow
             WHERE follower_id = ? AND followee_id = ANY(?)
@@ -122,6 +133,15 @@ class SocialRepository {
         Boolean liked = jdbc.queryForObject(
                 IS_LIKED, Boolean.class, UUID.fromString(videoId), UUID.fromString(accountId));
         return Boolean.TRUE.equals(liked);
+    }
+
+    void share(String videoId, String accountId) {
+        jdbc.update(
+                SHARE,
+                UUID.randomUUID(),
+                UUID.fromString(videoId),
+                UUID.fromString(accountId),
+                Timestamp.from(Instant.now()));
     }
 
     CommentView addComment(String videoId, String accountId, String body, String parentCommentId) {
@@ -177,7 +197,9 @@ class SocialRepository {
         UUID id = UUID.fromString(videoId);
         return jdbc.queryForObject(
                 COUNTS,
-                (rs, rowNum) -> new SocialCounts(videoId, rs.getLong("like_count"), rs.getLong("comment_count")),
+                (rs, rowNum) -> new SocialCounts(
+                        videoId, rs.getLong("like_count"), rs.getLong("comment_count"), rs.getLong("share_count")),
+                id,
                 id,
                 id);
     }
@@ -207,6 +229,7 @@ class SocialRepository {
 
         Map<String, Long> likes = countBy(LIKE_COUNTS_FOR, ids);
         Map<String, Long> comments = countBy(COMMENT_COUNTS_FOR, ids);
+        Map<String, Long> shares = countBy(SHARE_COUNTS_FOR, ids);
 
         Map<String, SocialCounts> counts = new HashMap<>();
         for (String videoId : videoIds) {
@@ -215,7 +238,8 @@ class SocialRepository {
                     new SocialCounts(
                             videoId,
                             likes.getOrDefault(videoId, 0L),
-                            comments.getOrDefault(videoId, 0L)));
+                            comments.getOrDefault(videoId, 0L),
+                            shares.getOrDefault(videoId, 0L)));
         }
         return counts;
     }

@@ -2,6 +2,7 @@ package com.shortvideo.social.web;
 
 import com.shortvideo.social.domain.CommentView;
 import com.shortvideo.social.domain.CreatorProfileView;
+import com.shortvideo.social.domain.VideoCountsView;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.time.Instant;
@@ -34,6 +35,13 @@ public final class SocialDtos {
     public record CommentListResponse(List<CommentResponse> items) {
         public static CommentListResponse from(List<CommentView> views) {
             return new CommentListResponse(views.stream().map(CommentResponse::from).toList());
+        }
+    }
+
+    public record VideoCountsResponse(long likeCount, long commentCount, long shareCount, boolean liked) {
+        public static VideoCountsResponse from(VideoCountsView view) {
+            return new VideoCountsResponse(
+                    view.counts().likeCount(), view.counts().commentCount(), view.counts().shareCount(), view.liked());
         }
     }
 

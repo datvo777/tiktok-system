@@ -69,6 +69,8 @@ public class SearchIndexService {
                                 "videoId", Map.of("type", "keyword"),
                                 "creatorId", Map.of("type", "keyword"),
                                 "creatorDisplayName", Map.of("type", "text"),
+                                "title", Map.of("type", "text"),
+                                "description", Map.of("type", "text"),
                                 "publishedAt", Map.of("type", "date"))));
         try {
             HttpStatusCode status = client.put()
@@ -91,11 +93,20 @@ public class SearchIndexService {
     }
 
     /** Best-effort, version-guarded upsert. A 409 means a newer version already won -- not an error. */
-    public void indexVideo(String videoId, String creatorId, String creatorDisplayName, String publishedAt, long version) {
+    public void indexVideo(
+            String videoId,
+            String creatorId,
+            String creatorDisplayName,
+            String title,
+            String description,
+            String publishedAt,
+            long version) {
         Map<String, Object> doc = new LinkedHashMap<>();
         doc.put("videoId", videoId);
         doc.put("creatorId", creatorId);
         doc.put("creatorDisplayName", creatorDisplayName);
+        doc.put("title", title == null ? "" : title);
+        doc.put("description", description == null ? "" : description);
         doc.put("publishedAt", publishedAt);
         write("PUT", videoId, version, doc);
     }
@@ -106,11 +117,12 @@ public class SearchIndexService {
     }
 
     /**
-     * Matches indexed videos by creator display name. Never touches upload or
-     * playback.
+     * Matches indexed videos by creator display name, title, or description.
+     * Never touches upload or playback.
      *
-     * <p>{@code query} is a bound value inside a structured {@code match} clause,
-     * not concatenated into a query string, so there is no query-DSL injection here.
+     * <p>{@code query} is a bound value inside a structured {@code multi_match}
+     * clause, not concatenated into a query string, so there is no query-DSL
+     * injection here.
      *
      * <p>A search-side outage answers 503 rather than 500: it is a dependency being
      * unavailable, not this service failing, and the distinction is what tells a
@@ -122,7 +134,10 @@ public class SearchIndexService {
     public List<Map<String, Object>> search(String query, int limit) {
         tryEnsureIndex();
         Map<String, Object> body = Map.of(
-                "query", Map.of("match", Map.of("creatorDisplayName", query)),
+                "query", Map.of(
+                        "multi_match", Map.of(
+                                "query", query,
+                                "fields", List.of("creatorDisplayName", "title", "description"))),
                 "size", limit);
         Map<String, Object> response;
         try {

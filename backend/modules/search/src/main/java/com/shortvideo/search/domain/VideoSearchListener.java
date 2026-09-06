@@ -2,6 +2,8 @@ package com.shortvideo.search.domain;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.account.api.AccountDirectory;
+import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -31,13 +33,19 @@ class VideoSearchListener {
     private final InboxGuard inbox;
     private final SearchIndexService indexService;
     private final AccountDirectory accountDirectory;
+    private final EligibilityDirectory eligibilityDirectory;
     private final ObjectMapper objectMapper;
 
     VideoSearchListener(
-            InboxGuard inbox, SearchIndexService indexService, AccountDirectory accountDirectory, ObjectMapper objectMapper) {
+            InboxGuard inbox,
+            SearchIndexService indexService,
+            AccountDirectory accountDirectory,
+            EligibilityDirectory eligibilityDirectory,
+            ObjectMapper objectMapper) {
         this.inbox = inbox;
         this.indexService = indexService;
         this.accountDirectory = accountDirectory;
+        this.eligibilityDirectory = eligibilityDirectory;
         this.objectMapper = objectMapper;
     }
 
@@ -58,8 +66,17 @@ class VideoSearchListener {
                 case EventTypes.VIDEO_PUBLICATION_PUBLISHED -> {
                     String creatorId = (String) p.get("ownerAccountId");
                     String displayName = accountDirectory.find(creatorId).map(a -> a.displayName()).orElse("");
+                    VideoEligibilityView eligibility = eligibilityDirectory.findVideoEligibility(videoId).orElse(null);
+                    String title = eligibility == null ? null : eligibility.title();
+                    String description = eligibility == null ? null : eligibility.description();
                     indexService.indexVideo(
-                            videoId, creatorId, displayName, envelope.occurredAt().toString(), envelope.aggregateVersion());
+                            videoId,
+                            creatorId,
+                            displayName,
+                            title,
+                            description,
+                            envelope.occurredAt().toString(),
+                            envelope.aggregateVersion());
                 }
                 case EventTypes.VIDEO_PUBLICATION_SUSPENDED,
                      EventTypes.VIDEO_PUBLICATION_PRIVATE,

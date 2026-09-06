@@ -41,6 +41,21 @@ public class SocialController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/{videoId}/shares")
+    @Operation(summary = "Record a share of a video")
+    public ResponseEntity<Void> share(@PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        socialService.share(videoId.toString(), caller.accountId());
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/{videoId}/counts")
+    @Operation(summary = "Like, comment and share counts for a video, plus whether the caller has liked it")
+    public ResponseEntity<SocialDtos.VideoCountsResponse> counts(
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        return ResponseEntity.ok(
+                SocialDtos.VideoCountsResponse.from(socialService.videoCounts(videoId.toString(), caller.accountId())));
+    }
+
     @PostMapping("/{videoId}/comments")
     @Operation(summary = "Comment on a video")
     public ResponseEntity<SocialDtos.CommentResponse> comment(

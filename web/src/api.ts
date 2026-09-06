@@ -362,6 +362,29 @@ export async function unlikeVideo(videoId: string): Promise<void> {
   await requestNoContent(`/api/v1/videos/${videoId}/likes`, { method: 'DELETE' });
 }
 
+export async function recordShare(videoId: string): Promise<void> {
+  await requestNoContent(`/api/v1/videos/${videoId}/shares`, { method: 'POST' });
+}
+
+export type VideoCounts = {
+  likeCount: number;
+  commentCount: number;
+  shareCount: number;
+  liked: boolean;
+};
+
+export async function getVideoCounts(videoId: string): Promise<VideoCounts> {
+  return request(`/api/v1/videos/${videoId}/counts`, (payload) => {
+    const o = obj('counts', payload);
+    return {
+      likeCount: num('counts', o, 'likeCount'),
+      commentCount: num('counts', o, 'commentCount'),
+      shareCount: num('counts', o, 'shareCount'),
+      liked: bool('counts', o, 'liked'),
+    };
+  });
+}
+
 export type CommentResponse = {
   commentId: string;
   videoId: string;
@@ -463,6 +486,8 @@ export type SearchHit = {
   videoId: string;
   creatorId: string;
   creatorDisplayName: string;
+  title: string | null;
+  description: string | null;
   publishedAt: string;
 };
 
@@ -471,7 +496,7 @@ export type SearchResponse = {
   results: SearchHit[];
 };
 
-/** Milestone 7: matches published videos by creator display name. */
+/** Milestone 7: matches published videos by creator display name, title, or description. */
 export async function search(query: string): Promise<SearchResponse> {
   return request(`/api/v1/search?q=${encodeURIComponent(query)}`, (payload) => {
     const o = obj('search', payload);
@@ -485,6 +510,8 @@ export async function search(query: string): Promise<SearchResponse> {
           // Validated, not assumed: SearchPanel slices this string, and an
           // absent field previously threw at render into no error boundary.
           creatorDisplayName: str(`search.results[${i}]`, hit, 'creatorDisplayName'),
+          title: nullableStr(`search.results[${i}]`, hit, 'title'),
+          description: nullableStr(`search.results[${i}]`, hit, 'description'),
           publishedAt: str(`search.results[${i}]`, hit, 'publishedAt'),
         };
       }),

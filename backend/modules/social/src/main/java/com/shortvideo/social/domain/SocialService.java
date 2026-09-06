@@ -54,6 +54,19 @@ public class SocialService implements SocialDirectory {
     }
 
     @Transactional
+    public void share(String videoId, String accountId) {
+        requireEligible(videoId);
+        repository.share(videoId, accountId);
+    }
+
+    @Transactional(readOnly = true)
+    public VideoCountsView videoCounts(String videoId, String accountId) {
+        requireEligible(videoId);
+        SocialCounts counts = repository.countsFor(videoId);
+        return new VideoCountsView(counts, repository.isLiked(videoId, accountId));
+    }
+
+    @Transactional
     public CommentView comment(String videoId, String accountId, String body) {
         String videoOwnerId = requireEligible(videoId).creatorId();
         CommentView comment = repository.addComment(videoId, accountId, body, null);

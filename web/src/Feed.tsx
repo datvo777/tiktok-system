@@ -5,9 +5,11 @@ import {
   createPublicSession,
   getCreatorProfile,
   getFeed,
+  getVideoCounts,
   likeVideo,
   listComments,
   listReplies,
+  recordShare,
   replyToComment,
   unlikeVideo,
   type CommentResponse,
@@ -213,6 +215,19 @@ function FeedSlide({
     retry: false,
   });
 
+  const counts = useQuery({
+    queryKey: ['counts', item.videoId],
+    queryFn: () => getVideoCounts(item.videoId),
+    retry: false,
+  });
+
+  // The server is the source of truth for whether the viewer has already
+  // liked this video; local state only takes over once they act, so a
+  // like/unlike click doesn't get clobbered by a counts refetch racing behind it.
+  useEffect(() => {
+    if (counts.data) setLiked(counts.data.liked);
+  }, [counts.data]);
+
   const play = useMutation({
     mutationFn: () => createPublicSession(item.videoId),
     onSuccess: (result) => {
@@ -298,7 +313,10 @@ function FeedSlide({
       else await unlikeVideo(item.videoId);
       return next;
     },
-    onSuccess: (next) => setLiked(next),
+    onSuccess: (next) => {
+      setLiked(next);
+      void queryClient.invalidateQueries({ queryKey: ['counts', item.videoId] });
+    },
   });
 
   const comments = useQuery({
@@ -312,6 +330,7 @@ function FeedSlide({
     onSuccess: () => {
       setComment('');
       void queryClient.invalidateQueries({ queryKey: ['comments', item.videoId] });
+      void queryClient.invalidateQueries({ queryKey: ['counts', item.videoId] });
     },
   });
 
@@ -358,6 +377,12 @@ function FeedSlide({
       return;
     }
     setTimeout(() => setShareNote(null), 1800);
+    try {
+      await recordShare(item.videoId);
+      void queryClient.invalidateQueries({ queryKey: ['counts', item.videoId] });
+    } catch {
+      // Best-effort: the share itself already succeeded client-side.
+    }
   }
 
   const handle = handleFor(item.creatorId);
@@ -453,19 +478,25 @@ function FeedSlide({
           <span className="rail-btn-glyph">
             <HeartIcon filled={liked} />
           </span>
+          {counts.data && <span className="rail-count">{formatCount(counts.data.likeCount)}</span>}
         </button>
 
         <button className="rail-btn" onClick={() => setCommentOpen(true)} aria-label="Comment">
           <span className="rail-btn-glyph">
             <CommentIcon />
           </span>
+          {counts.data && <span className="rail-count">{formatCount(counts.data.commentCount)}</span>}
         </button>
 
         <button className="rail-btn" onClick={() => void share()} aria-label="Share">
           <span className="rail-btn-glyph">
             <ShareIcon />
           </span>
-          {shareNote && <span className="rail-count">{shareNote}</span>}
+          {shareNote ? (
+            <span className="rail-count">{shareNote}</span>
+          ) : (
+            counts.data && <span className="rail-count">{formatCount(counts.data.shareCount)}</span>
+          )}
         </button>
       </div>
 
@@ -478,7 +509,9 @@ function FeedSlide({
               value={comment}
               maxLength={500}
               onChange={(e) => setComment(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && comment.trim() && submitComment.mutate()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && comment.trim() && !submitComment.isPending) submitComment.mutate();
+              }}
             />
             <button
               className="btn-primary"
@@ -530,6 +563,7 @@ function CommentThread({ videoId, comment }: { videoId: string; comment: Comment
       setRepliesOpen(true);
       void queryClient.invalidateQueries({ queryKey: ['replies', videoId, comment.commentId] });
       void queryClient.invalidateQueries({ queryKey: ['comments', videoId] });
+      void queryClient.invalidateQueries({ queryKey: ['counts', videoId] });
     },
   });
 
@@ -559,7 +593,9 @@ function CommentThread({ videoId, comment }: { videoId: string; comment: Comment
                 value={replyText}
                 maxLength={500}
                 onChange={(e) => setReplyText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && replyText.trim() && submitReply.mutate()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && replyText.trim() && !submitReply.isPending) submitReply.mutate();
+                }}
               />
               <button
                 className="btn-primary"

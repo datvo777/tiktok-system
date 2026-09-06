@@ -119,7 +119,7 @@ public class FeedService {
                 continue; // brief section 15: filter by revocation
             }
             SocialCounts videoCounts =
-                    counts.getOrDefault(video.videoId(), new SocialCounts(video.videoId(), 0, 0));
+                    counts.getOrDefault(video.videoId(), new SocialCounts(video.videoId(), 0, 0, 0));
             double score = scorer.score(
                     video, videoCounts, followed.contains(video.creatorId()), exploration.nextDouble());
             scored.add(new ScoredCandidate(video.videoId(), video.creatorId(), video.title(), video.description(), score));
