@@ -57,6 +57,15 @@ class ModerationNotificationListener {
                 case EventTypes.VIDEO_APPEAL_DENIED -> notificationService.create(
                         creatorId, "APPEAL_DENIED",
                         "Your appeal was denied" + (reason == null || reason.isBlank() ? "." : ": " + reason), videoId);
+                // Publication events carry the owner under "ownerAccountId" rather than
+                // "creatorId" (PublicationEvents.PublicationStateChanged), unlike every
+                // other case here.
+                case EventTypes.VIDEO_PUBLICATION_PUBLISHED -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "VIDEO_PUBLISHED",
+                        "Your video is published and visible in the feed.", videoId);
+                case EventTypes.VIDEO_PUBLICATION_SUSPENDED -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "VIDEO_SUSPENDED",
+                        "Your video was suspended and is no longer visible in the feed.", videoId);
                 default -> { /* not relevant to notifications */ }
             }
         } catch (Exception e) {

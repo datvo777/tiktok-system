@@ -2,6 +2,11 @@ package com.shortvideo.moderation.domain;
 
 import com.shortvideo.moderation.api.ModerationDecisionView;
 import com.shortvideo.moderation.api.ModerationDirectory;
+import com.shortvideo.moderation.api.PolicyCategory;
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -31,12 +36,17 @@ public class ModerationService implements ModerationDirectory {
     private final ModerationJpaRepository repository;
     private final OutboxWriter outboxWriter;
     private final DurableRevocationWriter revocationWriter;
+    private final AdminActionRecorder auditRecorder;
 
     public ModerationService(
-            ModerationJpaRepository repository, OutboxWriter outboxWriter, DurableRevocationWriter revocationWriter) {
+            ModerationJpaRepository repository,
+            OutboxWriter outboxWriter,
+            DurableRevocationWriter revocationWriter,
+            AdminActionRecorder auditRecorder) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.revocationWriter = revocationWriter;
+        this.auditRecorder = auditRecorder;
     }
 
     /**
@@ -58,7 +68,7 @@ public class ModerationService implements ModerationDirectory {
 
     /** PENDING -> APPROVED, or REJECTED -> REINSTATED, clearing only the moderation revocation field. */
     @Transactional
-    public void approve(String videoId) {
+    public void approve(String videoId, String actorAccountId) {
         ModerationEntity record = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new ModerationExceptions.ModerationRecordNotFound("No such moderation record"));
@@ -68,12 +78,15 @@ public class ModerationService implements ModerationDirectory {
         ModerationEntity saved = repository.saveAndFlush(record);
 
         String eventType = wasRejected ? EventTypes.VIDEO_MODERATION_REINSTATED : EventTypes.VIDEO_MODERATION_APPROVED;
-        append(saved, eventType, null);
+        append(saved, eventType, null, null);
 
         if (wasRejected) {
             revocationWriter.clear(new RevocationClearCommand(
                     RevocationSubjects.VIDEO, saved.getVideoId().toString(), REJECTION_SOURCE, previousVersion));
         }
+
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.VIDEO_APPROVED, AuditTargets.VIDEO, saved.getVideoId().toString()));
     }
 
     /**
@@ -92,7 +105,9 @@ public class ModerationService implements ModerationDirectory {
         long previousVersion = record.getAggregateVersion();
         record.approve(); // REJECTED -> REINSTATED
         ModerationEntity saved = repository.saveAndFlush(record);
-        append(saved, EventTypes.VIDEO_MODERATION_REINSTATED, null);
+        // Reinstatement clears the classification along with the rejection, so
+        // there is no policy to carry here.
+        append(saved, EventTypes.VIDEO_MODERATION_REINSTATED, null, null);
         revocationWriter.clear(new RevocationClearCommand(
                 RevocationSubjects.VIDEO, saved.getVideoId().toString(), REJECTION_SOURCE, previousVersion));
     }
@@ -149,31 +164,48 @@ public class ModerationService implements ModerationDirectory {
      * canonical outbox event (brief section 18).
      */
     @Transactional
-    public void reject(String videoId, String reason) {
+    public void reject(String videoId, PolicyCategory policyCategory, String reason, String actorAccountId) {
         ModerationEntity record = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new ModerationExceptions.ModerationRecordNotFound("No such moderation record"));
 
-        record.reject(reason);
+        record.reject(policyCategory, reason);
         ModerationEntity saved = repository.saveAndFlush(record);
 
-        append(saved, EventTypes.VIDEO_MODERATION_REJECTED, reason);
+        append(saved, EventTypes.VIDEO_MODERATION_REJECTED, reason, policyCategory);
+
+        // The revocation reason stays human-readable but now leads with the
+        // policy, so an operator reading the deny record sees the classification
+        // rather than whatever prose happened to be typed.
+        String revocationReason = reason == null || reason.isBlank()
+                ? policyCategory.name()
+                : policyCategory.name() + ": " + reason;
 
         revocationWriter.activate(new RevocationCommand(
                 RevocationSubjects.VIDEO,
                 saved.getVideoId().toString(),
                 REJECTION_SOURCE,
                 saved.getAggregateVersion(),
+                revocationReason));
+
+        auditRecorder.record(new AdminAction(
+                actorAccountId,
+                AuditActions.VIDEO_REJECTED,
+                AuditTargets.VIDEO,
+                saved.getVideoId().toString(),
+                policyCategory.name(),
                 reason));
     }
 
-    private void append(ModerationEntity record, String eventType, String reason) {
+    private void append(
+            ModerationEntity record, String eventType, String reason, PolicyCategory policyCategory) {
         var payload = new ModerationEvents.ModerationStateChanged(
                 record.getVideoId().toString(),
                 record.getCreatorId().toString(),
                 record.getState(),
                 record.getAggregateVersion(),
-                reason);
+                reason,
+                policyCategory);
 
         outboxWriter.append(new EventEnvelope<>(
                 UUID.randomUUID(),

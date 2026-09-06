@@ -2,6 +2,10 @@ package com.shortvideo.appeal.domain;
 
 import com.shortvideo.appeal.api.AppealState;
 import com.shortvideo.moderation.api.ModerationDirectory;
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -33,16 +37,19 @@ public class AppealService {
     private final OutboxWriter outboxWriter;
     private final VideoPlaybackDirectory videoDirectory;
     private final ModerationDirectory moderationDirectory;
+    private final AdminActionRecorder auditRecorder;
 
     public AppealService(
             AppealJpaRepository repository,
             OutboxWriter outboxWriter,
             VideoPlaybackDirectory videoDirectory,
-            ModerationDirectory moderationDirectory) {
+            ModerationDirectory moderationDirectory,
+            AdminActionRecorder auditRecorder) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDirectory = videoDirectory;
         this.moderationDirectory = moderationDirectory;
+        this.auditRecorder = auditRecorder;
     }
 
     @Transactional
@@ -74,24 +81,28 @@ public class AppealService {
     }
 
     @Transactional
-    public AppealView approve(String videoId, String decisionReason) {
+    public AppealView approve(String videoId, String decisionReason, String actorAccountId) {
         AppealEntity entity = find(videoId);
         if (!entity.approve(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
         AppealEntity saved = repository.saveAndFlush(entity);
         append(saved, EventTypes.VIDEO_APPEAL_APPROVED, decisionReason);
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.APPEAL_APPROVED, AuditTargets.VIDEO, videoId, decisionReason));
         return toView(saved);
     }
 
     @Transactional
-    public AppealView deny(String videoId, String decisionReason) {
+    public AppealView deny(String videoId, String decisionReason, String actorAccountId) {
         AppealEntity entity = find(videoId);
         if (!entity.deny(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
         AppealEntity saved = repository.saveAndFlush(entity);
         append(saved, EventTypes.VIDEO_APPEAL_DENIED, decisionReason);
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.APPEAL_DENIED, AuditTargets.VIDEO, videoId, decisionReason));
         return toView(saved);
     }
 

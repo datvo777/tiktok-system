@@ -178,7 +178,7 @@ export function App() {
 
       {panel && (
         <Sheet title={PANEL_TITLE[panel]} onClose={() => setPanel(null)}>
-          {panel === 'upload' && <Upload />}
+          {panel === 'upload' && <Upload onDone={() => setPanel(null)} />}
           {panel === 'search' && <SearchPanel />}
           {panel === 'notifications' && <Notifications />}
           {panel === 'account' && <AccountPanel onDone={() => setPanel(null)} />}

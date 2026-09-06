@@ -1,5 +1,9 @@
 package com.shortvideo.video.domain;
 
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -41,6 +45,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private final OutboxWriter outboxWriter;
     private final MinioAssetVerifier assetVerifier;
     private final DurableRevocationWriter revocationWriter;
+    private final AdminActionRecorder auditRecorder;
     private final TransactionTemplate transactions;
 
     public VideoService(
@@ -49,12 +54,14 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             OutboxWriter outboxWriter,
             MinioAssetVerifier assetVerifier,
             DurableRevocationWriter revocationWriter,
+            AdminActionRecorder auditRecorder,
             PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.supersededAssetRepository = supersededAssetRepository;
         this.outboxWriter = outboxWriter;
         this.assetVerifier = assetVerifier;
         this.revocationWriter = revocationWriter;
+        this.auditRecorder = auditRecorder;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -198,17 +205,19 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
 
     /** Admin lifecycle hold, independent of moderation (brief section 18, Milestone 6). */
     @Transactional
-    public void quarantine(String videoId, String reason) {
+    public void quarantine(String videoId, String reason, String actorAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
         if (!video.quarantine()) {
-            return;
+            return; // already held — not a new action, so nothing to audit
         }
         VideoEntity saved = repository.saveAndFlush(video);
         appendLifecycleSnapshotEvent(saved);
         revocationWriter.activate(new RevocationCommand(
                 RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, saved.getAggregateVersion(), reason));
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.VIDEO_QUARANTINED, AuditTargets.VIDEO, videoId, reason));
     }
 
     /**
@@ -221,7 +230,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * write itself guarded by optimistic locking, so the brief gap between checking
      * the assets and applying the decision cannot produce a lost update.
      */
-    public void restoreFromQuarantine(String videoId) {
+    public void restoreFromQuarantine(String videoId, String actorAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
@@ -239,18 +248,25 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             appendLifecycleSnapshotEvent(saved);
             revocationWriter.clear(new RevocationClearCommand(
                     RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, previousVersion));
+            // Inside the lambda so the audit row shares this transaction, as it
+            // does everywhere else — a restore that rolls back must not leave a
+            // record claiming it happened.
+            auditRecorder.record(AdminAction.of(
+                    actorAccountId, AuditActions.VIDEO_RESTORED, AuditTargets.VIDEO, videoId));
         });
     }
 
     /** Admin takedown (brief section 18 "remove video"): schedules the current version's assets for deletion. */
     @Transactional
-    public void remove(String videoId, String reason) {
+    public void remove(String videoId, String reason, String actorAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
         if (!video.scheduleForDeletion()) {
-            return;
+            return; // already scheduled — not a new action, so nothing to audit
         }
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.VIDEO_REMOVED, AuditTargets.VIDEO, videoId, reason));
         VideoEntity saved = repository.saveAndFlush(video);
         appendLifecycleSnapshotEvent(saved);
         revocationWriter.activate(new RevocationCommand(
@@ -268,7 +284,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * superseded-asset row — never deleted synchronously on the request path.
      */
     @Transactional
-    public void reprocess(String videoId) {
+    public void reprocess(String videoId, String actorAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
@@ -278,6 +294,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         if (video.getProcessingState() == ProcessingState.TRANSCODING) {
             return; // a job is already in flight — redelivery/duplicate-click no-op
         }
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.VIDEO_REPROCESSED, AuditTargets.VIDEO, videoId));
 
         Integer previousVersion = video.getProcessingVersion();
         String previousMaster = video.getMasterPlaylistKey();

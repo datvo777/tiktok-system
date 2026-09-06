@@ -2,6 +2,7 @@ package com.shortvideo.moderation.web;
 
 import java.util.UUID;
 import com.shortvideo.moderation.domain.ModerationService;
+import com.shortvideo.shared.security.AuthenticatedAccount;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -9,6 +10,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -45,16 +47,20 @@ public class ModerationController {
     @PostMapping("/{videoId}/approve")
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Approve (PENDING) or reinstate (REJECTED) a video")
-    public ResponseEntity<Void> approve(@PathVariable UUID videoId) {
-        moderationService.approve(videoId.toString());
+    public ResponseEntity<Void> approve(
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        moderationService.approve(videoId.toString(), caller.accountId());
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{videoId}/reject")
     @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Reject a video; immediately revokes playback")
-    public ResponseEntity<Void> reject(@PathVariable UUID videoId, @Valid @RequestBody ModerationDtos.RejectRequest request) {
-        moderationService.reject(videoId.toString(), request.reason());
+    @Operation(summary = "Reject a video against a policy; immediately revokes playback")
+    public ResponseEntity<Void> reject(
+            @PathVariable UUID videoId,
+            @AuthenticationPrincipal AuthenticatedAccount caller,
+            @Valid @RequestBody ModerationDtos.RejectRequest request) {
+        moderationService.reject(videoId.toString(), request.policyCategory(), request.reason(), caller.accountId());
         return ResponseEntity.noContent().build();
     }
 }

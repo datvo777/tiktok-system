@@ -2,10 +2,13 @@ package com.shortvideo.account.web;
 
 import com.shortvideo.account.api.AccountState;
 import com.shortvideo.account.api.AccountView;
+import com.shortvideo.account.domain.AdminAccountView;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.time.Instant;
+import java.util.List;
+import java.util.Set;
 
 public final class AccountDtos {
 
@@ -43,6 +46,20 @@ public final class AccountDtos {
     public record MeResponse(String accountId, String displayName, AccountState state, java.util.Set<String> roles) {
         public static MeResponse from(AccountView view, java.util.Set<String> roles) {
             return new MeResponse(view.accountId(), view.displayName(), view.state(), roles);
+        }
+    }
+
+    public record AdminAccountResponse(
+            String accountId, String email, String displayName, AccountState state, Set<String> roles, Instant createdAt) {
+        public static AdminAccountResponse from(AdminAccountView view) {
+            return new AdminAccountResponse(
+                    view.accountId(), view.email(), view.displayName(), view.state(), view.roles(), view.createdAt());
+        }
+    }
+
+    public record AdminAccountListResponse(List<AdminAccountResponse> items) {
+        public static AdminAccountListResponse from(List<AdminAccountView> views) {
+            return new AdminAccountListResponse(views.stream().map(AdminAccountResponse::from).toList());
         }
     }
 

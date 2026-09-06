@@ -1808,9 +1808,16 @@ textarea {
   display: flex;
   align-items: center;
   gap: 0.7rem;
+  width: 100%;
   padding: 0.55rem 0.6rem;
   border-radius: var(--radius-lg);
   transition: background 0.15s var(--ease-out);
+  /* Overrides the generic button reset above -- this is a list row that
+     happens to be a <button> for click/keyboard access, not a button visually. */
+  background: none;
+  border: none;
+  font-weight: 400;
+  text-align: left;
 }
 
 .search-hit:hover {

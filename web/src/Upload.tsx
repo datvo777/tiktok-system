@@ -64,7 +64,7 @@ const STATE_BADGE: Record<string, { variant: string; label: string }> = {
   EXPIRED: { variant: 'badge-danger', label: 'Expired' },
 };
 
-export function Upload() {
+export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -189,7 +189,7 @@ export function Upload() {
           <div className="step-divider">Preview</div>
           <Preview videoId={videoId} onLog={setLog} />
           <div className="step-divider">Publish</div>
-          <PublishButton videoId={videoId} onLog={setLog} />
+          <PublishButton videoId={videoId} onLog={setLog} onDone={onDone} />
         </>
       )}
 
@@ -368,8 +368,29 @@ function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string)
 // forever, even once the video is actually live.
 const PUBLISH_POLL_MS = 3000;
 
-function PublishButton({ videoId, onLog }: { videoId: string; onLog: (message: string) => void }) {
+/** What to tell the uploader, and whether there's still anything for them to wait on here. */
+const PUBLICATION_GUIDANCE: Record<string, { text: string; settled: boolean }> = {
+  PUBLISHED: { text: 'Published — visible in the public feed now.', settled: true },
+  PUBLISH_PENDING: {
+    text: "Waiting on moderation review, usually a few minutes. We'll notify your Inbox once it's decided — feel free to close this.",
+    settled: false,
+  },
+  SUSPENDED: { text: 'This video was suspended and is not visible in the feed.', settled: true },
+  PRIVATE: { text: 'This video is private.', settled: true },
+  REMOVED: { text: 'This video has been removed.', settled: true },
+};
+
+function PublishButton({
+  videoId,
+  onLog,
+  onDone,
+}: {
+  videoId: string;
+  onLog: (message: string) => void;
+  onDone?: (() => void) | undefined;
+}) {
   const [requested, setRequested] = useState(false);
+  const queryClient = useQueryClient();
 
   const status = useQuery<PublicationResponse>({
     queryKey: ['publication', videoId],
@@ -387,27 +408,52 @@ function PublishButton({ videoId, onLog }: { videoId: string; onLog: (message: s
           ? 'Published — visible in the public feed.'
           : `Publication intent recorded; state is ${status.data.state} until moderation approves it.`,
       );
+      // The Feed stays mounted behind this modal the whole time, so its
+      // ['feed'] query never remounts to pick up the new video on its own —
+      // without this it would sit invisible until something else (a window
+      // focus, a manual reload) happened to trigger a refetch.
+      if (status.data.state === 'PUBLISHED') {
+        void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      }
     }
-    // onLog is a fresh closure every render; only re-run when the status itself changes.
+    // onLog and queryClient are fresh/stable across renders; only re-run when the status itself changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status.data?.state, status.isError]);
 
+  const guidance = status.data ? PUBLICATION_GUIDANCE[status.data.state] : undefined;
+
   return (
-    <div className="btn-row">
-      <button
-        className="btn-primary btn-sm"
-        onClick={() => setRequested(true)}
-        disabled={requested && status.isFetching && !status.data}
-      >
-        {requested && status.isFetching && !status.data ? 'Publishing...' : 'Publish'}
-      </button>
-      {status.data && (
-        <span
-          className={`badge ${status.data.state === 'PUBLISHED' ? 'badge-success' : 'badge-warning'}`}
-          style={{ textTransform: 'none' }}
+    <div>
+      <div className="btn-row">
+        <button
+          className="btn-primary btn-sm"
+          onClick={() => setRequested(true)}
+          disabled={requested && status.isFetching && !status.data}
         >
-          {status.data.state}
-        </span>
+          {requested && status.isFetching && !status.data ? 'Publishing...' : 'Publish'}
+        </button>
+        {status.data && (
+          <span
+            className={`badge ${status.data.state === 'PUBLISHED' ? 'badge-success' : 'badge-warning'}`}
+            style={{ textTransform: 'none' }}
+          >
+            {status.data.state}
+          </span>
+        )}
+      </div>
+
+      {/* Once a publish is recorded, the uploader is stuck in this modal with only a
+          state code to go on -- spell out what happens next and give them a way out
+          instead of leaving them staring at "PUBLISH_PENDING". */}
+      {guidance && (
+        <div className={`callout${guidance.settled ? '' : ' callout-warning'}`} style={{ marginTop: '0.85rem' }}>
+          <p style={{ marginTop: 0 }}>{guidance.text}</p>
+          {onDone && (
+            <button className="btn-ghost btn-sm" style={{ marginTop: '0.6rem' }} onClick={onDone}>
+              Done
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
