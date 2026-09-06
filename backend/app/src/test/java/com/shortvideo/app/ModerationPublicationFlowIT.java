@@ -189,7 +189,7 @@ class ModerationPublicationFlowIT {
         ResponseEntity<Void> reject = rest.exchange(
                 url("/internal/v1/videos/" + videoId + "/reject"),
                 HttpMethod.POST,
-                new HttpEntity<>(Map.of("reason", "policy violation"), adminAuth),
+                new HttpEntity<>(Map.of("policyCategory", "SPAM_DECEPTIVE", "reason", "policy violation"), adminAuth),
                 Void.class);
         assertThat(reject.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 

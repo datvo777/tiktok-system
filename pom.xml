@@ -36,6 +36,7 @@
         <module>backend/shared/security</module>
         <module>backend/shared/observability</module>
         <module>backend/shared/revocation</module>
+        <module>backend/shared/audit</module>
         <module>backend/modules/account</module>
         <module>backend/modules/upload</module>
         <module>backend/modules/video</module>
@@ -117,6 +118,11 @@
             <dependency>
                 <groupId>com.shortvideo</groupId>
                 <artifactId>revocation</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.shortvideo</groupId>
+                <artifactId>audit</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

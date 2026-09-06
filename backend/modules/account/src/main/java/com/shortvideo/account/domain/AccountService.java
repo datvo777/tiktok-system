@@ -3,6 +3,10 @@ package com.shortvideo.account.domain;
 import com.shortvideo.account.api.AccountDirectory;
 import com.shortvideo.account.api.AccountState;
 import com.shortvideo.account.api.AccountView;
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -13,6 +17,7 @@ import com.shortvideo.shared.revocation.RevocationCommand;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -20,6 +25,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import org.slf4j.MDC;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -47,6 +53,7 @@ public class AccountService implements AccountDirectory {
     private final PasswordEncoder passwordEncoder;
     private final OutboxWriter outboxWriter;
     private final DurableRevocationWriter revocationWriter;
+    private final AdminActionRecorder auditRecorder;
     private final TransactionTemplate transactions;
 
     public AccountService(
@@ -54,11 +61,13 @@ public class AccountService implements AccountDirectory {
             PasswordEncoder passwordEncoder,
             OutboxWriter outboxWriter,
             DurableRevocationWriter revocationWriter,
+            AdminActionRecorder auditRecorder,
             PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.passwordEncoder = passwordEncoder;
         this.outboxWriter = outboxWriter;
         this.revocationWriter = revocationWriter;
+        this.auditRecorder = auditRecorder;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -130,7 +139,7 @@ public class AccountService implements AccountDirectory {
     }
 
     @Transactional
-    public AccountView changeState(String accountId, AccountState next, String reason) {
+    public AccountView changeState(String accountId, AccountState next, String reason, String actorAccountId) {
         AccountEntity account = repository
                 .findById(parseId(accountId))
                 .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
@@ -157,7 +166,26 @@ public class AccountService implements AccountDirectory {
                     saved.getAggregateVersion(),
                     reason));
         }
+
+        auditRecorder.record(AdminAction.of(
+                actorAccountId,
+                next == AccountState.ACTIVE ? AuditActions.ACCOUNT_REINSTATED : AuditActions.ACCOUNT_SUSPENDED,
+                AuditTargets.ACCOUNT,
+                saved.getAccountId().toString(),
+                reason));
+
         return toView(saved);
+    }
+
+    /** Admin search by email substring, newest accounts first. */
+    @Transactional(readOnly = true)
+    public List<AdminAccountView> search(String emailFragment, int limit) {
+        return repository
+                .findByEmailContainingIgnoreCaseOrderByCreatedAtDesc(normalise(emailFragment), PageRequest.of(0, limit))
+                .stream()
+                .map(a -> new AdminAccountView(
+                        a.getAccountId().toString(), a.getEmail(), a.getDisplayName(), a.getState(), rolesOf(a), a.getCreatedAt()))
+                .toList();
     }
 
     @Override

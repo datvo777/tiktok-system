@@ -1,86 +1,69 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import Hls from 'hls.js';
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import {
-  approve,
-  approveAppeal,
-  createModeratorPreviewSession,
-  denyAppeal,
-  getMe,
-  listPending,
-  listPendingAppeals,
-  login,
-  logout,
-  quarantine,
-  reject,
-  removeVideo,
-  restore,
-  type PendingAppeal,
-  type PendingVideo,
-} from './api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { getMe, listPending, login, logout } from './api';
+import { Investigate } from './Investigate';
+import { Operate } from './Operate';
+import { Review } from './Review';
+import { ToastProvider } from './ui';
+
+type Surface = 'review' | 'investigate' | 'operate';
 
 export function App() {
   const [email, setEmail] = useState('admin@example.com');
-  const [password, setPassword] = useState('correct-horse-battery');
+  const [password, setPassword] = useState('');
   const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
 
-  // The session cookie survives a page refresh even though React state
-  // doesn't -- check it once on load instead of assuming signed-out and
-  // forcing a re-login every time the page reloads.
+  // The session cookie survives a page refresh even though React state does
+  // not — checked once on load so a reload is not mistaken for a sign-out.
   const me = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false });
 
   if (me.isPending) {
     return (
-      <div className="auth-screen">
-        <div className="admin-brand">
-          <span className="admin-brand-mark">A</span>
-          Short Video Admin
-        </div>
+      <div className="auth">
+        <Brand />
       </div>
     );
   }
 
   if (!me.data) {
     return (
-      <div className="auth-screen">
-        <div className="admin-brand" style={{ marginBottom: '1.5rem' }}>
-          <span className="admin-brand-mark">A</span>
-          Short Video Admin
-        </div>
-        <section className="card">
-          <p className="card-desc">
-            No self-service admin registration exists; elevate an account's role directly in Postgres
-            (<code>UPDATE account.account SET roles = 'USER,ADMIN' WHERE email = ...</code>) for local testing.
-          </p>
+      <div className="auth">
+        <Brand />
+        <section className="panel">
+          <div className="panel-body">
+            <p className="section-note">
+              There is no self-service admin registration. Grant the role directly in Postgres for local testing:{' '}
+              <code>UPDATE account.account SET roles = 'USER,ADMIN' WHERE email = …</code>
+            </p>
 
-          <label className="field">
-            <span className="field-label">Email</span>
-            <input value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          <label className="field">
-            <span className="field-label">Password</span>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          </label>
+            <label className="field">
+              <span className="field-label">Email</span>
+              <input value={email} autoComplete="username" onChange={(e) => setEmail(e.target.value)} />
+            </label>
 
-          <button
-            className="btn-primary"
-            style={{ marginTop: '1.1rem' }}
-            onClick={async () => {
-              try {
-                setStatus('Signing in...');
-                await login(email, password);
-                setStatus('');
-                await queryClient.invalidateQueries({ queryKey: ['me'] });
-              } catch (error) {
-                setStatus(`Sign in failed: ${(error as Error).message}`);
-              }
-            }}
-          >
-            Sign in
-          </button>
+            <label className="field">
+              <span className="field-label">Password</span>
+              <input
+                type="password"
+                value={password}
+                autoComplete="current-password"
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !busy) void signIn();
+                }}
+              />
+            </label>
 
-          {status && <p className="error-text" style={{ marginTop: '0.75rem' }}>{status}</p>}
+            <div className="btn-row">
+              <button className="btn-accent" disabled={busy} onClick={() => void signIn()}>
+                {busy ? 'Signing in…' : 'Sign in'}
+              </button>
+            </div>
+
+            {status && <p className="error-text">{status}</p>}
+          </div>
         </section>
       </div>
     );
@@ -88,32 +71,17 @@ export function App() {
 
   if (!me.data.roles.includes('ADMIN')) {
     return (
-      <div className="auth-screen">
-        <div className="admin-brand" style={{ marginBottom: '1.5rem' }}>
-          <span className="admin-brand-mark">A</span>
-          Short Video Admin
-        </div>
-        <section className="card">
-          <p className="error-text">
-            Signed in as {me.data.displayName}, but this account does not have the ADMIN role.
-          </p>
-          <button
-            className="btn-ghost"
-            style={{ marginTop: '0.75rem' }}
-            onClick={async () => {
-              await logout();
-              // `removeQueries` only deletes the cache entry -- it never
-              // calls the Query's own reset(), so an already-mounted
-              // observer (this component) keeps its stale reference and
-              // never re-renders or refetches. `resetQueries` calls
-              // query.reset() (clears state, notifies observers) and then
-              // refetches active queries, which correctly resolves to a 401
-              // with no stale data left behind to mask it.
-              await queryClient.resetQueries({ queryKey: ['me'] });
-            }}
-          >
-            Sign out
-          </button>
+      <div className="auth">
+        <Brand />
+        <section className="panel">
+          <div className="panel-body">
+            <p className="error-text">
+              Signed in as {me.data.displayName}, but this account does not carry the ADMIN role.
+            </p>
+            <div className="btn-row">
+              <button onClick={() => void signOut()}>Sign out</button>
+            </div>
+          </div>
         </section>
       </div>
     );
@@ -121,399 +89,90 @@ export function App() {
 
   return (
     <ToastProvider>
-      <div className="admin-shell">
-        <div className="admin-topbar">
-          <div className="admin-brand">
-            <span className="admin-brand-mark">A</span>
-            Short Video Admin
-          </div>
-          <div className="btn-row">
-            <span className="count-tag">{me.data.displayName}</span>
-            <button
-              className="btn-ghost"
-              onClick={async () => {
-                await logout();
-                await queryClient.resetQueries({ queryKey: ['me'] });
-              }}
-            >
-              Sign out
-            </button>
-          </div>
-        </div>
-
-        <PendingVideos />
-        <PendingAppeals />
-        <LifecycleActions />
-      </div>
+      <Console displayName={me.data.displayName} onSignOut={() => void signOut()} />
     </ToastProvider>
   );
+
+  async function signIn() {
+    try {
+      setBusy(true);
+      setStatus('');
+      await login(email, password);
+      await queryClient.invalidateQueries({ queryKey: ['me'] });
+    } catch (error) {
+      setStatus(`Sign in failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    await logout();
+    // resetQueries, not removeQueries: the latter only drops the cache entry
+    // and leaves an already-mounted observer holding a stale reference, so the
+    // app never re-renders back to the signed-out state.
+    await queryClient.resetQueries({ queryKey: ['me'] });
+  }
 }
 
-type Toast = { id: number; kind: 'success' | 'error'; message: string };
-type PushToast = (kind: 'success' | 'error', message: string) => void;
-
-const ToastContext = createContext<PushToast | null>(null);
-
-/** Approve/reject-style mutations are otherwise silent: the row leaving the
-    list is the only success signal, and a failure has no signal at all. */
-function useToast(): PushToast {
-  const ctx = useContext(ToastContext);
-  if (!ctx) throw new Error('useToast must be used within ToastProvider');
-  return ctx;
-}
-
-function ToastProvider({ children }: { children: React.ReactNode }) {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const nextId = useRef(0);
-
-  const pushToast: PushToast = (kind, message) => {
-    const id = ++nextId.current;
-    setToasts((current) => [...current, { id, kind, message }]);
-    setTimeout(() => setToasts((current) => current.filter((t) => t.id !== id)), 4000);
-  };
-
+function Brand() {
   return (
-    <ToastContext.Provider value={pushToast}>
-      {children}
-      <div className="toast-viewport">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.kind === 'error' ? 'toast-error' : 'toast-success'}`}>
-            {t.message}
-            <button
-              className="toast-dismiss"
-              aria-label="Dismiss"
-              onClick={() => setToasts((current) => current.filter((x) => x.id !== t.id))}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-      </div>
-    </ToastContext.Provider>
-  );
-}
-
-function PendingVideos() {
-  const queryClient = useQueryClient();
-  const pushToast = useToast();
-  const [reasons, setReasons] = useState<Record<string, string>>({});
-
-  // Keyset pagination only ever hands back a "next" cursor, so Prev/Next
-  // navigation is a client-side stack of the cursors already seen: cursorPath[i]
-  // is the cursor that fetches page i (cursorPath[0] is undefined, the first
-  // page). "Next" grows the stack; "Prev" just moves the index back onto a
-  // cursor that's still there.
-  const [cursorPath, setCursorPath] = useState<(string | undefined)[]>([undefined]);
-  const [pageIndex, setPageIndex] = useState(0);
-  const cursor = cursorPath[pageIndex];
-
-  const pending = useQuery({
-    queryKey: ['pending', cursor],
-    queryFn: () => listPending(cursor),
-    refetchInterval: 5000,
-  });
-
-  const approveMutation = useMutation({
-    mutationFn: approve,
-    onSuccess: () => {
-      pushToast('success', 'Video approved.');
-      queryClient.invalidateQueries({ queryKey: ['pending'] });
-    },
-    onError: (error) => pushToast('error', `Approve failed: ${(error as Error).message}`),
-  });
-  const rejectMutation = useMutation({
-    mutationFn: ({ videoId, reason }: { videoId: string; reason: string }) => reject(videoId, reason),
-    onSuccess: () => {
-      pushToast('success', 'Video rejected.');
-      queryClient.invalidateQueries({ queryKey: ['pending'] });
-    },
-    onError: (error) => pushToast('error', `Reject failed: ${(error as Error).message}`),
-  });
-
-  const videos: PendingVideo[] = pending.data?.items ?? [];
-  const nextCursor = pending.data?.nextCursor ?? null;
-
-  const goNext = () => {
-    if (!nextCursor) return;
-    setCursorPath((path) => (pageIndex + 1 < path.length ? path : [...path, nextCursor]));
-    setPageIndex((i) => i + 1);
-  };
-  const goPrev = () => setPageIndex((i) => Math.max(0, i - 1));
-
-  return (
-    <section className="card">
-      <div className="card-head">
-        <h2>Pending moderation</h2>
-        <span className="count-tag">page {pageIndex + 1}</span>
-      </div>
-
-      {pending.isPending && <p className="card-desc">Loading...</p>}
-      {pending.isError && (
-        <p className="error-text">
-          {(pending.error as Error).message.includes('403') || (pending.error as Error).message.includes('Forbidden')
-            ? 'Signed in, but this account does not have the ADMIN role.'
-            : `Failed to load: ${(pending.error as Error).message}`}
-        </p>
-      )}
-      {pending.isSuccess && videos.length === 0 && pageIndex === 0 && (
-        <div className="empty-state">Nothing waiting for a decision.</div>
-      )}
-
-      <ul className="item-list">
-        {videos.map((video) => (
-          <li key={video.videoId} className="item-row">
-            <div className="item-meta">
-              video <span className="id">{video.videoId}</span>
-              <br />
-              creator <span className="id">{video.creatorId}</span>
-              <br />
-              waiting since {video.createdAt}
-            </div>
-            <ModeratorPreview videoId={video.videoId} />
-            <div className="item-actions">
-              <button className="btn-primary" onClick={() => approveMutation.mutate(video.videoId)} disabled={approveMutation.isPending}>
-                Approve
-              </button>
-              <input
-                placeholder="reason"
-                value={reasons[video.videoId] ?? ''}
-                onChange={(e) => setReasons((r) => ({ ...r, [video.videoId]: e.target.value }))}
-              />
-              <button
-                className="btn-danger"
-                onClick={() => rejectMutation.mutate({ videoId: video.videoId, reason: reasons[video.videoId] ?? '' })}
-                disabled={rejectMutation.isPending}
-              >
-                Reject
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      {(pageIndex > 0 || nextCursor) && (
-        <div className="btn-row" style={{ marginTop: '1rem', justifyContent: 'center' }}>
-          <button className="btn-ghost" onClick={goPrev} disabled={pageIndex === 0 || pending.isFetching}>
-            ← Prev
-          </button>
-          <button className="btn-ghost" onClick={goNext} disabled={!nextCursor || pending.isFetching}>
-            Next →
-          </button>
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** Admin-only playback so a moderator can actually watch a video before deciding on it. */
-function ModeratorPreview({ videoId }: { videoId: string }) {
-  const [open, setOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Unknown until the browser reads the stream's actual dimensions -- a fixed
-  // maxWidth alone left a portrait upload tiny and a landscape one uselessly narrow.
-  const [orientation, setOrientation] = useState<'portrait' | 'landscape' | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  // One hls.js instance for this component's whole lifetime, reused across
-  // repeated Preview clicks via loadSource() instead of destroy()+new Hls().
-  // Destroying and immediately re-attaching a *new* MediaSource to the same
-  // element is a known race in some browsers -- the old one isn't always
-  // fully released before the new attach, which is exactly what
-  // "mediaSourceRequiresReset" means. Reusing one instance sidesteps the race
-  // entirely instead of trying to win it. Only destroyed when this component
-  // itself unmounts (the row leaving the pending-moderation list).
-  const hlsRef = useRef<Hls | null>(null);
-
-  useEffect(
-    () => () => {
-      hlsRef.current?.destroy();
-      hlsRef.current = null;
-    },
-    [],
-  );
-
-  const session = useMutation({
-    mutationFn: () => createModeratorPreviewSession(videoId),
-    onSuccess: (result) => {
-      setError(null);
-      const url = `/media/videos/${videoId}/${result.processingVersion}/master.m3u8`;
-      const el = videoRef.current;
-      if (!el) return;
-      if (Hls.isSupported()) {
-        if (!hlsRef.current) {
-          const hls = new Hls();
-          hlsRef.current = hls;
-          hls.attachMedia(el);
-          hls.on(Hls.Events.ERROR, (_event, data) => {
-            if (data.fatal) setError(`Playback error: ${data.type} — ${data.details}`);
-          });
-        }
-        hlsRef.current.loadSource(url);
-      } else if (el.canPlayType('application/vnd.apple.mpegurl')) {
-        el.src = url;
-      } else {
-        setError('This browser supports neither MSE (hls.js) nor native HLS playback.');
-      }
-    },
-    onError: (err) => setError((err as Error).message),
-  });
-
-  return (
-    <div style={{ marginTop: '0.5rem' }}>
-      <button
-        className="btn-ghost"
-        onClick={() => {
-          if (open) {
-            setOpen(false);
-          } else {
-            setOpen(true);
-            session.mutate();
-          }
-        }}
-      >
-        {open ? 'Hide preview' : '▶ Preview'}
-      </button>
-      {/* Always mounted once first opened, so the video element and its hls.js
-          instance persist across show/hide instead of tearing down and
-          racing a rebuild on every click. */}
-      <video
-        ref={videoRef}
-        controls
-        onLoadedMetadata={(e) => {
-          const { videoWidth, videoHeight } = e.currentTarget;
-          if (videoWidth && videoHeight) setOrientation(videoWidth >= videoHeight ? 'landscape' : 'portrait');
-        }}
-        style={{
-          display: open ? 'block' : 'none',
-          marginTop: '0.5rem',
-          maxWidth: orientation === 'portrait' ? '180px' : '320px',
-          maxHeight: '400px',
-          borderRadius: 8,
-          background: '#000',
-        }}
-      />
-      {open && session.isPending && <p className="item-meta">Requesting preview session...</p>}
-      {open && error && <p className="error-text">{error}</p>}
+    <div className="brand">
+      <span className="brand-mark">M</span>
+      <span>Moderation Console</span>
     </div>
   );
 }
 
-function PendingAppeals() {
-  const queryClient = useQueryClient();
-  const pushToast = useToast();
-  const [reasons, setReasons] = useState<Record<string, string>>({});
+function Console({ displayName, onSignOut }: { displayName: string; onSignOut: () => void }) {
+  const [surface, setSurface] = useState<Surface>('review');
 
-  const pending = useQuery({ queryKey: ['pending-appeals'], queryFn: listPendingAppeals, refetchInterval: 5000 });
-
-  const approveMutation = useMutation({
-    mutationFn: ({ videoId, reason }: { videoId: string; reason: string }) => approveAppeal(videoId, reason),
-    onSuccess: () => {
-      pushToast('success', 'Appeal approved.');
-      queryClient.invalidateQueries({ queryKey: ['pending-appeals'] });
-    },
-    onError: (error) => pushToast('error', `Approve appeal failed: ${(error as Error).message}`),
-  });
-  const denyMutation = useMutation({
-    mutationFn: ({ videoId, reason }: { videoId: string; reason: string }) => denyAppeal(videoId, reason),
-    onSuccess: () => {
-      pushToast('success', 'Appeal denied.');
-      queryClient.invalidateQueries({ queryKey: ['pending-appeals'] });
-    },
-    onError: (error) => pushToast('error', `Deny appeal failed: ${(error as Error).message}`),
+  // Shares a cache key with Operate, so the badge costs nothing extra.
+  const backlog = useQuery({
+    queryKey: ['queue-health'],
+    queryFn: () => listPending(undefined, 100),
+    refetchInterval: 20000,
   });
 
-  if (pending.isError) return null; // already surfaced by PendingVideos above
-
-  const appeals: PendingAppeal[] = pending.data ?? [];
-
-  return (
-    <section className="card">
-      <div className="card-head">
-        <h2>Pending appeals</h2>
-        <span className="count-tag">{appeals.length}</span>
-      </div>
-
-      {pending.isPending && <p className="card-desc">Loading...</p>}
-      {pending.isSuccess && appeals.length === 0 && <div className="empty-state">No appeals awaiting review.</div>}
-
-      <ul className="item-list">
-        {appeals.map((appeal) => (
-          <li key={appeal.videoId} className="item-row">
-            <div className="item-meta">
-              video <span className="id">{appeal.videoId}</span>
-            </div>
-            <div className="item-reason">{appeal.reason}</div>
-            <div className="item-actions">
-              <input
-                placeholder="decision reason"
-                value={reasons[appeal.videoId] ?? ''}
-                onChange={(e) => setReasons((r) => ({ ...r, [appeal.videoId]: e.target.value }))}
-              />
-              <button
-                className="btn-primary"
-                onClick={() => approveMutation.mutate({ videoId: appeal.videoId, reason: reasons[appeal.videoId] ?? '' })}
-                disabled={approveMutation.isPending}
-              >
-                Approve appeal
-              </button>
-              <button
-                className="btn-danger"
-                onClick={() => denyMutation.mutate({ videoId: appeal.videoId, reason: reasons[appeal.videoId] ?? '' })}
-                disabled={denyMutation.isPending}
-              >
-                Deny
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function LifecycleActions() {
-  const [videoId, setVideoId] = useState('');
-  const [reason, setReason] = useState('');
-  const [status, setStatus] = useState('');
-
-  const run = (action: (id: string, reason: string) => Promise<void>, label: string) => async () => {
-    try {
-      setStatus(`${label}...`);
-      await action(videoId, reason);
-      setStatus(`${label} succeeded.`);
-    } catch (error) {
-      setStatus(`${label} failed: ${(error as Error).message}`);
-    }
-  };
+  const waiting = backlog.data?.items.length ?? 0;
+  const capped = Boolean(backlog.data?.nextCursor);
 
   return (
-    <section className="card">
-      <div className="card-head">
-        <h2>Video lifecycle actions</h2>
-      </div>
-      <p className="card-desc">
-        Quarantine, restore, or permanently remove a video by id — independent of the moderation decision (brief
-        section 18, Milestone 6).
-      </p>
-      <label className="field">
-        <span className="field-label">Video ID</span>
-        <input placeholder="videoId" value={videoId} onChange={(e) => setVideoId(e.target.value)} style={{ fontFamily: 'var(--font-mono)' }} />
-      </label>
-      <label className="field">
-        <span className="field-label">Reason (quarantine / remove only)</span>
-        <input placeholder="reason" value={reason} onChange={(e) => setReason(e.target.value)} />
-      </label>
-      <div className="btn-row" style={{ marginTop: '0.9rem' }}>
-        <button onClick={run(quarantine, 'Quarantine')} disabled={!videoId}>
-          Quarantine
-        </button>
-        <button onClick={run(() => restore(videoId), 'Restore')} disabled={!videoId}>
-          Restore
-        </button>
-        <button className="btn-danger" onClick={run(removeVideo, 'Remove')} disabled={!videoId}>
-          Remove
-        </button>
-      </div>
-      {status && <p className="item-meta" style={{ marginTop: '0.75rem' }}>{status}</p>}
-    </section>
+    <div className="shell">
+      <header className="topbar">
+        <Brand />
+
+        <nav className="nav">
+          <button aria-current={surface === 'review' ? 'page' : undefined} onClick={() => setSurface('review')}>
+            Review
+            {waiting > 0 && (
+              <span className={`badge${capped || waiting > 25 ? ' is-warn' : ''}`}>
+                {waiting}
+                {capped ? '+' : ''}
+              </span>
+            )}
+          </button>
+          <button aria-current={surface === 'investigate' ? 'page' : undefined} onClick={() => setSurface('investigate')}>
+            Investigate
+          </button>
+          <button aria-current={surface === 'operate' ? 'page' : undefined} onClick={() => setSurface('operate')}>
+            Operate
+          </button>
+        </nav>
+
+        <div className="topbar-end">
+          <span className="who">{displayName}</span>
+          <button className="btn-quiet" onClick={onSignOut}>
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      <main className="surface">
+        {surface === 'review' && <Review />}
+        {surface === 'investigate' && <Investigate />}
+        {surface === 'operate' && <Operate />}
+      </main>
+    </div>
   );
 }
