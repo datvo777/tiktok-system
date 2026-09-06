@@ -4,7 +4,7 @@ import { search, type SearchHit } from './api';
 import { SearchIcon } from './icons';
 import { Avatar, handleFor } from './ui';
 
-/** Search API (brief section 20, Milestone 7): matches by creator display name. */
+/** Search API (brief section 20, Milestone 7): matches by creator display name, video title, or description. */
 export function SearchPanel() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchHit[] | null>(null);
@@ -22,8 +22,10 @@ export function SearchPanel() {
           autoFocus
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search creators"
-          onKeyDown={(e) => e.key === 'Enter' && query.trim() && run.mutate()}
+          placeholder="Search creators or videos"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && query.trim() && !run.isPending) run.mutate();
+          }}
         />
         <button className="btn-primary" disabled={!query.trim() || run.isPending} onClick={() => run.mutate()}>
           {run.isPending ? '…' : 'Search'}
@@ -35,7 +37,7 @@ export function SearchPanel() {
       {results && results.length === 0 && (
         <div className="empty">
           <SearchIcon />
-          <span className="empty-text">No creators match “{query}”.</span>
+          <span className="empty-text">No creators or videos match “{query}”.</span>
         </div>
       )}
 
@@ -45,8 +47,10 @@ export function SearchPanel() {
             <li key={hit.videoId} data-testid={`search-hit-${hit.videoId}`} className="search-hit">
               <Avatar seed={hit.creatorId} label={hit.creatorDisplayName} size="sm" />
               <div style={{ minWidth: 0 }}>
-                <div className="search-hit-name">{hit.creatorDisplayName}</div>
-                <div className="search-hit-sub">{handleFor(hit.creatorId)}</div>
+                <div className="search-hit-name">{hit.title || hit.creatorDisplayName}</div>
+                <div className="search-hit-sub">
+                  {hit.creatorDisplayName} · {handleFor(hit.creatorId)}
+                </div>
               </div>
             </li>
           ))}

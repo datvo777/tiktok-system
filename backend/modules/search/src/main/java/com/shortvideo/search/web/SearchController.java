@@ -29,7 +29,7 @@ public class SearchController {
     }
 
     @GetMapping
-    @Operation(summary = "Search published videos by creator name")
+    @Operation(summary = "Search published videos by creator name, title, or description")
     public SearchDtos.SearchResponse search(
             // Unbounded before: a multi-megabyte q was forwarded verbatim to
             // OpenSearch. No injection risk (q is a bound value in a structured
