@@ -26,9 +26,11 @@ public class CreatorController {
     }
 
     @GetMapping("/{creatorId}")
-    @Operation(summary = "Read a creator profile")
-    public SocialDtos.CreatorProfileResponse profile(@PathVariable UUID creatorId) {
-        return SocialDtos.CreatorProfileResponse.from(socialService.profile(creatorId.toString()));
+    @Operation(summary = "Read a creator profile, including whether the caller follows them")
+    public SocialDtos.CreatorProfileResponse profile(
+            @PathVariable UUID creatorId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        return SocialDtos.CreatorProfileResponse.from(
+                socialService.profile(creatorId.toString(), caller.accountId()));
     }
 
     @PostMapping("/{creatorId}/follow")

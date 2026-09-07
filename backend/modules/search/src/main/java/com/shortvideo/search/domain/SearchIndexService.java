@@ -130,15 +130,38 @@ public class SearchIndexService {
      * unexpected body should produce no results, not a {@code NullPointerException}
      * rendered as an internal error.
      */
-    @SuppressWarnings("unchecked")
     public List<Map<String, Object>> search(String query, int limit) {
-        tryEnsureIndex();
-        Map<String, Object> body = Map.of(
+        return runQuery(Map.of(
                 "query", Map.of(
                         "multi_match", Map.of(
                                 "query", query,
                                 "fields", List.of("creatorDisplayName", "title", "description"))),
-                "size", limit);
+                "size", limit));
+    }
+
+    /**
+     * A creator's published videos, newest first. The index only ever holds
+     * published documents (see {@link VideoSearchListener}), so -- same as
+     * {@link #search} -- no separate eligibility check is needed here.
+     */
+    public List<Map<String, Object>> byCreator(String creatorId, int from, int size) {
+        return runQuery(Map.of(
+                "query", Map.of("term", Map.of("creatorId", creatorId)),
+                "sort", List.of(Map.of("publishedAt", "desc")),
+                "from", from,
+                "size", size));
+    }
+
+    /**
+     * A search-side outage answers 503 rather than 500: it is a dependency being
+     * unavailable, not this service failing, and the distinction is what tells a
+     * client to retry. The response shape is also navigated defensively — an
+     * unexpected body should produce no results, not a {@code NullPointerException}
+     * rendered as an internal error.
+     */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> runQuery(Map<String, Object> body) {
+        tryEnsureIndex();
         Map<String, Object> response;
         try {
             response = client.post()

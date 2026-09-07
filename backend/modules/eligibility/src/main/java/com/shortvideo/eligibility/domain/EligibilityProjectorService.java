@@ -6,6 +6,7 @@ import com.shortvideo.eligibility.api.EligibilityDirectory;
 import com.shortvideo.eligibility.api.VideoEligibilityView;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
@@ -84,6 +85,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
     @Transactional(readOnly = true)
     public Optional<VideoEligibilityView> findVideoEligibility(String videoId) {
         return repository.findVideo(videoId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<VideoEligibilityView> findVideoEligibilities(Collection<String> videoIds) {
+        return repository.findVideos(videoIds);
     }
 
     @Override

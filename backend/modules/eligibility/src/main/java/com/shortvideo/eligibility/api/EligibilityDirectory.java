@@ -1,5 +1,6 @@
 package com.shortvideo.eligibility.api;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -14,6 +15,18 @@ public interface EligibilityDirectory {
     Optional<VideoEligibilityView> findVideoEligibility(String videoId);
 
     Optional<AccountEligibilityView> findAccountEligibility(String accountId);
+
+    /**
+     * As {@link #findVideoEligibility}, for a whole set of ids in one query.
+     * Videos with no projection row are simply absent from the result, so
+     * unknown still denies (Rule 9) — a caller iterating the result sees only
+     * videos this projection actually knows about.
+     *
+     * <p>Exists for callers holding an arbitrary list of video ids (a favorite
+     * collection's items) rather than a ranked candidate set: one round trip
+     * instead of one per id.
+     */
+    List<VideoEligibilityView> findVideoEligibilities(Collection<String> videoIds);
 
     /**
      * Candidate source for the Feed module (brief section 15): currently eligible

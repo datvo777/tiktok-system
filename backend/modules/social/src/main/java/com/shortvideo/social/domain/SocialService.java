@@ -130,7 +130,7 @@ public class SocialService implements SocialDirectory {
      * reads and the media gateway all take care not to.
      */
     @Transactional(readOnly = true)
-    public CreatorProfileView profile(String accountId) {
+    public CreatorProfileView profile(String accountId, String viewerId) {
         AccountView account = accountDirectory
                 .find(accountId)
                 .filter(AccountView::isEligible)
@@ -139,7 +139,8 @@ public class SocialService implements SocialDirectory {
                 account.accountId(),
                 account.displayName(),
                 repository.followerCount(accountId),
-                repository.followingCount(accountId));
+                repository.followingCount(accountId),
+                !accountId.equals(viewerId) && repository.isFollowing(viewerId, accountId));
     }
 
     @Override

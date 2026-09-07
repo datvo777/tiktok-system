@@ -54,6 +54,8 @@ class ModerationNotificationListener {
                         videoId);
                 case EventTypes.VIDEO_MODERATION_REINSTATED -> notificationService.create(
                         creatorId, "MODERATION_REINSTATED", "Your video was reinstated and is playable again.", videoId);
+                case EventTypes.VIDEO_APPEAL_APPROVED -> notificationService.create(
+                        creatorId, "APPEAL_APPROVED", "Your appeal was approved; your video will be reinstated.", videoId);
                 case EventTypes.VIDEO_APPEAL_DENIED -> notificationService.create(
                         creatorId, "APPEAL_DENIED",
                         "Your appeal was denied" + (reason == null || reason.isBlank() ? "." : ": " + reason), videoId);

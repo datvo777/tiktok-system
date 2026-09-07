@@ -242,6 +242,27 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
     }
 
+    /** Someone else's collection id is indistinguishable from a missing one, by design. */
+    @ExceptionHandler(SocialExceptions.CollectionNotFound.class)
+    public ProblemDetail collectionNotFound(SocialExceptions.CollectionNotFound e) {
+        return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
+    }
+
+    @ExceptionHandler(SocialExceptions.CollectionNameTaken.class)
+    public ProblemDetail collectionNameTaken(SocialExceptions.CollectionNameTaken e) {
+        return problem(HttpStatus.CONFLICT, "Name already used", e.getMessage());
+    }
+
+    @ExceptionHandler(SocialExceptions.InvalidCollectionName.class)
+    public ProblemDetail invalidCollectionName(SocialExceptions.InvalidCollectionName e) {
+        return problem(HttpStatus.BAD_REQUEST, "Invalid name", e.getMessage());
+    }
+
+    @ExceptionHandler(SocialExceptions.CollectionLimitReached.class)
+    public ProblemDetail collectionLimitReached(SocialExceptions.CollectionLimitReached e) {
+        return problem(HttpStatus.CONFLICT, "Limit reached", e.getMessage());
+    }
+
     @ExceptionHandler(ModerationExceptions.InvalidCursor.class)
     public ProblemDetail invalidCursor(ModerationExceptions.InvalidCursor e) {
         return problem(HttpStatus.BAD_REQUEST, "Invalid cursor", e.getMessage());

@@ -106,6 +106,25 @@ public class AppealService {
         return toView(saved);
     }
 
+    /**
+     * Owner checks the current appeal status of one of their own videos — a NONE
+     * view when no appeal has ever been submitted, matching the resting state
+     * {@link AppealEntity} itself starts in, rather than a 404.
+     */
+    @Transactional(readOnly = true)
+    public AppealView getStatus(String videoId, String callerAccountId) {
+        VideoPlaybackView video = videoDirectory
+                .findForPlayback(videoId)
+                .orElseThrow(() -> new AppealExceptions.AppealNotFound("No such video"));
+        if (!video.ownerAccountId().equals(callerAccountId)) {
+            throw new AppealExceptions.AppealNotFound("No such video");
+        }
+        return repository
+                .findById(UUID.fromString(videoId))
+                .map(AppealService::toView)
+                .orElseGet(() -> new AppealView(videoId, callerAccountId, AppealState.NONE, null, null, null));
+    }
+
     @Transactional(readOnly = true)
     public List<AppealView> listPending() {
         return repository

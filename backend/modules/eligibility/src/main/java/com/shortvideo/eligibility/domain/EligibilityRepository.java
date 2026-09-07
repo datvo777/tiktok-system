@@ -138,6 +138,19 @@ class EligibilityRepository {
             FROM eligibility.video_eligibility WHERE video_id = ?
             """;
 
+    /**
+     * {@code = ANY(?)} takes the id list as one array parameter, so the SQL text
+     * is constant regardless of how many videos a collection holds — no
+     * {@code IN (?,?,…)} assembled by string concatenation.
+     */
+    private static final String FIND_VIDEOS = """
+            SELECT video_id, creator_id, title, description, processing_state, processing_version, durability_state,
+                   moderation_state, publication_state, publication_intent_requested, asset_lifecycle_state,
+                   legal_serving_state, is_video_eligible, processing_version_source,
+                   moderation_version_source, publication_version_source, metadata_version_source, updated_at
+            FROM eligibility.video_eligibility WHERE video_id = ANY(?)
+            """;
+
     private static final String UPSERT_ACCOUNT = """
             INSERT INTO eligibility.account_eligibility (
                 account_id, account_state, is_account_eligible, source_version, updated_at
@@ -268,6 +281,13 @@ class EligibilityRepository {
 
     Optional<VideoEligibilityView> findVideo(String videoId) {
         return jdbc.query(FIND_VIDEO, EligibilityRepository::mapVideo, videoId).stream().findFirst();
+    }
+
+    java.util.List<VideoEligibilityView> findVideos(java.util.Collection<String> videoIds) {
+        if (videoIds.isEmpty()) {
+            return java.util.List.of();
+        }
+        return jdbc.query(FIND_VIDEOS, EligibilityRepository::mapVideo, (Object) videoIds.toArray(String[]::new));
     }
 
     Optional<AccountEligibilityView> findAccount(String accountId) {

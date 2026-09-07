@@ -18,5 +18,23 @@ public final class SocialExceptions {
         public CommentNotFound(String message) { super(message); }
     }
 
+    public static class CollectionNotFound extends RuntimeException {
+        public CollectionNotFound(String message) { super(message); }
+    }
+
+    /** Unique per owner, case-insensitively: two "Watch later" folders cannot be told apart. */
+    public static class CollectionNameTaken extends RuntimeException {
+        public CollectionNameTaken(String message) { super(message); }
+    }
+
+    public static class InvalidCollectionName extends RuntimeException {
+        public InvalidCollectionName(String message) { super(message); }
+    }
+
+    /** Per-owner ceiling on collections or on videos within one -- not a quota on the account. */
+    public static class CollectionLimitReached extends RuntimeException {
+        public CollectionLimitReached(String message) { super(message); }
+    }
+
     private SocialExceptions() {}
 }
