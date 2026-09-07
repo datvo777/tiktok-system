@@ -768,6 +768,14 @@ textarea {
   font-weight: 700;
   letter-spacing: -0.01em;
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+  /* Reset button chrome: this is a tap target, not styled as a button. */
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  max-width: 100%;
+  text-align: left;
+  cursor: pointer;
 }
 
 .slide-creator-name {
@@ -934,6 +942,7 @@ textarea {
   position: relative;
   display: block;
   margin-bottom: 0.5rem;
+  cursor: pointer;
 }
 
 .rail-avatar {
@@ -941,8 +950,7 @@ textarea {
   border: 2px solid rgba(255, 255, 255, 0.9);
 }
 
-/* Follower count sits under the avatar, where the follow pip would be in an
-   app that had a follow endpoint. */
+/* Follower count sits under the avatar. */
 .rail-followers {
   position: absolute;
   bottom: -8px;
@@ -956,6 +964,38 @@ textarea {
   font-weight: 700;
   line-height: 16px;
   white-space: nowrap;
+}
+
+/* Follow pip sits at the avatar's bottom-right corner so it never collides
+   with the follower-count pill anchored to bottom-center. */
+.rail-follow-pip {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: var(--brand);
+  color: #fff;
+  transition: background 0.15s var(--ease-out), transform 0.15s var(--ease-spring);
+}
+
+.rail-follow-pip:active:not(:disabled) {
+  transform: scale(0.88);
+}
+
+.rail-follow-pip.following {
+  background: var(--surface-3);
+  color: var(--text-dim);
+}
+
+.rail-follow-pip .icon {
+  width: 12px;
+  height: 12px;
 }
 
 .rail-btn {
@@ -1363,6 +1403,23 @@ textarea {
   animation: sheet-in 0.22s var(--ease-out);
 }
 
+/* Search rows are wider than a form field, so the search sheet gets more room
+   than the upload/account sheets it shares a component with -- and a fixed
+   amount of it. Sized to its content, the dialog grew and shrank with every
+   change in result count, which shifts rows out from under the pointer while
+   the viewer is still reading them. Empty space below a short result list is
+   the cheaper trade. */
+.sheet-large {
+  max-width: 560px;
+  height: min(84dvh, 720px);
+}
+
+.sheet-large .sheet-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
 @keyframes sheet-in {
   from {
     opacity: 0;
@@ -1400,6 +1457,7 @@ textarea {
   .sheet {
     max-width: none;
     max-height: 88dvh;
+    height: auto;
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     border-bottom: none;
     animation: sheet-up 0.24s var(--ease-out);
@@ -1409,6 +1467,10 @@ textarea {
     from {
       transform: translateY(100%);
     }
+  }
+
+  .sheet-large {
+    height: 88dvh;
   }
 
   .sheet-body {
@@ -1759,57 +1821,262 @@ textarea {
    Search
    ========================================================================== */
 
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* The field stays put while the results scroll under it -- refining a query
+   after scrolling shouldn't mean scrolling back up to reach the input. The
+   negative margins pull it out to the sheet's edges so nothing shows through
+   beside it. */
+.search-sticky {
+  position: sticky;
+  top: -1.25rem;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin: -1.25rem -1.35rem 0.35rem;
+  padding: 1.25rem 1.35rem 0.75rem;
+  background: var(--surface-1);
+}
+
 .search-bar {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.25rem 0.25rem 0.85rem;
+  gap: 0.55rem;
+  padding: 0.1rem 0.35rem 0.1rem 0.85rem;
   border-radius: var(--radius-pill);
   background: var(--surface-2);
   border: 1px solid transparent;
-  transition: border-color 0.15s var(--ease-out);
+  transition:
+    border-color 0.15s var(--ease-out),
+    box-shadow 0.15s var(--ease-out);
 }
 
 .search-bar:focus-within {
   border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--brand-soft);
 }
 
 .search-bar .icon {
+  flex-shrink: 0;
   width: 19px;
   height: 19px;
   color: var(--text-dim);
+}
+
+.search-bar:focus-within > .icon {
+  color: var(--text-muted);
 }
 
 .search-bar input,
 .search-bar input:focus {
   flex: 1;
   min-width: 0;
-  padding: 0.45rem 0;
+  padding: 0.62rem 0;
   background: transparent;
   border: none;
   outline: none;
+  font-size: 0.95rem;
 }
 
-.search-bar button {
+.search-clear {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--text-faint);
+}
+
+.search-clear:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.search-clear .icon {
+  width: 14px;
+  height: 14px;
+  color: inherit;
+}
+
+.search-spinner {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-right: 0.35rem;
+  border: 2px solid var(--surface-3);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* Segmented filters: one query returns both people and clips, and which of the
+   two you wanted is not something the server can guess. */
+.search-filters {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.search-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border);
   border-radius: var(--radius-pill);
-  padding: 0.5rem 1.15rem;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition:
+    background 0.15s var(--ease-out),
+    color 0.15s var(--ease-out);
+}
+
+.search-filter:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.search-filter.is-active {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--bg);
+}
+
+.search-filter-count {
+  font-size: 0.7rem;
+  font-weight: 700;
+  opacity: 0.6;
+}
+
+.search-chip-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  align-self: flex-start;
+  padding: 0.25rem 0.6rem 0.25rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.search-chip-filter:hover {
+  border-color: var(--border-strong);
+}
+
+.search-chip-filter .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-faint);
+}
+
+.search-idle {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* Recents stay at the top; the hint floats in whatever room is left, so the
+   fixed-height sheet doesn't read as a half-empty box. */
+.search-idle .empty {
+  margin: auto 0;
+}
+
+.search-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 0.6rem 0.4rem;
+}
+
+.search-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.search-section-count,
+.search-section-action {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.search-section-action:hover {
+  color: var(--text);
+}
+
+.search-recents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0 0.6rem;
+}
+
+.search-recent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.32rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-recent:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.search-recent .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
 }
 
 .search-results {
   display: flex;
   flex-direction: column;
+}
+
+.search-list {
+  display: flex;
+  flex-direction: column;
   gap: 0.15rem;
   list-style: none;
-  margin: 1.1rem 0 0;
+  margin: 0;
   padding: 0;
 }
 
 .search-hit {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.75rem;
   width: 100%;
-  padding: 0.55rem 0.6rem;
+  padding: 0.5rem 0.6rem;
   border-radius: var(--radius-lg);
   transition: background 0.15s var(--ease-out);
   /* Overrides the generic button reset above -- this is a list row that
@@ -1820,13 +2087,27 @@ textarea {
   text-align: left;
 }
 
-.search-hit:hover {
+/* Hover and the keyboard cursor land on the same highlight, so arrowing down
+   the list looks like the same interaction as moving the mouse. */
+.search-hit:hover,
+.search-hit[data-active='true'] {
   background: var(--surface-2);
 }
 
+.search-hit-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+
 .search-hit-name {
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .search-hit-sub {
@@ -1835,6 +2116,397 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Two lines of description: enough to tell two similarly-titled clips apart,
+   not enough for one verbose caption to push the next result off screen. */
+.search-hit-desc {
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.search-hit-desc.is-full {
+  display: block;
+  margin-top: 0.7rem;
+  color: var(--text-muted);
+}
+
+.search-hit-cue {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.search-hit-counts {
+  display: flex;
+  gap: 0.85rem;
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+.search-hit-counts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* No thumbnails are stored, so the tile is a tinted stand-in keyed off the
+   video id -- stable per video, and already in the 9:16 shape it will open in. */
+.search-thumb {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 42px;
+  height: 56px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(150deg, hsl(var(--h) 55% 32%), hsl(var(--h) 60% 16%));
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.search-mark {
+  background: rgba(254, 44, 85, 0.26);
+  /* Inherit the row's weight but not its colour -- at 14% tint the highlight
+     was invisible against a hovered row, which defeats the point of marking
+     why the result matched. */
+  color: #ffd7e0;
+  border-radius: 3px;
+  padding: 0 0.12em;
+}
+
+.search-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.6rem;
+  list-style: none;
+}
+
+.search-skeleton-thumb,
+.search-skeleton-line {
+  background: linear-gradient(100deg, var(--surface-1) 30%, var(--surface-2) 50%, var(--surface-1) 70%);
+  background-size: 240% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+.search-skeleton-thumb {
+  flex-shrink: 0;
+  width: 42px;
+  height: 56px;
+  border-radius: var(--radius-md);
+}
+
+.search-skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.search-skeleton-line {
+  height: 11px;
+  border-radius: var(--radius-pill);
+}
+
+.search-skeleton-line.is-short {
+  width: 45%;
+}
+
+/* ==========================================================================
+   Favorite collections
+   ========================================================================== */
+
+.collections {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.collection-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+}
+
+/* A row is two controls side by side -- open the collection, or act on it --
+   so the whole row cannot be one button. */
+.collection-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: var(--radius-lg);
+  transition: background 0.15s var(--ease-out);
+}
+
+.collection-row:hover {
+  background: var(--surface-2);
+}
+
+.collection-open,
+.collection-pick {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0.55rem 0.6rem;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: none;
+  font-weight: 400;
+  text-align: left;
+}
+
+.collection-pick:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.collection-glyph {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(150deg, hsl(var(--h) 55% 30%), hsl(var(--h) 60% 15%));
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.collection-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.collection-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collection-meta {
+  font-size: 0.76rem;
+  color: var(--text-dim);
+}
+
+.collection-cue {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+/* The actions only appear once the row is under the pointer: a list of folders
+   should read as names, not as a column of trash cans. Keyboard focus reveals
+   them too, so they are reachable without a mouse. */
+.collection-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding-right: 0.35rem;
+  opacity: 0;
+  transition: opacity 0.15s var(--ease-out);
+}
+
+.collection-row:hover .collection-actions,
+.collection-row:focus-within .collection-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  /* Nothing hovers on a touch screen, so the actions are simply always there. */
+  .collection-actions {
+    opacity: 1;
+  }
+}
+
+.collection-actions .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.collection-check {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  color: var(--bg);
+}
+
+.collection-pick.is-in .collection-check {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.collection-add {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.55rem 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.collection-add:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.collection-add-glyph {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-faint);
+}
+
+.collection-new {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.2rem 0.2rem 0.85rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+}
+
+.collection-new input,
+.collection-new input:focus {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+.collection-new .btn-primary {
+  border-radius: var(--radius-pill);
+  padding: 0.45rem 1rem;
+}
+
+.collection-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem 0.25rem 0.35rem;
+  margin-bottom: 0.5rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--text-faint);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.collection-back:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* One chevron glyph serves both directions; back is the same arrow mirrored. */
+.collection-back-cue {
+  transform: rotate(180deg);
+}
+
+.collection-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 0.6rem 0.5rem;
+}
+
+.collection-head h3 {
+  font-size: 1.05rem;
+}
+
+/* A saved row carries a remove control next to the play target, so unlike a
+   search hit it is a row containing a button rather than being one. */
+.saved-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: var(--radius-lg);
+}
+
+.saved-row:hover {
+  background: var(--surface-2);
+}
+
+.saved-row .search-hit:hover {
+  background: none;
+}
+
+.saved-remove {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-right: 0.35rem;
+  opacity: 0;
+  transition: opacity 0.15s var(--ease-out);
+}
+
+.saved-row:hover .saved-remove,
+.saved-row:focus-within .saved-remove {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .saved-remove {
+    opacity: 1;
+  }
+}
+
+/* Row-shaped link in the account sheet -- the phone's only route to a panel
+   that otherwise lives in the hidden sidebar. */
+.account-link {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  margin-bottom: 1.25rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-align: left;
+}
+
+.account-link:hover {
+  border-color: var(--border-strong);
+}
+
+.account-link span:first-of-type {
+  flex: 1;
+}
+
+.account-link-cue {
+  color: var(--text-dim);
 }
 
 /* ==========================================================================
@@ -1988,4 +2660,98 @@ textarea {
 .sheet-body::-webkit-scrollbar-track,
 .sidebar::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ==========================================================================
+   Creator profile
+   ========================================================================== */
+
+.creator-profile-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.3rem;
+  padding-bottom: 1.25rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.creator-profile-name {
+  margin-top: 0.6rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.creator-profile-handle {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.creator-profile-stats {
+  display: flex;
+  gap: 1.25rem;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.creator-profile-stats strong {
+  color: var(--text);
+}
+
+.creator-profile-follow {
+  margin-top: 0.85rem;
+  min-width: 7.5rem;
+}
+
+.creator-profile-follow.is-following {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.creator-profile-follow.is-following:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.creator-video-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.creator-video-tile {
+  position: relative;
+  aspect-ratio: 9 / 16;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: none;
+}
+
+/* Stretch the search panel's small list-row thumbnail to fill the tile. */
+.creator-video-tile .search-thumb {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.creator-video-tile-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0.4rem 0.45rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: left;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }

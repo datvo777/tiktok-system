@@ -2,8 +2,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { ApiError, getMe, getNotifications, login, logout, refreshSession, register } from './api';
 import { Feed } from './Feed';
+import { Favorites } from './Favorites';
 import {
+  BookmarkIcon,
+  ChevronRightIcon,
   CloseIcon,
+  GridIcon,
   HomeIcon,
   InboxIcon,
   PlayIcon,
@@ -12,18 +16,21 @@ import {
   UploadCloudIcon,
   UserIcon,
 } from './icons';
+import { MyVideos } from './MyVideos';
 import { Notifications } from './Notifications';
 import { SearchPanel } from './SearchPanel';
 import { Avatar, handleFor } from './ui';
 import { Upload } from './Upload';
 
-type Panel = 'upload' | 'search' | 'notifications' | 'account' | null;
+type Panel = 'upload' | 'search' | 'notifications' | 'account' | 'myVideos' | 'favorites' | null;
 
 const PANEL_TITLE: Record<Exclude<Panel, null>, string> = {
   upload: 'Upload video',
   search: 'Search',
   notifications: 'Inbox',
   account: 'Account',
+  myVideos: 'My videos',
+  favorites: 'Favorites',
 };
 
 export function App() {
@@ -124,6 +131,14 @@ export function App() {
           <span className="nav-label">Inbox</span>
           {unreadCount > 0 && <span className="nav-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>}
         </button>
+        <button className="nav-item" onClick={() => setPanel('favorites')}>
+          <BookmarkIcon filled={panel === 'favorites'} />
+          <span className="nav-label">Favorites</span>
+        </button>
+        <button className="nav-item" onClick={() => setPanel('myVideos')}>
+          <GridIcon active={panel === 'myVideos'} />
+          <span className="nav-label">My videos</span>
+        </button>
         <button className="nav-item" onClick={() => setPanel('account')}>
           <UserIcon active={panel === 'account'} />
           <span className="nav-label">Profile</span>
@@ -148,7 +163,7 @@ export function App() {
       </nav>
 
       <main className="stage">
-        <Feed />
+        <Feed viewerId={accountId} />
       </main>
 
       <nav className="tabbar" aria-label="Primary">
@@ -170,6 +185,10 @@ export function App() {
           Inbox
           {unreadCount > 0 && <span className="tab-badge">{unreadCount > 9 ? '9+' : unreadCount}</span>}
         </button>
+        <button className="tab-item" onClick={() => setPanel('myVideos')}>
+          <GridIcon active={panel === 'myVideos'} />
+          My videos
+        </button>
         <button className="tab-item" onClick={() => setPanel('account')}>
           <UserIcon active={panel === 'account'} />
           Profile
@@ -177,11 +196,19 @@ export function App() {
       </nav>
 
       {panel && (
-        <Sheet title={PANEL_TITLE[panel]} onClose={() => setPanel(null)}>
+        <Sheet
+          title={PANEL_TITLE[panel]}
+          onClose={() => setPanel(null)}
+          large={panel === 'search' || panel === 'favorites'}
+        >
           {panel === 'upload' && <Upload onDone={() => setPanel(null)} />}
           {panel === 'search' && <SearchPanel />}
           {panel === 'notifications' && <Notifications />}
-          {panel === 'account' && <AccountPanel onDone={() => setPanel(null)} />}
+          {panel === 'account' && (
+            <AccountPanel onDone={() => setPanel(null)} onOpenFavorites={() => setPanel('favorites')} />
+          )}
+          {panel === 'myVideos' && <MyVideos />}
+          {panel === 'favorites' && <Favorites />}
         </Sheet>
       )}
     </div>
@@ -200,14 +227,27 @@ export function Sheet({
   title,
   onClose,
   children,
+  large,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  /**
+   * Search needs more room than a form-sized sheet, and a *fixed* amount of it:
+   * sized to its content, the dialog resized on every keystroke as the result
+   * count changed, which moves the rows out from under the pointer mid-scan.
+   */
+  large?: boolean | undefined;
 }) {
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`sheet${large ? ' sheet-large' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="sheet-head">
           <h2>{title}</h2>
           <button className="icon-btn" onClick={onClose} aria-label="Close">
@@ -220,7 +260,7 @@ export function Sheet({
   );
 }
 
-function AccountPanel({ onDone }: { onDone: () => void }) {
+function AccountPanel({ onDone, onOpenFavorites }: { onDone: () => void; onOpenFavorites: () => void }) {
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false });
   const [error, setError] = useState<string | null>(null);
@@ -251,6 +291,14 @@ function AccountPanel({ onDone }: { onDone: () => void }) {
       <div className="mono" style={{ marginBottom: '1.25rem' }}>
         {me.data.accountId}
       </div>
+
+      {/* The sidebar is hidden below 767px, so this is the only route to the
+          favorites panel on a phone. */}
+      <button className="account-link" onClick={onOpenFavorites}>
+        <BookmarkIcon size={18} />
+        <span>Favorites</span>
+        <ChevronRightIcon size={16} className="account-link-cue" />
+      </button>
 
       <button
         className="btn-danger-ghost btn-block"

@@ -3,34 +3,42 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   commentOnVideo,
   createPublicSession,
+  followCreator,
   getCreatorProfile,
   getFeed,
   getVideoCounts,
+  isVideoSaved,
   likeVideo,
   listComments,
   listReplies,
   recordShare,
   replyToComment,
+  unfollowCreator,
   unlikeVideo,
   type CommentResponse,
   type FeedItem,
 } from './api';
 import { Sheet } from './App';
+import { CreatorProfile } from './CreatorProfile';
+import { SaveToCollection } from './Favorites';
 import {
+  BookmarkIcon,
+  CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   CommentIcon,
   HeartIcon,
   PlayIcon,
+  PlusIcon,
   ShareIcon,
   SparkleIcon,
   VolumeOffIcon,
   VolumeOnIcon,
 } from './icons';
-import { Avatar, handleFor } from './ui';
+import { Avatar, formatCount, handleFor } from './ui';
 import { attachHls, detachHls } from './Upload';
 
-export function Feed() {
+export function Feed({ viewerId }: { viewerId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   // Sound is a viewer preference, not a per-video one: muting one clip and
@@ -137,6 +145,7 @@ export function Feed() {
             isActive={i === activeIndex}
             muted={muted}
             onToggleMuted={() => setMuted((m) => !m)}
+            viewerId={viewerId}
           />
         ))}
       </div>
@@ -165,32 +174,30 @@ export function Feed() {
   );
 }
 
-/** 1200 -> "1.2K": rail labels have room for four characters, not four digits. */
 /** Window a second tap has to land in to count as a double-tap. */
 const DOUBLE_TAP_MS = 220;
-
-function formatCount(value: number): string {
-  if (value < 1000) return String(value);
-  if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}K`.replace('.0', '');
-  return `${(value / 1_000_000).toFixed(1)}M`.replace('.0', '');
-}
 
 function FeedSlide({
   item,
   isActive,
   muted,
   onToggleMuted,
+  viewerId,
 }: {
   item: FeedItem;
   isActive: boolean;
   muted: boolean;
   onToggleMuted: () => void;
+  viewerId: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [liked, setLiked] = useState(false);
+  const [following, setFollowing] = useState(false);
   const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState(0);
   const [commentOpen, setCommentOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [comment, setComment] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [shareNote, setShareNote] = useState<string | null>(null);
@@ -221,12 +228,27 @@ function FeedSlide({
     retry: false,
   });
 
+  // Whether this video is in any of the viewer's collections. Its own query
+  // rather than a field on counts: saving is private to the viewer, so it has
+  // no place in a payload that also carries public totals.
+  const saved = useQuery({
+    queryKey: ['saved', item.videoId],
+    queryFn: () => isVideoSaved(item.videoId),
+    retry: false,
+  });
+
   // The server is the source of truth for whether the viewer has already
   // liked this video; local state only takes over once they act, so a
   // like/unlike click doesn't get clobbered by a counts refetch racing behind it.
   useEffect(() => {
     if (counts.data) setLiked(counts.data.liked);
   }, [counts.data]);
+
+  // Same reasoning as `liked` above, but for the follow relationship: the
+  // profile query is the source of truth until the viewer acts on this slide.
+  useEffect(() => {
+    if (creator.data) setFollowing(creator.data.following);
+  }, [creator.data]);
 
   const play = useMutation({
     mutationFn: () => createPublicSession(item.videoId),
@@ -316,6 +338,18 @@ function FeedSlide({
     onSuccess: (next) => {
       setLiked(next);
       void queryClient.invalidateQueries({ queryKey: ['counts', item.videoId] });
+    },
+  });
+
+  const follow = useMutation({
+    mutationFn: async (next: boolean) => {
+      if (next) await followCreator(item.creatorId);
+      else await unfollowCreator(item.creatorId);
+      return next;
+    },
+    onSuccess: (next) => {
+      setFollowing(next);
+      void queryClient.invalidateQueries({ queryKey: ['creator', item.creatorId] });
     },
   });
 
@@ -434,10 +468,17 @@ function FeedSlide({
         </button>
 
         <div className="slide-info">
-          <div className="slide-creator">
+          <button
+            type="button"
+            className="slide-creator"
+            onClick={(e) => {
+              e.stopPropagation();
+              setProfileOpen(true);
+            }}
+          >
             {handle}
             {creatorName && <span className="slide-creator-name">{creatorName}</span>}
-          </div>
+          </button>
           {item.title && <div className="slide-title">{item.title}</div>}
           {item.description && <div className="slide-description">{item.description}</div>}
           {error && <div className="slide-error">{error}</div>}
@@ -461,12 +502,32 @@ function FeedSlide({
       </div>
 
       <div className="slide-rail">
-        <span className="rail-avatar-wrap">
+        <div
+          className="rail-avatar-wrap"
+          role="button"
+          tabIndex={-1}
+          aria-label={`View ${creatorName ?? handle}'s profile`}
+          onClick={() => setProfileOpen(true)}
+        >
           <Avatar seed={item.creatorId} label={creatorName} className="rail-avatar" />
           {followers !== undefined && (
             <span className="rail-followers">{formatCount(followers)}</span>
           )}
-        </span>
+          {item.creatorId !== viewerId && (
+            <button
+              className={`rail-follow-pip${following ? ' following' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                follow.mutate(!following);
+              }}
+              disabled={follow.isPending}
+              aria-pressed={following}
+              aria-label={following ? `Unfollow ${creatorName ?? handle}` : `Follow ${creatorName ?? handle}`}
+            >
+              {following ? <CheckIcon size={12} /> : <PlusIcon size={12} />}
+            </button>
+          )}
+        </div>
 
         <button
           className={`rail-btn${liked ? ' on' : ''}`}
@@ -488,6 +549,18 @@ function FeedSlide({
           {counts.data && <span className="rail-count">{formatCount(counts.data.commentCount)}</span>}
         </button>
 
+        <button
+          className={`rail-btn${saved.data ? ' on' : ''}`}
+          onClick={() => setSaveOpen(true)}
+          aria-pressed={saved.data ?? false}
+          aria-label={saved.data ? 'Saved — change collections' : 'Save to a collection'}
+        >
+          <span className="rail-btn-glyph">
+            <BookmarkIcon filled={saved.data ?? false} />
+          </span>
+          <span className="rail-count">{saved.data ? 'Saved' : 'Save'}</span>
+        </button>
+
         <button className="rail-btn" onClick={() => void share()} aria-label="Share">
           <span className="rail-btn-glyph">
             <ShareIcon />
@@ -499,6 +572,12 @@ function FeedSlide({
           )}
         </button>
       </div>
+
+      {saveOpen && (
+        <Sheet title="Save to collection" onClose={() => setSaveOpen(false)}>
+          <SaveToCollection videoId={item.videoId} onClose={() => setSaveOpen(false)} />
+        </Sheet>
+      )}
 
       {commentOpen && (
         <Sheet title="Comments" onClose={() => setCommentOpen(false)}>
@@ -537,6 +616,12 @@ function FeedSlide({
               <CommentThread key={c.commentId} videoId={item.videoId} comment={c} />
             ))}
           </div>
+        </Sheet>
+      )}
+
+      {profileOpen && (
+        <Sheet title={creatorName ?? handle} onClose={() => setProfileOpen(false)}>
+          <CreatorProfile creatorId={item.creatorId} viewerId={viewerId} />
         </Sheet>
       )}
     </div>

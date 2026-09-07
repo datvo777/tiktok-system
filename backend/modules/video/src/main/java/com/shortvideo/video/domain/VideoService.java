@@ -19,12 +19,16 @@ import com.shortvideo.video.api.VideoDraft;
 import com.shortvideo.video.api.VideoDraftRegistrar;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import com.shortvideo.video.api.VideoPlaybackView;
+import com.shortvideo.video.api.VideoSummaryPage;
+import com.shortvideo.video.api.VideoSummaryView;
 import com.shortvideo.video.api.VideoView;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -329,6 +333,20 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         return toView(video);
     }
 
+    private static final int MINE_PAGE_SIZE = 20;
+
+    /**
+     * Owner's own video list — lets a creator find a past rejection to appeal
+     * without keeping the original upload tab open (brief section 12.3 covers
+     * only the single-video poll; nothing previously listed a creator's history).
+     */
+    @Transactional(readOnly = true)
+    public VideoSummaryPage listMine(String ownerAccountId, int page) {
+        Page<VideoEntity> result = repository.findByOwnerAccountIdOrderByCreatedAtDesc(
+                UUID.fromString(ownerAccountId), PageRequest.of(page, MINE_PAGE_SIZE));
+        return new VideoSummaryPage(result.getContent().stream().map(VideoService::toSummary).toList(), result.hasNext());
+    }
+
     @Override
     @Transactional(readOnly = true)
     public Optional<VideoPlaybackView> findForPlayback(String videoId) {
@@ -427,6 +445,15 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 video.getAssetLifecycleState(),
                 video.getFailureClass(),
                 video.getAggregateVersion(),
+                video.getCreatedAt());
+    }
+
+    private static VideoSummaryView toSummary(VideoEntity video) {
+        return new VideoSummaryView(
+                video.getVideoId().toString(),
+                video.getTitle(),
+                video.getProcessingState(),
+                video.getAssetLifecycleState(),
                 video.getCreatedAt());
     }
 

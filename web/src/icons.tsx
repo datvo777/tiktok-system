@@ -179,6 +179,46 @@ export function ChevronDownIcon(props: IconProps) {
   );
 }
 
+export function BookmarkIcon(props: IconProps & { filled?: boolean | undefined }) {
+  return (
+    <Svg {...props} filled={props.filled}>
+      <path d="M6.5 3.6h11a.9.9 0 0 1 .9.9v15.9l-6.4-4.3-6.4 4.3V4.5a.9.9 0 0 1 .9-.9Z" />
+    </Svg>
+  );
+}
+
+export function FolderIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.4 6.6a1.2 1.2 0 0 1 1.2-1.2h4l2 2.4h7.8a1.2 1.2 0 0 1 1.2 1.2v8.4a1.2 1.2 0 0 1-1.2 1.2H4.6a1.2 1.2 0 0 1-1.2-1.2Z" />
+    </Svg>
+  );
+}
+
+export function PencilIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M15.6 4.6a1.8 1.8 0 0 1 2.5 2.5L8.6 16.6l-3.4.9.9-3.4Z" />
+    </Svg>
+  );
+}
+
+export function TrashIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4.8 6.6h14.4M9.4 6.6V4.8h5.2v1.8M6.6 6.6l.8 12.1a.9.9 0 0 0 .9.9h7.4a.9.9 0 0 0 .9-.9l.8-12.1" />
+    </Svg>
+  );
+}
+
+export function ChevronRightIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m9.5 6.5 5.5 5.5-5.5 5.5" />
+    </Svg>
+  );
+}
+
 export function CloseIcon(props: IconProps) {
   return (
     <Svg {...props}>
@@ -200,6 +240,23 @@ export function CheckIcon(props: IconProps) {
   return (
     <Svg {...props}>
       <path d="m5 12.6 4.6 4.6L19 7.4" />
+    </Svg>
+  );
+}
+
+export function GridIcon(props: IconProps & { active?: boolean | undefined }) {
+  return (
+    <Svg {...props} filled={props.active}>
+      {props.active ? (
+        <path d="M4.4 3.6h6.1a.8.8 0 0 1 .8.8v6.1a.8.8 0 0 1-.8.8H4.4a.8.8 0 0 1-.8-.8V4.4a.8.8 0 0 1 .8-.8Zm9.1 0h6.1a.8.8 0 0 1 .8.8v6.1a.8.8 0 0 1-.8.8h-6.1a.8.8 0 0 1-.8-.8V4.4a.8.8 0 0 1 .8-.8ZM4.4 12.7h6.1a.8.8 0 0 1 .8.8v6.1a.8.8 0 0 1-.8.8H4.4a.8.8 0 0 1-.8-.8v-6.1a.8.8 0 0 1 .8-.8Zm9.1 0h6.1a.8.8 0 0 1 .8.8v6.1a.8.8 0 0 1-.8.8h-6.1a.8.8 0 0 1-.8-.8v-6.1a.8.8 0 0 1 .8-.8Z" />
+      ) : (
+        <>
+          <rect x="3.6" y="3.6" width="7.3" height="7.3" rx="1" />
+          <rect x="13.1" y="3.6" width="7.3" height="7.3" rx="1" />
+          <rect x="3.6" y="13.1" width="7.3" height="7.3" rx="1" />
+          <rect x="13.1" y="13.1" width="7.3" height="7.3" rx="1" />
+        </>
+      )}
     </Svg>
   );
 }

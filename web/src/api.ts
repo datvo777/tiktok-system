@@ -314,21 +314,55 @@ export type AppealResponse = {
   decisionReason: string | null;
 };
 
+function parseAppeal(context: string, payload: unknown): AppealResponse {
+  const o = obj(context, payload);
+  return {
+    videoId: str(context, o, 'videoId'),
+    state: oneOf(context, o, 'state', APPEAL_STATES),
+    reason: nullableStr(context, o, 'reason'),
+    decisionReason: nullableStr(context, o, 'decisionReason'),
+  };
+}
+
 /** Owner-only; only accepted while moderation state is REJECTED (brief section 18, Milestone 6). */
 export async function submitAppeal(videoId: string, reason: string): Promise<AppealResponse> {
-  return request(
-    `/api/v1/videos/${videoId}/appeals`,
-    (payload) => {
-      const o = obj('appeal', payload);
-      return {
-        videoId: str('appeal', o, 'videoId'),
-        state: oneOf('appeal', o, 'state', APPEAL_STATES),
-        reason: nullableStr('appeal', o, 'reason'),
-        decisionReason: nullableStr('appeal', o, 'decisionReason'),
-      };
-    },
-    jsonBody({ reason }),
-  );
+  return request(`/api/v1/videos/${videoId}/appeals`, (payload) => parseAppeal('appeal', payload), jsonBody({ reason }));
+}
+
+/** Owner-only; NONE means no appeal has ever been submitted for this video. */
+export async function getAppealStatus(videoId: string): Promise<AppealResponse> {
+  return request(`/api/v1/videos/${videoId}/appeals`, (payload) => parseAppeal('appeal', payload));
+}
+
+export type VideoSummary = {
+  videoId: string;
+  title: string | null;
+  processingState: ProcessingState;
+  assetLifecycleState: AssetLifecycleState;
+  createdAt: string;
+};
+
+export type VideoListResponse = { page: number; items: VideoSummary[]; hasMore: boolean };
+
+/** The caller's own videos, most recent first — used by the "My videos" panel. */
+export async function getMyVideos(page = 0): Promise<VideoListResponse> {
+  return request(`/api/v1/videos?page=${page}`, (payload) => {
+    const o = obj('videoList', payload);
+    return {
+      page: num('videoList', o, 'page'),
+      hasMore: bool('videoList', o, 'hasMore'),
+      items: arr('videoList.items', o['items']).map((raw, i) => {
+        const item = obj(`videoList.items[${i}]`, raw);
+        return {
+          videoId: str(`videoList.items[${i}]`, item, 'videoId'),
+          title: nullableStr(`videoList.items[${i}]`, item, 'title'),
+          processingState: oneOf(`videoList.items[${i}]`, item, 'processingState', PROCESSING_STATES),
+          assetLifecycleState: oneOf(`videoList.items[${i}]`, item, 'assetLifecycleState', ASSET_LIFECYCLE_STATES),
+          createdAt: str(`videoList.items[${i}]`, item, 'createdAt'),
+        };
+      }),
+    };
+  });
 }
 
 export type FeedItem = { videoId: string; creatorId: string; title: string | null; description: string | null };
@@ -439,6 +473,8 @@ export type CreatorProfile = {
   displayName: string;
   followerCount: number;
   followingCount: number;
+  /** Viewer-relative: whether the caller follows this creator. */
+  following: boolean;
 };
 
 export async function getCreatorProfile(creatorId: string): Promise<CreatorProfile> {
@@ -449,6 +485,44 @@ export async function getCreatorProfile(creatorId: string): Promise<CreatorProfi
       displayName: str('creator', o, 'displayName'),
       followerCount: num('creator', o, 'followerCount'),
       followingCount: num('creator', o, 'followingCount'),
+      following: bool('creator', o, 'following'),
+    };
+  });
+}
+
+export async function followCreator(creatorId: string): Promise<void> {
+  await requestNoContent(`/api/v1/creators/${creatorId}/follow`, { method: 'POST' });
+}
+
+export async function unfollowCreator(creatorId: string): Promise<void> {
+  await requestNoContent(`/api/v1/creators/${creatorId}/follow`, { method: 'DELETE' });
+}
+
+export type CreatorVideo = {
+  videoId: string;
+  title: string | null;
+  description: string | null;
+  publishedAt: string;
+};
+
+export type CreatorVideoListResponse = { page: number; items: CreatorVideo[]; hasMore: boolean };
+
+/** A creator's published videos, newest first (backed by the search index). */
+export async function getCreatorVideos(creatorId: string, page = 0): Promise<CreatorVideoListResponse> {
+  return request(`/api/v1/creators/${creatorId}/videos?page=${page}`, (payload) => {
+    const o = obj('creatorVideos', payload);
+    return {
+      page: num('creatorVideos', o, 'page'),
+      hasMore: bool('creatorVideos', o, 'hasMore'),
+      items: arr('creatorVideos.items', o['items']).map((raw, i) => {
+        const item = obj(`creatorVideos.items[${i}]`, raw);
+        return {
+          videoId: str(`creatorVideos.items[${i}]`, item, 'videoId'),
+          title: nullableStr(`creatorVideos.items[${i}]`, item, 'title'),
+          description: nullableStr(`creatorVideos.items[${i}]`, item, 'description'),
+          publishedAt: str(`creatorVideos.items[${i}]`, item, 'publishedAt'),
+        };
+      }),
     };
   });
 }
@@ -517,4 +591,117 @@ export async function search(query: string): Promise<SearchResponse> {
       }),
     };
   });
+}
+
+// ------------------------------------------------------------------ favorites
+//
+// Collections are private to their owner, so every path here is implicitly
+// scoped to the signed-in account -- there is no collection id in the URL that
+// belongs to anyone else.
+
+export type FavoriteCollection = {
+  collectionId: string;
+  name: string;
+  itemCount: number;
+  /** Only meaningful from listCollectionsForVideo: does this collection hold that video? */
+  containsVideo: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SavedVideo = {
+  videoId: string;
+  creatorId: string;
+  creatorDisplayName: string;
+  title: string | null;
+  description: string | null;
+  savedAt: string;
+};
+
+export type FavoriteCollectionDetail = {
+  collection: FavoriteCollection;
+  items: SavedVideo[];
+  /** Saved videos that are no longer playable -- counted, not listed. */
+  unavailableCount: number;
+};
+
+function parseCollection(context: string, raw: unknown): FavoriteCollection {
+  const o = obj(context, raw);
+  return {
+    collectionId: str(context, o, 'collectionId'),
+    name: str(context, o, 'name'),
+    itemCount: num(context, o, 'itemCount'),
+    containsVideo: bool(context, o, 'containsVideo'),
+    createdAt: str(context, o, 'createdAt'),
+    updatedAt: str(context, o, 'updatedAt'),
+  };
+}
+
+function parseCollectionList(payload: unknown): FavoriteCollection[] {
+  const o = obj('favorites', payload);
+  return arr('favorites.items', o['items']).map((raw, i) => parseCollection(`favorites.items[${i}]`, raw));
+}
+
+export async function getCollections(): Promise<FavoriteCollection[]> {
+  return request('/api/v1/favorites/collections', parseCollectionList);
+}
+
+/** The save-picker's list: same collections, each flagged with whether it already holds the video. */
+export async function getCollectionsForVideo(videoId: string): Promise<FavoriteCollection[]> {
+  return request(`/api/v1/favorites/collections?videoId=${encodeURIComponent(videoId)}`, parseCollectionList);
+}
+
+export async function getCollection(collectionId: string): Promise<FavoriteCollectionDetail> {
+  return request(`/api/v1/favorites/collections/${collectionId}`, (payload) => {
+    const o = obj('collection', payload);
+    return {
+      collection: parseCollection('collection.collection', o['collection']),
+      items: arr('collection.items', o['items']).map((raw, i) => {
+        const item = obj(`collection.items[${i}]`, raw);
+        return {
+          videoId: str(`collection.items[${i}]`, item, 'videoId'),
+          creatorId: str(`collection.items[${i}]`, item, 'creatorId'),
+          creatorDisplayName: str(`collection.items[${i}]`, item, 'creatorDisplayName'),
+          title: nullableStr(`collection.items[${i}]`, item, 'title'),
+          description: nullableStr(`collection.items[${i}]`, item, 'description'),
+          savedAt: str(`collection.items[${i}]`, item, 'savedAt'),
+        };
+      }),
+      unavailableCount: num('collection', o, 'unavailableCount'),
+    };
+  });
+}
+
+export async function createCollection(name: string): Promise<FavoriteCollection> {
+  return request('/api/v1/favorites/collections', (payload) => parseCollection('collection', payload), jsonBody({ name }));
+}
+
+export async function renameCollection(collectionId: string, name: string): Promise<FavoriteCollection> {
+  return request(
+    `/api/v1/favorites/collections/${collectionId}`,
+    (payload) => parseCollection('collection', payload),
+    { ...jsonBody({ name }), method: 'PATCH' },
+  );
+}
+
+export async function deleteCollection(collectionId: string): Promise<void> {
+  await requestNoContent(`/api/v1/favorites/collections/${collectionId}`, { method: 'DELETE' });
+}
+
+/** Omit collectionId to save into the default collection, created on the first save. */
+export async function saveVideo(videoId: string, collectionId?: string): Promise<FavoriteCollection> {
+  return request(
+    `/api/v1/favorites/videos/${videoId}`,
+    (payload) => parseCollection('collection', payload),
+    jsonBody({ collectionId: collectionId ?? null }),
+  );
+}
+
+export async function unsaveVideo(collectionId: string, videoId: string): Promise<void> {
+  await requestNoContent(`/api/v1/favorites/collections/${collectionId}/videos/${videoId}`, { method: 'DELETE' });
+}
+
+/** Whether the viewer has this video in any collection -- the feed's bookmark state. */
+export async function isVideoSaved(videoId: string): Promise<boolean> {
+  return request(`/api/v1/favorites/videos/${videoId}`, (payload) => bool('saved', obj('saved', payload), 'saved'));
 }

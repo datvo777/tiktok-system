@@ -42,3 +42,28 @@ export function Avatar({
 export function handleFor(creatorId: string): string {
   return `@${creatorId.replace(/-/g, '').slice(0, 10)}`;
 }
+
+/** 1200 -> "1.2K": count labels have room for four characters, not four digits. */
+export function formatCount(value: number): string {
+  if (value < 1000) return String(value);
+  if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}K`.replace('.0', '');
+  return `${(value / 1_000_000).toFixed(1)}M`.replace('.0', '');
+}
+
+/**
+ * Timestamps arrive as ISO strings; a wall-clock string is noise in a list you
+ * skim, so show the age instead and keep the exact value in the tooltip.
+ */
+export function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return iso;
+  const seconds = Math.max(0, (Date.now() - then) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.floor(minutes)}m ago`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.floor(hours)}h ago`;
+  const days = hours / 24;
+  if (days < 7) return `${Math.floor(days)}d ago`;
+  return new Date(then).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
