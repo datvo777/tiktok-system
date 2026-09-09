@@ -8,6 +8,7 @@ import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.DeviceIdentity;
 import com.shortvideo.shared.security.InvalidTokenException;
 import com.shortvideo.shared.security.PlaybackClaims;
 import com.shortvideo.shared.security.PlaybackMode;
@@ -42,6 +43,7 @@ class MediaAuthorizer {
     private final EligibilityDirectory eligibilityDirectory;
     private final RevocationCache revocationCache;
     private final DurableRevocationReader revocationReader;
+    private final DeviceIdentity deviceIdentity;
     private final MeterRegistry meterRegistry;
     private final Timer.Builder revocationCheckTimerBuilder;
 
@@ -52,6 +54,7 @@ class MediaAuthorizer {
             EligibilityDirectory eligibilityDirectory,
             RevocationCache revocationCache,
             DurableRevocationReader revocationReader,
+            DeviceIdentity deviceIdentity,
             MeterRegistry meterRegistry) {
         this.tokenService = tokenService;
         this.videoDirectory = videoDirectory;
@@ -59,6 +62,7 @@ class MediaAuthorizer {
         this.eligibilityDirectory = eligibilityDirectory;
         this.revocationCache = revocationCache;
         this.revocationReader = revocationReader;
+        this.deviceIdentity = deviceIdentity;
         this.meterRegistry = meterRegistry;
         this.revocationCheckTimerBuilder = Timer.builder("media.revocation_check")
                 .description("Latency of the durable revocation check on the media authorization path")
@@ -95,9 +99,7 @@ class MediaAuthorizer {
         if (!claims.videoId().equals(key.videoId()) || claims.processingVersion() != key.processingVersion()) {
             throw new MediaAuthorizationException.Unauthorized("Playback token does not match the requested asset");
         }
-        if (viewer == null || !claims.viewerId().equals(viewer.accountId())) {
-            throw new MediaAuthorizationException.Unauthorized("Session and playback token disagree on viewer identity");
-        }
+        requireMatchingViewer(request, claims, viewer);
 
         try {
             VideoPlaybackView video = videoDirectory
@@ -124,6 +126,49 @@ class MediaAuthorizer {
             }
         } catch (DataAccessException e) {
             throw new MediaAuthorizationException.Unavailable("Authorization state is unavailable", e);
+        }
+    }
+
+    /**
+     * The playback cookie is never a bearer credential on its own: the caller must
+     * also prove they are the viewer it was minted for. That is what stops a
+     * leaked cookie — a shared URL with credentials, a proxy log — from being
+     * replayed by somebody else.
+     *
+     * <p>For a signed-in viewer, the proof is the session. For a signed-out one it
+     * is the signed device cookie, which is a different <em>kind</em> of identity
+     * but plays the same role: two cookies are still required, and the device
+     * cookie is HttpOnly and signed with the playback key, so it cannot be forged.
+     *
+     * <p>A device identity is only ever accepted for {@code PUBLIC} playback. The
+     * two preview modes gate on who the viewer <em>is</em> — the owner, or an
+     * admin — and a browser is not a person, so they require a real session. This
+     * is checked here rather than relying on the mode handlers, because those
+     * dereference {@code viewer} and a null one would be a crash rather than a
+     * refusal.
+     */
+    private void requireMatchingViewer(
+            HttpServletRequest request, PlaybackClaims claims, AuthenticatedAccount viewer) {
+
+        if (DeviceIdentity.isDeviceViewer(claims.viewerId())) {
+            if (!PlaybackMode.PUBLIC.equals(claims.mode())) {
+                throw new MediaAuthorizationException.Forbidden(
+                        "A device identity may only hold a public playback session");
+            }
+            String expected = deviceIdentity
+                    .fromRequest(request)
+                    .map(DeviceIdentity::viewerId)
+                    .orElseThrow(() -> new MediaAuthorizationException.Unauthorized(
+                            "Playback token was issued to a device that did not present itself"));
+            if (!claims.viewerId().equals(expected)) {
+                throw new MediaAuthorizationException.Unauthorized(
+                        "Device and playback token disagree on viewer identity");
+            }
+            return;
+        }
+
+        if (viewer == null || !claims.viewerId().equals(viewer.accountId())) {
+            throw new MediaAuthorizationException.Unauthorized("Session and playback token disagree on viewer identity");
         }
     }
 

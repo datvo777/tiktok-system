@@ -65,7 +65,9 @@ class VideoSearchListener {
             switch (envelope.eventType()) {
                 case EventTypes.VIDEO_PUBLICATION_PUBLISHED -> {
                     String creatorId = (String) p.get("ownerAccountId");
-                    String displayName = accountDirectory.find(creatorId).map(a -> a.displayName()).orElse("");
+                    var creator = accountDirectory.find(creatorId);
+                    String displayName = creator.map(a -> a.displayName()).orElse("");
+                    String handle = creator.map(a -> a.handle()).orElse("");
                     VideoEligibilityView eligibility = eligibilityDirectory.findVideoEligibility(videoId).orElse(null);
                     String title = eligibility == null ? null : eligibility.title();
                     String description = eligibility == null ? null : eligibility.description();
@@ -73,6 +75,7 @@ class VideoSearchListener {
                             videoId,
                             creatorId,
                             displayName,
+                            handle,
                             title,
                             description,
                             envelope.occurredAt().toString(),

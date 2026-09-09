@@ -9,6 +9,8 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -40,5 +42,21 @@ public class VideoController {
     public VideoDtos.VideoResponse get(
             @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
         return VideoDtos.VideoResponse.from(videoService.findForPolling(videoId.toString(), caller.accountId()));
+    }
+
+    /**
+     * Deletes the caller's own video: the same lifecycle an admin takedown runs,
+     * refused unless the caller owns it.
+     *
+     * <p>Idempotent, and answers 204 either way — a second delete of a video
+     * already scheduled for deletion is not an error, it is the state the caller
+     * asked for.
+     */
+    @DeleteMapping("/{videoId}")
+    @Operation(summary = "Delete your own video; schedules its assets for deletion")
+    public ResponseEntity<Void> delete(
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        videoService.deleteByOwner(videoId.toString(), caller.accountId());
+        return ResponseEntity.noContent().build();
     }
 }

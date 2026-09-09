@@ -9,4 +9,12 @@ package com.shortvideo.social.domain;
  * creator -- not part of the creator's own state.
  */
 public record CreatorProfileView(
-        String accountId, String displayName, long followerCount, long followingCount, boolean following) {}
+        String accountId,
+        String displayName,
+        /** The unique username; never null. */
+        String handle,
+        /** Null when the creator has not written one. */
+        String bio,
+        long followerCount,
+        long followingCount,
+        boolean following) {}

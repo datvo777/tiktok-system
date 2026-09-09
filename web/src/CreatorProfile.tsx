@@ -9,7 +9,8 @@ import {
 } from './api';
 import { Sheet } from './App';
 import { SearchHitPlayer, VideoThumb } from './SearchPanel';
-import { Avatar, formatCount, handleFor } from './ui';
+import { Avatar, formatCount, formatHandle } from './ui';
+import { useRequireAccount, useViewer } from './viewer';
 
 /**
  * A read-only public profile: header stats plus the creator's published
@@ -17,7 +18,9 @@ import { Avatar, formatCount, handleFor } from './ui';
  * "browse videos I didn't upload myself" -- there is no separate thumbnail or
  * detail view to maintain.
  */
-export function CreatorProfile({ creatorId, viewerId }: { creatorId: string; viewerId: string }) {
+export function CreatorProfile({ creatorId }: { creatorId: string }) {
+  const { viewerId } = useViewer();
+  const requireAccount = useRequireAccount();
   const [page, setPage] = useState(0);
   const [openVideo, setOpenVideo] = useState<SearchHit | null>(null);
   const [following, setFollowing] = useState(false);
@@ -70,7 +73,8 @@ export function CreatorProfile({ creatorId, viewerId }: { creatorId: string; vie
       <div className="creator-profile-head">
         <Avatar seed={creatorId} label={profile.data.displayName} size="lg" />
         <div className="creator-profile-name">{profile.data.displayName}</div>
-        <div className="creator-profile-handle">{handleFor(creatorId)}</div>
+        <div className="creator-profile-handle">{formatHandle(profile.data.handle, creatorId)}</div>
+        {profile.data.bio && <p className="creator-profile-bio">{profile.data.bio}</p>}
         <div className="creator-profile-stats">
           <span>
             <strong>{formatCount(profile.data.followerCount)}</strong> Followers
@@ -82,7 +86,7 @@ export function CreatorProfile({ creatorId, viewerId }: { creatorId: string; vie
         {!isSelf && (
           <button
             className={`btn-primary btn-sm creator-profile-follow${following ? ' is-following' : ''}`}
-            onClick={() => follow.mutate(!following)}
+            onClick={requireAccount(() => follow.mutate(!following))}
             disabled={follow.isPending}
             aria-pressed={following}
           >
@@ -104,6 +108,7 @@ export function CreatorProfile({ creatorId, viewerId }: { creatorId: string; vie
               videoId: video.videoId,
               creatorId,
               creatorDisplayName: profile.data.displayName,
+              creatorHandle: profile.data.handle,
               title: video.title,
               description: video.description,
               publishedAt: video.publishedAt,

@@ -324,6 +324,12 @@ textarea {
   margin-top: 0.3rem;
 }
 
+/* The hint doubles as the validation message once the field is short, so the
+   rule and the failure to meet it are never two separate pieces of text. */
+.field-hint.is-error {
+  color: var(--danger);
+}
+
 /* ==========================================================================
    App frame: persistent sidebar + video stage
    ========================================================================== */
@@ -675,6 +681,13 @@ textarea {
   display: none;
 }
 
+/* A single video has nothing to snap to, and leaving scroll-snap on makes the
+   one slide fight a scroll gesture that can never go anywhere. */
+.feed-viewport.is-single {
+  overflow-y: hidden;
+  scroll-snap-type: none;
+}
+
 .feed-slide {
   height: 100%;
   width: 100%;
@@ -689,15 +702,31 @@ textarea {
 
 /* Desktop: a phone-shaped column with the action rail beside it, so the video
    is never stretched to a shape it wasn't shot in. */
+/* Now a real <button>, so the element defaults have to be reset: the browser's
+   button padding, border, font and centring would otherwise reflow the whole
+   player. */
 .slide-player {
   position: relative;
+  display: block;
   height: 100%;
   aspect-ratio: 9 / 16;
   max-width: 100%;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   border-radius: var(--radius-lg);
   overflow: hidden;
   background: #0a0a0c;
   cursor: pointer;
+}
+
+.slide-player:hover:not(:disabled),
+.slide-player:active:not(:disabled) {
+  background: #0a0a0c;
+  border-color: transparent;
+  transform: none;
 }
 
 .slide-video {
@@ -825,6 +854,11 @@ textarea {
 
 /* Scrubbable progress bar pinned to the bottom edge of the player. The hit
    area is taller than the visible track so it can actually be grabbed. */
+.slide-progress:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
 .slide-progress {
   position: absolute;
   left: 0;
@@ -942,7 +976,22 @@ textarea {
   position: relative;
   display: block;
   margin-bottom: 0.5rem;
+}
+
+/* The avatar is the profile link; the wrapper stays a plain box so the follow
+   pip can sit on top of it without nesting one button inside another. */
+.rail-avatar-btn {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: var(--radius-pill);
   cursor: pointer;
+}
+
+.rail-avatar-btn:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
 }
 
 .rail-avatar {
@@ -2158,6 +2207,7 @@ textarea {
 /* No thumbnails are stored, so the tile is a tinted stand-in keyed off the
    video id -- stable per video, and already in the 9:16 shape it will open in. */
 .search-thumb {
+  position: relative;
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -2166,6 +2216,31 @@ textarea {
   border-radius: var(--radius-md);
   background: linear-gradient(150deg, hsl(var(--h) 55% 32%), hsl(var(--h) 60% 16%));
   color: rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+}
+
+/* Sits over the coloured placeholder rather than replacing it, so a tile never
+   flashes empty while the still loads and a video with no thumbnail simply
+   keeps the placeholder underneath. */
+.search-thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  animation: thumb-in 0.2s var(--ease-out) forwards;
+}
+
+@keyframes thumb-in {
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-thumb-img {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 .search-mark {
@@ -2754,4 +2829,324 @@ textarea {
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* A notification that names a video is a link to it. Styled as the message
+   itself rather than as a separate "open" control, so the whole line is the
+   target and the list keeps its density. */
+.notif-message-link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notif-message-link:hover,
+.notif-message-link:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ==========================================================================
+   Upload progress
+   `fetch` cannot report upload progress, so a large file used to show only a
+   button reading "Uploading…" for minutes. This is the bar that replaced it.
+   ========================================================================== */
+
+.upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.upload-progress-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 0.2s var(--ease-out);
+}
+
+/* The tail of the upload -- the object store's own response, then completeUpload
+   -- reports no bytes, so the bar sweeps rather than claiming a percentage. */
+.upload-progress-fill.is-indeterminate {
+  width: 35%;
+  transform: none;
+  animation: upload-sweep 1.1s var(--ease-out) infinite;
+}
+
+@keyframes upload-sweep {
+  from { margin-left: -35%; }
+  to { margin-left: 100%; }
+}
+
+.upload-progress-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upload-progress-fill.is-indeterminate {
+    animation: none;
+    width: 100%;
+    opacity: 0.4;
+  }
+}
+
+/* ==========================================================================
+   Comment thread additions
+   ========================================================================== */
+
+/* The age sits with the author rather than on its own line: a comment list is
+   scanned, and a second line per row halves how many fit on a phone screen. */
+.comment-row-time {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.comment-row-action.is-danger {
+  color: var(--danger);
+}
+
+/* Paging control at the foot of a comment list. Full width so it reads as the
+   end of the list rather than as another row's action. */
+.comment-more {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+/* Sits between the handle and the follower stats, narrow enough to stay
+   readable rather than running the full width of the sheet. */
+.creator-profile-bio {
+  max-width: 42ch;
+  margin: 0.6rem auto 0;
+  font-size: 0.9rem;
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+/* ==========================================================================
+   Report form
+   A single column of full-width targets rather than a dense grid: this is a
+   list read carefully once, not one scanned repeatedly, and the labels are
+   long enough that two columns would wrap unevenly.
+   ========================================================================== */
+
+.report-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.report-reason {
+  width: 100%;
+  text-align: left;
+  font-weight: 500;
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+.report-reason.is-selected {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--text);
+}
+
+/* Sits under the description, quieter than it: the view count is context, not
+   the thing being read. */
+.slide-views {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   My videos
+   A creator's own list: thumbnail, state, counts and the actions that apply to
+   it. Actions sit on their own row rather than beside the title, so a narrow
+   screen wraps them predictably instead of squeezing the title.
+   ========================================================================== */
+
+.my-video {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  margin-bottom: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+.my-video-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.my-video-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.my-video-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.my-video-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.my-video-date {
+  font-size: 0.76rem;
+  color: var(--text-dim);
+}
+
+.my-video-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.my-video-actions {
+  gap: 0.4rem;
+}
+
+.my-video-warning {
+  font-size: 0.82rem;
+  color: var(--danger);
+}
+
+/* ==========================================================================
+   Feed tabs
+   Floated over the video rather than taking a row of their own: the player is
+   the page, and a header bar above it would cost the one thing this layout is
+   built to maximise.
+   ========================================================================== */
+
+.feed-tabs {
+  position: absolute;
+  top: 0.85rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  gap: 1.25rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.feed-tab {
+  padding: 0.2rem 0;
+  border: 0;
+  background: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.62);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+
+.feed-tab:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.feed-tab.is-active {
+  color: #fff;
+}
+
+/* The underline marks the selection without needing a filled pill, which would
+   sit heavily over the video. */
+.feed-tab.is-active::after {
+  content: '';
+  display: block;
+  height: 2px;
+  margin-top: 0.25rem;
+  border-radius: 2px;
+  background: #fff;
+}
+
+/* The handle sits between the display name and the age: name to recognise,
+   handle to identify, age for context. */
+.comment-row-handle {
+  margin-left: 0.4rem;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+/* The @ lives outside the input so it cannot be deleted, retyped, or pasted in
+   twice -- a handle field that accepts "@@dat" is a validation problem the form
+   invented for itself. */
+.handle-field {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding-left: 0.85rem;
+  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out);
+}
+
+.handle-field:focus-within {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.handle-sigil {
+  color: var(--text-dim);
+  font-size: 0.92rem;
+}
+
+.handle-field input {
+  padding-left: 0;
+  background: none;
+}
+
+.handle-field input:focus {
+  background: none;
+}
+
+/* The sign-in form as a sheet rather than a full-page wall. Same fields; it just
+   no longer stands between a viewer and the content. */
+.auth-panel .auth-title {
+  margin-bottom: 0.3rem;
+}
+
+.auth-panel .auth-sub {
+  margin-bottom: 1.1rem;
+  font-size: 0.9rem;
 }

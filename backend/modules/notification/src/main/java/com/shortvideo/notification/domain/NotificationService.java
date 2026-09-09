@@ -7,6 +7,8 @@ import com.shortvideo.shared.outbox.OutboxWriter;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -76,16 +78,62 @@ public class NotificationService {
         repository.saveAndFlush(entity);
     }
 
-    @Transactional(readOnly = true)
-    public List<NotificationView> listForRecipient(String accountId) {
-        return repository.findByRecipientAccountIdOrderByCreatedAtDesc(UUID.fromString(accountId)).stream()
-                .map(e -> new NotificationView(
-                        e.getNotificationId().toString(),
-                        e.getType(),
-                        e.getMessage(),
-                        e.getRelatedVideoId() == null ? null : e.getRelatedVideoId().toString(),
-                        e.isRead(),
-                        e.getCreatedAt()))
-                .toList();
+    /**
+     * Marks every unread notification for the caller as read, in one statement.
+     *
+     * @return how many were actually unread, so the caller can tell "cleared 12"
+     *     from "there was nothing to clear".
+     */
+    @Transactional
+    public int markAllRead(String accountId) {
+        return repository.markAllRead(UUID.fromString(accountId));
     }
+
+    /** Default page size; the client may ask for less, never for more. */
+    public static final int PAGE_SIZE = 30;
+    public static final int MAX_PAGE_SIZE = 100;
+
+    /**
+     * One page of the caller's notifications, newest first, plus the unread total
+     * across all of them.
+     *
+     * <p>The unread count is computed over the whole set rather than over the
+     * page: the badge previously counted only what the client had fetched, so an
+     * account with a long history under-reported it.
+     */
+    @Transactional(readOnly = true)
+    public NotificationPage listForRecipient(String accountId, String cursor, int limit) {
+        UUID recipient = UUID.fromString(accountId);
+        int size = limit <= 0 ? PAGE_SIZE : Math.min(limit, MAX_PAGE_SIZE);
+        // One extra row answers "is there another page?" without a count query.
+        Pageable window = PageRequest.of(0, size + 1);
+
+        NotificationCursors.Position position = NotificationCursors.decode(cursor);
+        List<NotificationEntity> rows = position == null
+                ? repository.findByRecipientAccountIdOrderByCreatedAtDescNotificationIdDesc(recipient, window)
+                : repository.findPageAfter(recipient, position.createdAt(), position.id(), window);
+
+        boolean more = rows.size() > size;
+        List<NotificationEntity> page = more ? rows.subList(0, size) : rows;
+        String next = more && !page.isEmpty()
+                ? NotificationCursors.encode(
+                        page.get(page.size() - 1).getCreatedAt(), page.get(page.size() - 1).getNotificationId())
+                : null;
+
+        return new NotificationPage(
+                page.stream()
+                        .map(e -> new NotificationView(
+                                e.getNotificationId().toString(),
+                                e.getType(),
+                                e.getMessage(),
+                                e.getRelatedVideoId() == null ? null : e.getRelatedVideoId().toString(),
+                                e.isRead(),
+                                e.getCreatedAt()))
+                        .toList(),
+                next,
+                repository.countByRecipientAccountIdAndReadIsFalse(recipient));
+    }
+
+    /** One page, the cursor that continues it, and the account-wide unread total. */
+    public record NotificationPage(List<NotificationView> items, String nextCursor, long unreadCount) {}
 }

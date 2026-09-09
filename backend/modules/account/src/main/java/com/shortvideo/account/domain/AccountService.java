@@ -19,6 +19,8 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Collection;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -93,8 +95,14 @@ public class AccountService implements AccountDirectory {
                 throw new AccountExceptions.EmailAlreadyRegistered("Email is already registered");
             }
 
-            AccountEntity account =
-                    new AccountEntity(UUID.randomUUID(), email, passwordHash, trimmedName, DEFAULT_ROLES);
+            UUID accountId = UUID.randomUUID();
+            AccountEntity account = new AccountEntity(
+                    accountId,
+                    email,
+                    passwordHash,
+                    trimmedName,
+                    allocateHandle(Handles.suggestFrom(trimmedName, accountId.toString())),
+                    DEFAULT_ROLES);
             try {
                 // Flush so the entity holds its assigned aggregate version before
                 // the event is written; the outbox unique constraint is keyed on
@@ -188,6 +196,132 @@ public class AccountService implements AccountDirectory {
                 .toList();
     }
 
+    /**
+     * Finds a free handle near {@code stem}.
+     *
+     * <p>Registration does not stop to make someone invent a second name, so this
+     * derives one from their display name and appends a number if it is taken.
+     * The loop is bounded: past that, fall back to something derived from a fresh
+     * random id, which collides only if the same UUID prefix is drawn twice.
+     *
+     * <p>This is a best-effort reservation, not a lock. The unique index is what
+     * actually guarantees uniqueness, and {@link #register} translates the
+     * resulting constraint violation — checking here only keeps the common case
+     * from reaching the database as an error.
+     */
+    private String allocateHandle(String stem) {
+        if (!repository.existsByHandleLower(stem)) {
+            return stem;
+        }
+        for (int suffix = 2; suffix < 1000; suffix++) {
+            String candidate = Handles.withSuffix(stem, suffix);
+            if (!repository.existsByHandleLower(candidate)) {
+                return candidate;
+            }
+        }
+        return "user" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    /**
+     * Changes the caller's handle.
+     *
+     * <p>The old handle is <em>not</em> reserved afterwards. That is a real
+     * trade-off: releasing it immediately means someone can take a name a
+     * well-known account just gave up and inherit their inbound links. A cooling-off
+     * period is the usual answer and is deliberately not built here — it needs a
+     * scheduled release and a table of its own, and doing half of it would be worse
+     * than doing none.
+     */
+    @Transactional
+    public AccountView changeHandle(String accountId, String rawHandle) {
+        String handle = Handles.normalise(rawHandle);
+        AccountEntity account = repository
+                .findById(parseId(accountId))
+                .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
+
+        if (!handle.equals(account.getHandleLower()) && repository.existsByHandleLower(handle)) {
+            throw new AccountExceptions.InvalidHandle("That username is taken");
+        }
+        if (!account.changeHandle(handle)) {
+            return toView(account);
+        }
+        try {
+            return toView(repository.saveAndFlush(account));
+        } catch (DataIntegrityViolationException lostRace) {
+            // Someone else took it between the check above and this flush.
+            throw new AccountExceptions.InvalidHandle("That username is taken");
+        }
+    }
+
+    /** Whether a handle is well-formed and free, for a live check while typing. */
+    @Transactional(readOnly = true)
+    public boolean isHandleAvailable(String rawHandle, String forAccountId) {
+        String handle = Handles.normalise(rawHandle);
+        return repository
+                .findByHandleLower(handle)
+                // Your own current handle is "available" to you, so the form does
+                // not tell someone their own name is taken.
+                .map(existing -> existing.getAccountId().toString().equals(forAccountId))
+                .orElse(true);
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<AccountView> findByHandle(String rawHandle) {
+        String handle;
+        try {
+            handle = Handles.normalise(rawHandle);
+        } catch (AccountExceptions.InvalidHandle malformed) {
+            return Optional.empty();
+        }
+        return repository.findByHandleLower(handle).map(AccountService::toView);
+    }
+
+    /**
+     * Updates the caller's own profile. Both fields are optional; a null one is
+     * "leave it alone", which is what makes this a PATCH rather than a PUT.
+     *
+     * <p>No event and no version bump when nothing actually changed — resaving
+     * identical values is a no-op, not a fact worth publishing.
+     *
+     * <p>The display name is denormalised into the search index and into comment
+     * payloads, so a rename is eventually consistent there: the account row is
+     * authoritative and those catch up.
+     */
+    @Transactional
+    public AccountView updateProfile(String accountId, String displayName, String bio) {
+        AccountEntity account = repository
+                .findById(parseId(accountId))
+                .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
+        String trimmedName = displayName == null ? null : displayName.trim();
+        if (trimmedName != null && trimmedName.isEmpty()) {
+            throw new AccountExceptions.InvalidProfile("Display name cannot be blank");
+        }
+        if (!account.updateProfile(trimmedName, bio)) {
+            return toView(account);
+        }
+        return toView(repository.saveAndFlush(account));
+    }
+
+    /**
+     * Changes the caller's password, after proving they know the current one.
+     *
+     * <p>Verifying the current password is what stops a borrowed unlocked
+     * session from locking the real owner out of their account — the session
+     * cookie proves the browser is signed in, not that the person at the keyboard
+     * is the account holder.
+     */
+    @Transactional
+    public void changePassword(String accountId, String currentPassword, String newPassword) {
+        AccountEntity account = repository
+                .findById(parseId(accountId))
+                .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
+        if (!passwordEncoder.matches(currentPassword, account.getPasswordHash())) {
+            throw new AccountExceptions.InvalidCredentials("Current password is incorrect");
+        }
+        account.changePassword(passwordEncoder.encode(newPassword));
+        repository.saveAndFlush(account);
+    }
+
     @Override
     @Transactional(readOnly = true)
     public Optional<AccountView> find(String accountId) {
@@ -196,6 +330,30 @@ public class AccountService implements AccountDirectory {
         } catch (IllegalArgumentException malformed) {
             return Optional.empty();
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, AccountView> findAll(Collection<String> accountIds) {
+        List<UUID> ids = accountIds.stream()
+                .map(id -> {
+                    try {
+                        return parseId(id);
+                    } catch (IllegalArgumentException malformed) {
+                        // A malformed id cannot match a row; dropping it here keeps
+                        // one bad value from failing the whole batch.
+                        return null;
+                    }
+                })
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return repository.findAllById(ids).stream()
+                .map(AccountService::toView)
+                .collect(java.util.stream.Collectors.toMap(AccountView::accountId, view -> view));
     }
 
     /**
@@ -245,6 +403,8 @@ public class AccountService implements AccountDirectory {
         return new AccountView(
                 account.getAccountId().toString(),
                 account.getDisplayName(),
+                account.getHandle(),
+                account.getBio(),
                 account.getState(),
                 account.getAggregateVersion(),
                 account.getCreatedAt());

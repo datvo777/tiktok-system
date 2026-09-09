@@ -52,6 +52,23 @@ public final class EventTypes {
 
     // Milestone 7+
     public static final String SOCIAL_VIDEO_COMMENTED = "social.video.commented";
+
+    /**
+     * Distinct from {@link #SOCIAL_VIDEO_COMMENTED}: a reply's audience is the
+     * author of the comment being replied to, not the owner of the video. Emitting
+     * one event for both meant the video owner was told "someone commented on your
+     * video" while the person actually being replied to was never notified at all,
+     * which silently killed every comment thread.
+     */
+    public static final String SOCIAL_COMMENT_REPLIED = "social.comment.replied";
+
+    /**
+     * Emitted only on a first like — the insert is {@code ON CONFLICT DO NOTHING},
+     * so a re-sent like affects no rows and produces no event, and the creator's
+     * inbox does not fill with duplicates.
+     */
+    public static final String SOCIAL_VIDEO_LIKED = "social.video.liked";
+
     public static final String SOCIAL_CREATOR_FOLLOWED = "social.creator.followed";
     public static final String NOTIFICATION_CREATED = "notification.created";
 

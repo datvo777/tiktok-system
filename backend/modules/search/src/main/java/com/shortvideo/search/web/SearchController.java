@@ -35,8 +35,13 @@ public class SearchController {
             // OpenSearch. No injection risk (q is a bound value in a structured
             // match clause), but no cost ceiling either.
             @RequestParam @NotBlank @Size(max = 128) String q,
+            @RequestParam(defaultValue = "0") @Min(0) @Max(1000) int page,
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) @Min(1) @Max(50) int limit) {
-        var hits = indexService.search(q, limit).stream().map(SearchDtos.SearchHit::from).toList();
-        return new SearchDtos.SearchResponse(q, hits);
+        // One extra hit answers "is there another page?" without a second count
+        // query; it is dropped before the page is returned.
+        var raw = indexService.search(q, page * limit, limit + 1);
+        boolean hasMore = raw.size() > limit;
+        var hits = (hasMore ? raw.subList(0, limit) : raw).stream().map(SearchDtos.SearchHit::from).toList();
+        return new SearchDtos.SearchResponse(q, page, hits, hasMore);
     }
 }

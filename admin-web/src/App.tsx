@@ -3,13 +3,15 @@ import { useState } from 'react';
 import { getMe, listPending, login, logout } from './api';
 import { Investigate } from './Investigate';
 import { Operate } from './Operate';
+import { ReportsQueue } from './Reports';
 import { Review } from './Review';
 import { ToastProvider } from './ui';
 
-type Surface = 'review' | 'investigate' | 'operate';
+type Surface = 'review' | 'reports' | 'investigate' | 'operate';
 
 export function App() {
-  const [email, setEmail] = useState('admin@example.com');
+  // Prefilled only under `vite dev`; a production bundle opens with an empty field.
+  const [email, setEmail] = useState(import.meta.env.DEV ? 'admin@example.com' : '');
   const [password, setPassword] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
@@ -33,10 +35,16 @@ export function App() {
         <Brand />
         <section className="panel">
           <div className="panel-body">
-            <p className="section-note">
-              There is no self-service admin registration. Grant the role directly in Postgres for local testing:{' '}
-              <code>UPDATE account.account SET roles = 'USER,ADMIN' WHERE email = …</code>
-            </p>
+            {/* The role-granting SQL is a local-development aid, not something to
+                print on a deployed sign-in page. */}
+            {import.meta.env.DEV ? (
+              <p className="section-note">
+                There is no self-service admin registration. Grant the role directly in Postgres for local testing:{' '}
+                <code>UPDATE account.account SET roles = 'USER,ADMIN' WHERE email = …</code>
+              </p>
+            ) : (
+              <p className="section-note">Sign in with an account that carries the ADMIN role.</p>
+            )}
 
             <label className="field">
               <span className="field-label">Email</span>
@@ -152,6 +160,9 @@ function Console({ displayName, onSignOut }: { displayName: string; onSignOut: (
               </span>
             )}
           </button>
+          <button aria-current={surface === 'reports' ? 'page' : undefined} onClick={() => setSurface('reports')}>
+            Reports
+          </button>
           <button aria-current={surface === 'investigate' ? 'page' : undefined} onClick={() => setSurface('investigate')}>
             Investigate
           </button>
@@ -170,6 +181,7 @@ function Console({ displayName, onSignOut }: { displayName: string; onSignOut: (
 
       <main className="surface">
         {surface === 'review' && <Review />}
+        {surface === 'reports' && <ReportsQueue />}
         {surface === 'investigate' && <Investigate />}
         {surface === 'operate' && <Operate />}
       </main>

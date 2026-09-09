@@ -203,6 +203,14 @@ export function PencilIcon(props: IconProps) {
   );
 }
 
+export function KeyIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M14.6 4.8a4.6 4.6 0 1 0-4.3 6.2c.35 0 .69-.04 1.02-.11l1.28 1.28h1.9v1.9h1.9v1.9h2.4v-2.4l-5.2-5.2c.07-.33.11-.67.11-1.02a4.6 4.6 0 0 0-.11-1.02M12.4 7.6h.01" />
+    </Svg>
+  );
+}
+
 export function TrashIcon(props: IconProps) {
   return (
     <Svg {...props}>

@@ -6,48 +6,46 @@
 // 403 means "signed in without the ADMIN role", and they call for different
 // messages.
 
-import { ApiError, arr, bool, jsonBody, nullableStr, num, obj, request, requestNoContent, str } from './http';
+import { ApiError, jsonBody, request, requestNoContent, s, type Infer } from '@short/shared';
 
-export { ApiError, ContractError } from './http';
+export { ApiError, ContractError } from '@short/shared';
 
 /**
  * The bearer token in the response is deliberately not read: the HttpOnly
  * session cookie set alongside it authenticates every request this app makes.
  */
-export type LoginResponse = {
-  accountId: string;
-  expiresAt: string;
-};
+const loginSchema = s.object({ accountId: s.string, expiresAt: s.string });
+export type LoginResponse = Infer<typeof loginSchema>;
 
-export type PendingVideo = {
-  videoId: string;
-  creatorId: string;
-  state: string;
-  createdAt: string;
-};
+const pendingVideoSchema = s.object({
+  videoId: s.string,
+  creatorId: s.string,
+  state: s.string,
+  createdAt: s.string,
+});
+export type PendingVideo = Infer<typeof pendingVideoSchema>;
 
-export type PendingVideoPage = {
-  items: PendingVideo[];
-  nextCursor: string | null;
-};
+const pendingPageSchema = s.object({
+  items: s.array(pendingVideoSchema),
+  nextCursor: s.nullable(s.string),
+});
+export type PendingVideoPage = Infer<typeof pendingPageSchema>;
 
 export async function login(email: string, password: string): Promise<LoginResponse> {
   return request(
     '/api/v1/auth/login',
-    (payload) => {
-      const o = obj('login', payload);
-      return { accountId: str('login', o, 'accountId'), expiresAt: str('login', o, 'expiresAt') };
-    },
+    (payload) => loginSchema.parse('login', payload),
     jsonBody({ email, password }),
   );
 }
 
-export type MeResponse = {
-  accountId: string;
-  displayName: string;
-  state: string;
-  roles: string[];
-};
+const meSchema = s.object({
+  accountId: s.string,
+  displayName: s.string,
+  state: s.string,
+  roles: s.array(s.string),
+});
+export type MeResponse = Infer<typeof meSchema>;
 
 /**
  * Checked once on load: the session cookie survives a page refresh even
@@ -56,18 +54,7 @@ export type MeResponse = {
  * session.
  */
 export async function getMe(): Promise<MeResponse> {
-  return request('/api/v1/auth/me', (payload) => {
-    const o = obj('me', payload);
-    return {
-      accountId: str('me', o, 'accountId'),
-      displayName: str('me', o, 'displayName'),
-      state: str('me', o, 'state'),
-      roles: arr('me.roles', o['roles']).map((r, i) => {
-        if (typeof r !== 'string') throw new Error(`me.roles[${i}] is not a string`);
-        return r;
-      }),
-    };
-  });
+  return request('/api/v1/auth/me', (payload) => meSchema.parse('me', payload));
 }
 
 export async function logout(): Promise<void> {
@@ -96,21 +83,9 @@ const PENDING_PAGE_SIZE = 10;
 export async function listPending(cursor?: string, limit = PENDING_PAGE_SIZE): Promise<PendingVideoPage> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (cursor) params.set('cursor', cursor);
-  return request(`/internal/v1/videos/pending?${params}`, (payload) => {
-    const o = obj('pending', payload);
-    return {
-      nextCursor: nullableStr('pending', o, 'nextCursor'),
-      items: arr('pending.items', o['items']).map((raw, i) => {
-        const v = obj(`pending.items[${i}]`, raw);
-        return {
-          videoId: str(`pending.items[${i}]`, v, 'videoId'),
-          creatorId: str(`pending.items[${i}]`, v, 'creatorId'),
-          state: str(`pending.items[${i}]`, v, 'state'),
-          createdAt: str(`pending.items[${i}]`, v, 'createdAt'),
-        };
-      }),
-    };
-  });
+  return request(`/internal/v1/videos/pending?${params}`, (payload) =>
+    pendingPageSchema.parse('pending', payload),
+  );
 }
 
 export async function approve(videoId: string): Promise<void> {
@@ -130,25 +105,18 @@ export async function reject(videoId: string, policyCategory: string, reason: st
   );
 }
 
-export type PendingAppeal = {
-  videoId: string;
-  state: string;
-  reason: string | null;
-  decisionReason: string | null;
-};
+const pendingAppealSchema = s.object({
+  videoId: s.string,
+  state: s.string,
+  reason: s.nullable(s.string),
+  decisionReason: s.nullable(s.string),
+});
+export type PendingAppeal = Infer<typeof pendingAppealSchema>;
 
 /** Milestone 6 (brief section 18). {@code appealId} is the video's id. */
 export async function listPendingAppeals(): Promise<PendingAppeal[]> {
   return request('/internal/v1/appeals/pending', (payload) =>
-    arr('appeals', payload).map((raw, i) => {
-      const a = obj(`appeals[${i}]`, raw);
-      return {
-        videoId: str(`appeals[${i}]`, a, 'videoId'),
-        state: str(`appeals[${i}]`, a, 'state'),
-        reason: nullableStr(`appeals[${i}]`, a, 'reason'),
-        decisionReason: nullableStr(`appeals[${i}]`, a, 'decisionReason'),
-      };
-    }),
+    s.array(pendingAppealSchema).parse('appeals', payload),
   );
 }
 
@@ -158,6 +126,51 @@ export async function approveAppeal(appealId: string, reason: string): Promise<v
 
 export async function denyAppeal(appealId: string, reason: string): Promise<void> {
   await requestNoContent(`/internal/v1/appeals/${appealId}/deny`, jsonBody({ reason }));
+}
+
+// ------------------------------------------------------------------- reports
+//
+// Viewer-submitted reports, which the platform previously had no channel for at
+// all: moderation reviewed every upload on the way in and had takedown tools
+// afterwards, but the people who actually encounter a problem had no way to say
+// so.
+
+const reportSubjectType = s.oneOf('VIDEO', 'ACCOUNT', 'COMMENT');
+export type ReportSubjectType = Infer<typeof reportSubjectType>;
+
+const openReportSchema = s.object({
+  reportId: s.string,
+  subjectType: reportSubjectType,
+  subjectId: s.string,
+  reason: s.string,
+  detail: s.nullable(s.string),
+  createdAt: s.string,
+  /** How many people have reported this same subject — the triage signal. */
+  openReportsForSubject: s.number,
+});
+export type OpenReport = Infer<typeof openReportSchema>;
+
+const reportListSchema = s.object({ items: s.array(openReportSchema) });
+
+export type ReportResolution = 'ACTIONED' | 'DISMISSED' | 'ABUSIVE_REPORT';
+
+export async function listOpenReports(limit = 50): Promise<OpenReport[]> {
+  return request(
+    `/internal/v1/reports/open?limit=${limit}`,
+    (payload) => reportListSchema.parse('reports', payload).items,
+  );
+}
+
+export async function resolveReport(
+  reportId: string,
+  resolution: ReportResolution,
+  note: string,
+): Promise<void> {
+  await request(
+    `/internal/v1/reports/${reportId}/resolve`,
+    () => undefined,
+    jsonBody({ resolution, note: note.trim() || null }),
+  );
 }
 
 export async function quarantine(videoId: string, reason: string): Promise<void> {
@@ -177,95 +190,64 @@ export async function reprocessVideo(videoId: string): Promise<void> {
 }
 
 /** Composed from the eligibility projection plus the creator's display name (brief section 17). */
-export type VideoDetail = {
-  videoId: string;
-  creatorId: string;
-  creatorDisplayName: string;
-  title: string | null;
-  description: string | null;
-  processingState: string;
-  moderationState: string;
-  publicationState: string;
-  assetLifecycleState: string;
-  legalServingState: string;
-  isVideoEligible: boolean;
-  updatedAt: string;
-};
+const videoDetailSchema = s.object({
+  videoId: s.string,
+  creatorId: s.string,
+  creatorDisplayName: s.string,
+  title: s.nullable(s.string),
+  description: s.nullable(s.string),
+  processingState: s.string,
+  moderationState: s.string,
+  publicationState: s.string,
+  assetLifecycleState: s.string,
+  legalServingState: s.string,
+  isVideoEligible: s.boolean,
+  updatedAt: s.string,
+});
+export type VideoDetail = Infer<typeof videoDetailSchema>;
 
 /** A 404 here means no eligibility row exists for that id yet (or ever) -- not necessarily a typo'd id. */
 export async function getVideoDetail(videoId: string): Promise<VideoDetail> {
-  return request(`/internal/v1/videos/${videoId}`, (payload) => {
-    const o = obj('videoDetail', payload);
-    return {
-      videoId: str('videoDetail', o, 'videoId'),
-      creatorId: str('videoDetail', o, 'creatorId'),
-      creatorDisplayName: str('videoDetail', o, 'creatorDisplayName'),
-      title: nullableStr('videoDetail', o, 'title'),
-      description: nullableStr('videoDetail', o, 'description'),
-      processingState: str('videoDetail', o, 'processingState'),
-      moderationState: str('videoDetail', o, 'moderationState'),
-      publicationState: str('videoDetail', o, 'publicationState'),
-      assetLifecycleState: str('videoDetail', o, 'assetLifecycleState'),
-      legalServingState: str('videoDetail', o, 'legalServingState'),
-      isVideoEligible: bool('videoDetail', o, 'isVideoEligible'),
-      updatedAt: str('videoDetail', o, 'updatedAt'),
-    };
-  });
+  return request(`/internal/v1/videos/${videoId}`, (payload) => videoDetailSchema.parse('videoDetail', payload));
 }
 
 /** Public search (creator name, title, or description) reused here for admin lookup by keyword. */
-export type VideoSearchHit = {
-  videoId: string;
-  creatorId: string;
-  creatorDisplayName: string;
-  title: string | null;
-  publishedAt: string;
-};
+const videoSearchHitSchema = s.object({
+  videoId: s.string,
+  creatorId: s.string,
+  creatorDisplayName: s.string,
+  title: s.nullable(s.string),
+  publishedAt: s.string,
+});
+export type VideoSearchHit = Infer<typeof videoSearchHitSchema>;
+
+const videoSearchSchema = s.object({ results: s.array(videoSearchHitSchema) });
 
 export async function searchVideos(query: string): Promise<VideoSearchHit[]> {
-  return request(`/api/v1/search?q=${encodeURIComponent(query)}`, (payload) => {
-    const o = obj('search', payload);
-    return arr('search.results', o['results']).map((raw, i) => {
-      const hit = obj(`search.results[${i}]`, raw);
-      return {
-        videoId: str(`search.results[${i}]`, hit, 'videoId'),
-        creatorId: str(`search.results[${i}]`, hit, 'creatorId'),
-        creatorDisplayName: str(`search.results[${i}]`, hit, 'creatorDisplayName'),
-        title: nullableStr(`search.results[${i}]`, hit, 'title'),
-        publishedAt: str(`search.results[${i}]`, hit, 'publishedAt'),
-      };
-    });
-  });
+  return request(
+    `/api/v1/search?q=${encodeURIComponent(query)}`,
+    (payload) => videoSearchSchema.parse('search', payload).results,
+  );
 }
 
-export type AdminAccount = {
-  accountId: string;
-  email: string;
-  displayName: string;
-  state: string;
-  roles: string[];
-  createdAt: string;
-};
+const adminAccountSchema = s.object({
+  accountId: s.string,
+  email: s.string,
+  displayName: s.string,
+  state: s.string,
+  roles: s.array(s.string),
+  createdAt: s.string,
+});
+export type AdminAccount = Infer<typeof adminAccountSchema>;
+
+const adminAccountListSchema = s.object({ items: s.array(adminAccountSchema) });
 
 /** Substring match on email, newest accounts first, capped server-side at 50. */
 export async function searchAccounts(query: string): Promise<AdminAccount[]> {
-  return request(`/internal/v1/accounts?q=${encodeURIComponent(query)}`, (payload) => {
-    const o = obj('accounts', payload);
-    return arr('accounts.items', o['items']).map((raw, i) => {
-      const a = obj(`accounts.items[${i}]`, raw);
-      return {
-        accountId: str(`accounts.items[${i}]`, a, 'accountId'),
-        email: str(`accounts.items[${i}]`, a, 'email'),
-        displayName: str(`accounts.items[${i}]`, a, 'displayName'),
-        state: str(`accounts.items[${i}]`, a, 'state'),
-        roles: arr(`accounts.items[${i}].roles`, a['roles']).map((r, j) => {
-          if (typeof r !== 'string') throw new Error(`accounts.items[${i}].roles[${j}] is not a string`);
-          return r;
-        }),
-        createdAt: str(`accounts.items[${i}]`, a, 'createdAt'),
-      };
-    });
-  });
+  return request(
+    `/internal/v1/accounts?q=${encodeURIComponent(query)}`,
+    (payload) => adminAccountListSchema.parse('accounts', payload).items,
+  );
 }
 
 export async function suspendAccount(accountId: string, reason: string): Promise<void> {
@@ -276,26 +258,19 @@ export async function reinstateAccount(accountId: string, reason: string): Promi
   await requestNoContent(`/internal/v1/accounts/${accountId}/reinstate`, jsonBody({ reason }));
 }
 
-export type PlaybackSessionResponse = {
-  videoId: string;
-  processingVersion: number;
-  mode: string;
-  expiresAt: string;
-};
+const playbackSessionSchema = s.object({
+  videoId: s.string,
+  processingVersion: s.number,
+  mode: s.string,
+  expiresAt: s.string,
+});
+export type PlaybackSessionResponse = Infer<typeof playbackSessionSchema>;
 
 /** Admin-only; lets a moderator watch a video before approving/rejecting it. */
 export async function createModeratorPreviewSession(videoId: string): Promise<PlaybackSessionResponse> {
   return request(
     `/internal/v1/videos/${videoId}/moderator-playback-session`,
-    (payload) => {
-      const o = obj('moderatorSession', payload);
-      return {
-        videoId: str('moderatorSession', o, 'videoId'),
-        processingVersion: num('moderatorSession', o, 'processingVersion'),
-        mode: str('moderatorSession', o, 'mode'),
-        expiresAt: str('moderatorSession', o, 'expiresAt'),
-      };
-    },
+    (payload) => playbackSessionSchema.parse('moderatorSession', payload),
     { method: 'POST' },
   );
 }

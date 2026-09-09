@@ -4,14 +4,20 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * FFmpeg/FFprobe orchestration (brief section 14). One 720p rendition for the
+ * FFmpeg/FFprobe mechanics (brief section 14). The <em>order</em> these run in
+ * lives in {@link TranscodePipeline}; this class knows how to invoke ffmpeg
+ * safely and nothing about what a job consists of. One 720p rendition for the
  * first version; the master playlist is hand-written so even a single rendition
  * has a proper master/variant structure.
  *
@@ -38,6 +44,8 @@ import org.springframework.stereotype.Component;
 @Component
 class HlsTranscoder {
 
+    private static final Logger log = LoggerFactory.getLogger(HlsTranscoder.class);
+
     /**
      * Keyed by FFprobe's {@code format_name}, which is the full comma-joined
      * demuxer name (e.g. {@code mov,mp4,m4a,3gp,3g2,mj2}) and is also accepted
@@ -60,12 +68,49 @@ class HlsTranscoder {
         this.properties = properties;
     }
 
-    TranscodeOutput transcode(Path sourceFile, Path outputDir) throws IOException {
-        ProbedSource source = probeSource(sourceFile);
-        double durationSeconds = source.durationSeconds();
-        Dimensions target = targetResolution(source.width(), source.height());
+    /**
+     * The bitrate ladder, widest rung first.
+     *
+     * <p>A single rendition gave adaptive streaming nothing to adapt to: a
+     * viewer whose connection could not sustain 1200 kbps had no lower rung to
+     * step down to and simply buffered. Rungs are expressed as a cap on the
+     * <em>long</em> edge rather than as a height, because this app's video is
+     * mostly vertical and "720p" names the wrong axis for a portrait frame.
+     */
+    private static final List<Rung> LADDER = List.of(
+            new Rung("high", 1280, 1800, 128),
+            new Rung("medium", 854, 900, 96),
+            new Rung("low", 480, 400, 64));
 
-        Path variantDir = outputDir.resolve("720p");
+    /** Where in the clip the poster frame is taken from, as a fraction of duration. */
+    private static final double POSTER_AT = 0.25;
+
+    static final String POSTER_FILENAME = "poster.jpg";
+
+    /** A rung of the ladder: a cap on the long edge plus the bitrates to encode it at. */
+    record Rung(String name, int maxEdge, int videoKbps, int audioKbps) {}
+
+    /**
+     * Never upscales: a rung is included only when the source is at least as
+     * large as it, so a 480-pixel-tall clip is not re-encoded up to 1280 and
+     * charged three times for the privilege. The narrowest rung is always kept
+     * even when the source is smaller than all of them, so every video has at
+     * least one rendition.
+     */
+    static List<Rung> ladderFor(int width, int height) {
+        int sourceEdge = Math.max(width, height);
+        if (sourceEdge <= 0) {
+            return List.of(LADDER.get(0)); // malformed probe data; fall back to one rendition
+        }
+        List<Rung> chosen = LADDER.stream().filter(r -> r.maxEdge() <= sourceEdge).toList();
+        return chosen.isEmpty() ? List.of(LADDER.get(LADDER.size() - 1)) : chosen;
+    }
+
+    Variant encodeRung(
+            Path sourceFile, Path outputDir, ProbedSource source, Rung rung, double durationSeconds)
+            throws IOException {
+        Dimensions target = targetResolution(source.width(), source.height(), rung.maxEdge());
+        Path variantDir = outputDir.resolve(rung.name());
         Files.createDirectories(variantDir);
         Path variantPlaylist = variantDir.resolve("index.m3u8");
 
@@ -78,7 +123,12 @@ class HlsTranscoder {
                 "-f", source.formatName(),
                 "-i", sourceFile.toString(),
                 "-preset", "veryfast",
+                // A keyframe every 2s at 24fps. Segment boundaries can only fall
+                // on keyframes, so this has to divide into -hls_time or the
+                // rungs' segments will not line up and switching between them
+                // stalls.
                 "-g", "48",
+                "-keyint_min", "48",
                 "-sc_threshold", "0",
                 "-map", "0:v:0",
                 "-map", "0:a:0?",
@@ -93,12 +143,17 @@ class HlsTranscoder {
                 "-profile:v", "high",
                 "-level:v", "4.0",
                 "-c:a", "aac",
-                "-b:a", "128k",
-                "-b:v", "1200k",
+                "-b:a", rung.audioKbps() + "k",
+                "-b:v", rung.videoKbps() + "k",
+                // Capped VBR rather than a bare average: without a ceiling one
+                // busy scene can spike far above the rung's advertised bandwidth,
+                // which is exactly the moment a constrained viewer needed it not to.
+                "-maxrate", (rung.videoKbps() * 11 / 10) + "k",
+                "-bufsize", (rung.videoKbps() * 2) + "k",
                 // A fixed 1280x720 stretched every portrait upload into a
                 // squashed landscape frame -- this app's whole point is vertical
                 // video. The target is derived from the source's own aspect
-                // ratio instead, capped at 1280 on the long edge.
+                // ratio instead, capped on the long edge by the rung.
                 "-s:v", target.width() + "x" + target.height(),
                 "-hls_time", "4",
                 "-hls_playlist_type", "vod",
@@ -109,39 +164,122 @@ class HlsTranscoder {
         if (!result.succeeded()) {
             throw new TranscodeFailedException(
                     result.timedOut() ? "TRANSIENT" : "TERMINAL",
-                    "ffmpeg exited " + result.exitCode() + ": " + result.stderrTail());
+                    "ffmpeg exited " + result.exitCode() + " for rung " + rung.name() + ": " + result.stderrTail());
         }
         if (!Files.exists(variantPlaylist)) {
-            throw new TranscodeFailedException("TERMINAL", "ffmpeg did not produce a variant playlist");
+            throw new TranscodeFailedException(
+                    "TERMINAL", "ffmpeg did not produce a variant playlist for rung " + rung.name());
         }
 
         int segmentCount = countSegments(variantDir);
         if (segmentCount == 0) {
-            throw new TranscodeFailedException("TERMINAL", "ffmpeg produced no segments");
+            throw new TranscodeFailedException("TERMINAL", "ffmpeg produced no segments for rung " + rung.name());
         }
 
-        Path masterPlaylist = outputDir.resolve("master.m3u8");
-        Files.writeString(
-                masterPlaylist,
-                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1328000,RESOLUTION="
-                        + target.width() + "x" + target.height() + "\n720p/index.m3u8\n");
-
-        return new TranscodeOutput(masterPlaylist, variantPlaylist, "720p/index.m3u8", segmentCount, durationSeconds);
+        return new Variant(rung, target, variantPlaylist, rung.name() + "/index.m3u8", segmentCount);
     }
 
     /**
-     * Scales so the longer edge is 1280, preserving the source's own aspect
-     * ratio -- landscape sources land at 1280x720-ish, portrait ones at
-     * 720x1280-ish, instead of every upload being force-fit into one landscape
-     * frame. Both edges are rounded down to even numbers, which libx264's 4:2:0
-     * chroma subsampling requires.
+     * A still frame for every grid and every player's {@code poster}.
+     *
+     * <p>Without one, the app had no thumbnails at all: search results, creator
+     * profiles and favorites rendered coloured placeholder tiles, and each feed
+     * slide was a black rectangle until its playback session resolved.
+     *
+     * <p>Taken a quarter of the way in rather than at 0s, because the first
+     * frame of a real clip is very often black or a fade-in. Failure here is not
+     * fatal — a video without a thumbnail is worse than one with, but far better
+     * than a video that failed to process.
+     *
+     * @return the poster path, or null if it could not be produced.
      */
-    private static Dimensions targetResolution(int sourceWidth, int sourceHeight) {
+    Path extractPoster(Path sourceFile, Path outputDir, ProbedSource source, double durationSeconds) {
+        Path poster = outputDir.resolve(POSTER_FILENAME);
+        Dimensions target = targetResolution(source.width(), source.height(), 720);
+        double seekTo = Math.max(0, durationSeconds * POSTER_AT);
+
+        List<String> command = List.of(
+                properties.getFfmpegPath(),
+                "-y",
+                PROTOCOL_WHITELIST.get(0), PROTOCOL_WHITELIST.get(1),
+                "-f", source.formatName(),
+                // Before -i: seeking on the input side is a keyframe seek and
+                // costs nothing, where an output-side seek decodes every frame up
+                // to that point.
+                "-ss", String.format(Locale.ROOT, "%.3f", seekTo),
+                "-i", sourceFile.toString(),
+                "-frames:v", "1",
+                "-vf", "scale=" + target.width() + ":" + target.height(),
+                "-q:v", "4",
+                poster.toString());
+
+        try {
+            ProcessResult result = run(command, properties.getProbeTimeout(), outputDir);
+            if (result.succeeded() && Files.exists(poster) && Files.size(poster) > 0) {
+                return poster;
+            }
+            log.warn("Poster extraction produced no image; continuing without a thumbnail");
+        } catch (IOException | RuntimeException e) {
+            log.warn("Poster extraction failed; continuing without a thumbnail: {}", e.getMessage());
+        }
+        try {
+            Files.deleteIfExists(poster);
+        } catch (IOException ignored) {
+            // A zero-byte leftover would be uploaded as a broken image.
+        }
+        return null;
+    }
+
+    /**
+     * Written by hand rather than by ffmpeg, because each rung is a separate
+     * invocation. Separate passes cost one decode per rung, which is the price
+     * of keeping optional audio ({@code -map 0:a:0?}) working and of letting one
+     * rung fail without taking the others' output with it — a single-pass
+     * {@code split} filter with {@code -var_stream_map} cannot express an audio
+     * stream that might not be there.
+     */
+    Path writeMasterPlaylist(Path outputDir, List<Variant> variants) throws IOException {
+        StringBuilder master = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n");
+        for (Variant variant : variants) {
+            // BANDWIDTH is the peak the player must sustain, so it has to include
+            // audio and container overhead -- advertising the video bitrate alone
+            // makes a player pick a rung it cannot actually keep up with.
+            int bandwidth = (variant.rung().videoKbps() + variant.rung().audioKbps()) * 1000 * 11 / 10;
+            master.append("#EXT-X-STREAM-INF:BANDWIDTH=")
+                    .append(bandwidth)
+                    .append(",RESOLUTION=")
+                    .append(variant.dimensions().width())
+                    .append("x")
+                    .append(variant.dimensions().height())
+                    .append("\n")
+                    .append(variant.relativePlaylistPath())
+                    .append("\n");
+        }
+        Path masterPlaylist = outputDir.resolve("master.m3u8");
+        Files.writeString(masterPlaylist, master.toString());
+        return masterPlaylist;
+    }
+
+    /** One encoded rendition on disk. */
+    record Variant(
+            Rung rung, Dimensions dimensions, Path playlist, String relativePlaylistPath, int segmentCount) {}
+
+    /**
+     * Scales so the longer edge is at most {@code maxEdge}, preserving the
+     * source's own aspect ratio -- landscape sources land at 1280x720-ish,
+     * portrait ones at 720x1280-ish, instead of every upload being force-fit
+     * into one landscape frame. Both edges are rounded down to even numbers,
+     * which libx264's 4:2:0 chroma subsampling requires.
+     *
+     * <p>Never scales up: a source already smaller than the rung keeps its own
+     * size, so a small clip is not blown up and re-encoded at a bitrate its
+     * detail cannot justify.
+     */
+    static Dimensions targetResolution(int sourceWidth, int sourceHeight, int maxEdge) {
         if (sourceWidth <= 0 || sourceHeight <= 0) {
             return new Dimensions(1280, 720); // malformed probe data; fall back to the old fixed frame
         }
-        int maxEdge = 1280;
-        double scale = (double) maxEdge / Math.max(sourceWidth, sourceHeight);
+        double scale = Math.min(1.0, (double) maxEdge / Math.max(sourceWidth, sourceHeight));
         int width = evenFloor((int) Math.round(sourceWidth * scale));
         int height = evenFloor((int) Math.round(sourceHeight * scale));
         return new Dimensions(Math.max(width, 2), Math.max(height, 2));
@@ -151,14 +289,14 @@ class HlsTranscoder {
         return value % 2 == 0 ? value : value - 1;
     }
 
-    private record Dimensions(int width, int height) {}
+    record Dimensions(int width, int height) {}
 
     /**
      * Establishes both facts the transcode needs from the source — how long it is
      * and what container it actually is — in one pass, and refuses anything
      * outside {@link #ALLOWED_FORMATS} before FFmpeg is ever pointed at it.
      */
-    private ProbedSource probeSource(Path sourceFile) throws IOException {
+    ProbedSource probeSource(Path sourceFile) throws IOException {
         List<String> command = List.of(
                 properties.getFfprobePath(),
                 "-v", "error",
@@ -195,7 +333,18 @@ class HlsTranscoder {
             // as malformed and keeps the old fixed frame rather than failing the job.
             int width = parseIntOrZero(fields.get("width"));
             int height = parseIntOrZero(fields.get("height"));
-            return new ProbedSource(Double.parseDouble(duration), formatName, width, height);
+            double durationSeconds = Double.parseDouble(duration);
+            // A "short-video platform" with no ceiling on length will happily
+            // accept and transcode a feature film -- three times over, now that
+            // there is a ladder. Terminal: the same bytes will be the same
+            // length on every retry.
+            long maxSeconds = properties.getMaxDurationSeconds();
+            if (maxSeconds > 0 && durationSeconds > maxSeconds) {
+                throw new TranscodeFailedException(
+                        "TERMINAL",
+                        "Source is " + Math.round(durationSeconds) + "s; the limit is " + maxSeconds + "s");
+            }
+            return new ProbedSource(durationSeconds, formatName, width, height);
         } catch (NumberFormatException | NullPointerException e) {
             throw new TranscodeFailedException("TERMINAL", "ffprobe returned no duration");
         }
@@ -210,7 +359,7 @@ class HlsTranscoder {
     }
 
     /** What the probe established about the source, carried into the transcode. */
-    private record ProbedSource(double durationSeconds, String formatName, int width, int height) {}
+    record ProbedSource(double durationSeconds, String formatName, int width, int height) {}
 
     private ProcessResult run(List<String> command, Duration timeout, Path workingDirectory) throws IOException {
         return processRunner.run(command, timeout, workingDirectory);
@@ -230,10 +379,20 @@ class HlsTranscoder {
         return derived.compareTo(properties.getJobTimeout()) > 0 ? properties.getJobTimeout() : derived;
     }
 
+    /**
+     * @param variantRelativePath the widest rung, kept for callers that still
+     *     expect a single "the" variant.
+     * @param variantRelativePaths every rung, in the order they appear in the
+     *     master playlist.
+     * @param posterRelativePath the thumbnail, or null when extraction failed --
+     *     a missing thumbnail never fails an otherwise good transcode.
+     */
     record TranscodeOutput(
             Path masterPlaylist,
             Path variantPlaylist,
             String variantRelativePath,
             int segmentCount,
-            double durationSeconds) {}
+            double durationSeconds,
+            List<String> variantRelativePaths,
+            String posterRelativePath) {}
 }

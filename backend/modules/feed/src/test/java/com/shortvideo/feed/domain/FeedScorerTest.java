@@ -65,6 +65,6 @@ class FeedScorerTest {
     }
 
     private SocialCounts counts(long likes, long comments) {
-        return new SocialCounts("video-1", likes, comments, 0);
+        return new SocialCounts("video-1", likes, comments, 0, 0);
     }
 }

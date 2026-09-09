@@ -25,7 +25,7 @@ import {
   TrashIcon,
 } from './icons';
 import { attachHls, detachHls } from './Upload';
-import { Avatar, avatarHue, handleFor, relativeTime } from './ui';
+import { Avatar, avatarHue, relativeTime } from './ui';
 
 /**
  * Favorite collections: the viewer's own folders of saved videos.
@@ -337,8 +337,16 @@ function SavedVideoPlayer({ item }: { item: SavedVideo }) {
   });
 
   useEffect(() => {
+    // Captured while the effect runs, not read at cleanup time: React detaches
+    // refs during the commit phase, before passive effect cleanups are flushed,
+    // so `videoRef.current` is already null by then and detachHls silently does
+    // nothing -- leaving the hls.js instance alive with its MediaSource, segment
+    // loaders and retry timers still running. Same reasoning as Upload's Preview.
+    const element = videoRef.current;
     session.mutate();
-    return () => detachHls(videoRef.current);
+    return () => detachHls(element);
+    // `session` is a stable mutation object; re-running on its identity would
+    // re-request a playback session on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.videoId]);
 
@@ -360,7 +368,7 @@ function SavedVideoPlayer({ item }: { item: SavedVideo }) {
         <Avatar seed={item.creatorId} label={item.creatorDisplayName} size="sm" />
         <div className="search-hit-text">
           <div className="search-hit-name">{item.creatorDisplayName}</div>
-          <div className="search-hit-sub">{handleFor(item.creatorId)}</div>
+          <div className="search-hit-sub">{item.creatorDisplayName}</div>
         </div>
       </div>
       {item.description && <p className="search-hit-desc is-full">{item.description}</p>}

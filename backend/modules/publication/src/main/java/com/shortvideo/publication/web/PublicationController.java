@@ -29,4 +29,17 @@ public class PublicationController {
         return PublicationDtos.PublicationResponse.from(
                 publicationService.requestPublish(videoId.toString(), caller.accountId()));
     }
+
+    /**
+     * The reversible inverse of publish: the video returns to PRIVATE and leaves
+     * the feed, but its moderation approval survives, so re-publishing later
+     * does not queue it for review again.
+     */
+    @PostMapping("/{videoId}/unpublish")
+    @Operation(summary = "Owner withdraws publication; the video returns to PRIVATE")
+    public PublicationDtos.PublicationResponse unpublish(
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        return PublicationDtos.PublicationResponse.from(
+                publicationService.withdrawPublish(videoId.toString(), caller.accountId()));
+    }
 }

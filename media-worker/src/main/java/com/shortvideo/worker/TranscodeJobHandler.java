@@ -38,19 +38,19 @@ class TranscodeJobHandler {
     private static final String PRODUCER = "media-worker";
 
     private final MinioObjectStore store;
-    private final HlsTranscoder transcoder;
+    private final TranscodePipeline pipeline;
     private final WorkerProperties properties;
     private final KafkaTemplate<String, String> kafka;
     private final ObjectMapper objectMapper;
 
     TranscodeJobHandler(
             MinioObjectStore store,
-            HlsTranscoder transcoder,
+            TranscodePipeline pipeline,
             WorkerProperties properties,
             KafkaTemplate<String, String> kafka,
             ObjectMapper objectMapper) {
         this.store = store;
-        this.transcoder = transcoder;
+        this.pipeline = pipeline;
         this.properties = properties;
         this.kafka = kafka;
         this.objectMapper = objectMapper;
@@ -70,7 +70,7 @@ class TranscodeJobHandler {
 
             HlsTranscoder.TranscodeOutput output;
             try {
-                output = transcoder.transcode(sourceFile, workDir.resolve("output"));
+                output = pipeline.run(sourceFile, workDir.resolve("output"));
             } catch (TranscodeFailedException e) {
                 log.warn("Transcode failed for job {}: {}", job.jobId(), e.getMessage());
                 report(job, "FAILED", null, e.failureClass(), correlationId);
@@ -84,7 +84,7 @@ class TranscodeJobHandler {
 
             MediaEvents.Assets assets = new MediaEvents.Assets(
                     finalPrefix + "master.m3u8",
-                    List.of(finalPrefix + output.variantRelativePath()),
+                    output.variantRelativePaths().stream().map(path -> finalPrefix + path).toList(),
                     output.segmentCount(),
                     output.durationSeconds());
             report(job, "COMPLETED", assets, null, correlationId);
@@ -175,6 +175,9 @@ class TranscodeJobHandler {
         String lower = relativePath.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".m3u8")) return "application/vnd.apple.mpegurl";
         if (lower.endsWith(".ts")) return "video/mp2t";
+        // The poster is served straight to an <img>/<video poster>, so it needs a
+        // real image type -- octet-stream would make the browser refuse to render it.
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
         return "application/octet-stream";
     }
 

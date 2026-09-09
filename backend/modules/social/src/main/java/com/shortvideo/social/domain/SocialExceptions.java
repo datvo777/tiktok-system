@@ -18,6 +18,11 @@ public final class SocialExceptions {
         public CommentNotFound(String message) { super(message); }
     }
 
+    /** A page cursor that this service did not issue. */
+    public static class InvalidCursor extends RuntimeException {
+        public InvalidCursor(String message) { super(message); }
+    }
+
     public static class CollectionNotFound extends RuntimeException {
         public CollectionNotFound(String message) { super(message); }
     }

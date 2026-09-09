@@ -8,4 +8,15 @@ import java.time.Instant;
  * {@link VideoView} carries for a single video in flight.
  */
 public record VideoSummaryView(
-        String videoId, String title, ProcessingState processingState, AssetLifecycleState assetLifecycleState, Instant createdAt) {}
+        String videoId,
+        String title,
+        ProcessingState processingState,
+        AssetLifecycleState assetLifecycleState,
+        /**
+         * Read from the eligibility projection, which is a derived read model —
+         * so a row that has not caught up yet reports null rather than a wrong
+         * answer. The client shows "Draft" for null, which is what an
+         * unpublished video is.
+         */
+        String publicationState,
+        Instant createdAt) {}

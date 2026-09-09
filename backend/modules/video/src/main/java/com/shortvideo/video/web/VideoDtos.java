@@ -39,7 +39,12 @@ public final class VideoDtos {
 
     /** One row of {@code GET /api/v1/videos} (the caller's own video list). */
     public record VideoSummaryResponse(
-            String videoId, String title, String processingState, String assetLifecycleState, Instant createdAt) {
+            String videoId,
+            String title,
+            String processingState,
+            String assetLifecycleState,
+            String publicationState,
+            Instant createdAt) {
 
         public static VideoSummaryResponse from(VideoSummaryView view) {
             return new VideoSummaryResponse(
@@ -47,6 +52,7 @@ public final class VideoDtos {
                     view.title(),
                     view.processingState().name(),
                     view.assetLifecycleState().name(),
+                    view.publicationState(),
                     view.createdAt());
         }
     }

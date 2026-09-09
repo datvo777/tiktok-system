@@ -1,6 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getNotifications, markNotificationRead, type NotificationItem } from './api';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { getNotifications, markAllNotificationsRead, markNotificationRead, type NotificationItem } from './api';
 import { CheckIcon, CommentIcon, FlagIcon, HeartIcon, InboxIcon, UsersIcon } from './icons';
+import { navigate, videoPath } from './router';
 import { relativeTime } from './ui';
 
 /** Icon plus colour tone per notification kind, so the list scans at a glance. */
@@ -11,6 +12,7 @@ const TYPE_STYLE: Record<string, { tone: string; icon: React.ReactNode }> = {
   VIDEO_PUBLISHED: { tone: 'tone-success', icon: <CheckIcon size={18} /> },
   VIDEO_SUSPENDED: { tone: 'tone-danger', icon: <FlagIcon size={18} /> },
   NEW_COMMENT: { tone: 'tone-brand', icon: <CommentIcon size={18} /> },
+  COMMENT_REPLY: { tone: 'tone-brand', icon: <CommentIcon size={18} /> },
   NEW_FOLLOWER: { tone: 'tone-brand', icon: <UsersIcon size={18} /> },
   NEW_LIKE: { tone: 'tone-brand', icon: <HeartIcon size={18} filled /> },
 };
@@ -19,9 +21,11 @@ const TYPE_STYLE: Record<string, { tone: string; icon: React.ReactNode }> = {
 export function Notifications() {
   const queryClient = useQueryClient();
 
-  const list = useQuery({
+  const list = useInfiniteQuery({
     queryKey: ['notifications'],
-    queryFn: getNotifications,
+    queryFn: ({ pageParam }: { pageParam: string | null }) => getNotifications(pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
     refetchInterval: 10_000,
   });
 
@@ -30,8 +34,15 @@ export function Notifications() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   });
 
-  const items: NotificationItem[] = list.data ?? [];
-  const unread = items.filter((n) => !n.read);
+  const markAll = useMutation({
+    mutationFn: markAllNotificationsRead,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+  });
+
+  const items: NotificationItem[] = list.data?.pages.flatMap((p) => p.items) ?? [];
+  // Account-wide, not just this page: an inbox with a long history under-reported
+  // the badge when it counted only the rows on screen.
+  const unreadCount = list.data?.pages[0]?.unreadCount ?? 0;
 
   if (list.isPending) {
     return (
@@ -52,17 +63,13 @@ export function Notifications() {
 
   return (
     <div>
-      {unread.length > 0 && (
+      {unreadCount > 0 && (
         <div className="sheet-toolbar">
           <span className="sheet-toolbar-label">
-            {unread.length} unread {unread.length === 1 ? 'notification' : 'notifications'}
+            {unreadCount} unread {unreadCount === 1 ? 'notification' : 'notifications'}
           </span>
-          <button
-            className="btn-ghost btn-sm"
-            disabled={markRead.isPending}
-            onClick={() => unread.forEach((n) => markRead.mutate(n.notificationId))}
-          >
-            Mark all read
+          <button className="btn-ghost btn-sm" disabled={markAll.isPending} onClick={() => markAll.mutate()}>
+            {markAll.isPending ? 'Clearing…' : 'Mark all read'}
           </button>
         </div>
       )}
@@ -78,7 +85,25 @@ export function Notifications() {
             >
               <span className={`notif-icon ${style?.tone ?? ''}`}>{style?.icon ?? <InboxIcon size={18} />}</span>
               <div className="notif-body">
-                <div className="notif-message">{n.message}</div>
+                {/* `relatedVideoId` was fetched, validated and typed all along,
+                    but never rendered -- so "someone commented on your video"
+                    was a dead end with no way to reach the video it named.
+                    Opening it also marks the notification read, since having
+                    looked at the thing is what "read" means. */}
+                {n.relatedVideoId ? (
+                  <button
+                    type="button"
+                    className="notif-message notif-message-link"
+                    onClick={() => {
+                      if (!n.read) markRead.mutate(n.notificationId);
+                      navigate(videoPath(n.relatedVideoId as string));
+                    }}
+                  >
+                    {n.message}
+                  </button>
+                ) : (
+                  <div className="notif-message">{n.message}</div>
+                )}
                 <div className="notif-foot">
                   <span className="notif-time" title={n.createdAt}>
                     {relativeTime(n.createdAt)}
@@ -99,6 +124,16 @@ export function Notifications() {
           );
         })}
       </ul>
+
+      {list.hasNextPage && (
+        <button
+          className="btn-ghost btn-sm comment-more"
+          disabled={list.isFetchingNextPage}
+          onClick={() => void list.fetchNextPage()}
+        >
+          {list.isFetchingNextPage ? 'Loading…' : 'Load older'}
+        </button>
+      )}
     </div>
   );
 }

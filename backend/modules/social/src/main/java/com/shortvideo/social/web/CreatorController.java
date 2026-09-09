@@ -30,7 +30,8 @@ public class CreatorController {
     public SocialDtos.CreatorProfileResponse profile(
             @PathVariable UUID creatorId, @AuthenticationPrincipal AuthenticatedAccount caller) {
         return SocialDtos.CreatorProfileResponse.from(
-                socialService.profile(creatorId.toString(), caller.accountId()));
+                // `following` is viewer-relative; with no viewer it is false.
+                socialService.profile(creatorId.toString(), caller == null ? null : caller.accountId()));
     }
 
     @PostMapping("/{creatorId}/follow")

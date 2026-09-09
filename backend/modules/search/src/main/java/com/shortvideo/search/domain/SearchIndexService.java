@@ -69,6 +69,10 @@ public class SearchIndexService {
                                 "videoId", Map.of("type", "keyword"),
                                 "creatorId", Map.of("type", "keyword"),
                                 "creatorDisplayName", Map.of("type", "text"),
+                                // keyword, not text: a handle is one indivisible
+                                // token that people type exactly, so it should not
+                                // be split on underscores or stemmed.
+                                "creatorHandle", Map.of("type", "keyword"),
                                 "title", Map.of("type", "text"),
                                 "description", Map.of("type", "text"),
                                 "publishedAt", Map.of("type", "date"))));
@@ -97,6 +101,7 @@ public class SearchIndexService {
             String videoId,
             String creatorId,
             String creatorDisplayName,
+            String creatorHandle,
             String title,
             String description,
             String publishedAt,
@@ -105,6 +110,7 @@ public class SearchIndexService {
         doc.put("videoId", videoId);
         doc.put("creatorId", creatorId);
         doc.put("creatorDisplayName", creatorDisplayName);
+        doc.put("creatorHandle", creatorHandle == null ? "" : creatorHandle);
         doc.put("title", title == null ? "" : title);
         doc.put("description", description == null ? "" : description);
         doc.put("publishedAt", publishedAt);
@@ -130,13 +136,28 @@ public class SearchIndexService {
      * unexpected body should produce no results, not a {@code NullPointerException}
      * rendered as an internal error.
      */
-    public List<Map<String, Object>> search(String query, int limit) {
+    /**
+     * @param from offset into the result set. Offset paging rather than a cursor
+     *     here, deliberately: relevance ordering is not a stable sort key, so
+     *     there is nothing to seek from — and unlike a comment thread, a search
+     *     result set is re-issued from the top whenever the term changes.
+     */
+    public List<Map<String, Object>> search(String query, int from, int size) {
+        // A leading @ is how people write a handle; it is not part of the token
+        // the index holds, so searching "@dat" has to match the same document as
+        // "dat".
+        String normalised = query.startsWith("@") ? query.substring(1) : query;
         return runQuery(Map.of(
                 "query", Map.of(
                         "multi_match", Map.of(
-                                "query", query,
-                                "fields", List.of("creatorDisplayName", "title", "description"))),
-                "size", limit));
+                                "query", normalised,
+                                // Handles are boosted: someone typing a username is
+                                // looking for that person, not for videos whose
+                                // description happens to contain the word.
+                                "fields", List.of(
+                                        "creatorHandle^3", "creatorDisplayName^2", "title", "description"))),
+                "from", from,
+                "size", size));
     }
 
     /**

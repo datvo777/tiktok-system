@@ -37,4 +37,11 @@ interface ModerationJpaRepository extends JpaRepository<ModerationEntity, UUID> 
             Pageable pageable);
 
     List<ModerationEntity> findByStateOrderByCreatedAtAsc(ModerationState state);
+
+    /**
+     * This creator's decision history, for the automated pre-screen. Counted
+     * rather than fetched: the screener only needs the two totals, and a creator
+     * with a thousand approvals should not load a thousand rows to establish it.
+     */
+    long countByCreatorIdAndState(UUID creatorId, ModerationState state);
 }

@@ -16,6 +16,15 @@ public class FeedProperties {
     private double followedCreatorBoost = 15;
     private double explorationWeight = 5;
 
+    /**
+     * How often the exploration draw is reshuffled. The seed was
+     * {@code viewerId.hashCode()} alone -- constant for the life of the account,
+     * so a viewer's random tiebreak never changed and the ranking was frozen.
+     * Mixing in a bucket of this length keeps a ranking stable across the pages of
+     * one session while letting it differ between sessions.
+     */
+    private Duration explorationRotation = Duration.ofHours(6);
+
     public int getCandidatePoolSize() { return candidatePoolSize; }
     public void setCandidatePoolSize(int candidatePoolSize) { this.candidatePoolSize = candidatePoolSize; }
     public int getPageSize() { return pageSize; }
@@ -32,4 +41,6 @@ public class FeedProperties {
     public void setFollowedCreatorBoost(double followedCreatorBoost) { this.followedCreatorBoost = followedCreatorBoost; }
     public double getExplorationWeight() { return explorationWeight; }
     public void setExplorationWeight(double explorationWeight) { this.explorationWeight = explorationWeight; }
+    public Duration getExplorationRotation() { return explorationRotation; }
+    public void setExplorationRotation(Duration explorationRotation) { this.explorationRotation = explorationRotation; }
 }

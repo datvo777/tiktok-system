@@ -2,6 +2,7 @@ package com.shortvideo.app.web;
 
 import com.shortvideo.account.domain.AccountExceptions;
 import com.shortvideo.appeal.domain.AppealExceptions;
+import com.shortvideo.feed.web.FeedExceptions;
 import com.shortvideo.moderation.domain.ModerationExceptions;
 import com.shortvideo.notification.domain.NotificationExceptions;
 import com.shortvideo.playback.InvalidMediaPathException;
@@ -9,6 +10,7 @@ import com.shortvideo.playback.MediaAuthorizationException;
 import com.shortvideo.playback.MediaRangeNotSatisfiableException;
 import com.shortvideo.playback.MediaStreamsExhaustedException;
 import com.shortvideo.publication.domain.PublicationExceptions;
+import com.shortvideo.report.domain.ReportExceptions;
 import com.shortvideo.search.domain.SearchUnavailableException;
 import com.shortvideo.shared.security.TooManyLoginAttemptsException;
 import com.shortvideo.social.domain.SocialExceptions;
@@ -118,6 +120,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler({AccountExceptions.InvalidCredentials.class, AccountExceptions.AccountNotActive.class})
     public ProblemDetail unauthorized(RuntimeException e) {
         return problem(HttpStatus.UNAUTHORIZED, "Unauthorized", "Invalid email or password");
+    }
+
+    /** Malformed, reserved or taken — all things the person can fix by typing something else. */
+    @ExceptionHandler({AccountExceptions.InvalidHandle.class, AccountExceptions.InvalidProfile.class})
+    public ProblemDetail invalidProfileField(RuntimeException e) {
+        return problem(HttpStatus.CONFLICT, "Invalid profile", e.getMessage());
     }
 
     @ExceptionHandler(AccountExceptions.AccountNotFound.class)
@@ -239,6 +247,28 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler(SocialExceptions.CommentNotFound.class)
     public ProblemDetail commentNotFound(SocialExceptions.CommentNotFound e) {
+        return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
+    }
+
+    @ExceptionHandler({ReportExceptions.SubjectNotFound.class, ReportExceptions.ReportNotFound.class})
+    public ProblemDetail reportSubjectNotFound(RuntimeException e) {
+        return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
+    }
+
+    @ExceptionHandler(ReportExceptions.CannotReportSelf.class)
+    public ProblemDetail cannotReportSelf(ReportExceptions.CannotReportSelf e) {
+        return problem(HttpStatus.CONFLICT, "Invalid report", e.getMessage());
+    }
+
+    /** A cursor this service did not issue is a client bug, not a missing page. */
+    @ExceptionHandler({SocialExceptions.InvalidCursor.class, NotificationExceptions.InvalidCursor.class})
+    public ProblemDetail invalidCursor(RuntimeException e) {
+        return problem(HttpStatus.BAD_REQUEST, "Invalid cursor", e.getMessage());
+    }
+
+    /** Ineligible and revoked are reported the same way as missing, by design. */
+    @ExceptionHandler(FeedExceptions.FeedItemNotFound.class)
+    public ProblemDetail feedItemNotFound(FeedExceptions.FeedItemNotFound e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
     }
 

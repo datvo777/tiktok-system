@@ -1,10 +1,10 @@
-import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createPublicSession, getVideoCounts, search, type SearchHit } from './api';
+import { createPublicSession, getVideoCounts, posterUrl, search, type SearchHit } from './api';
 import { Sheet } from './App';
 import { ChevronRightIcon, CloseIcon, CommentIcon, HeartIcon, PlayIcon, SearchIcon } from './icons';
 import { attachHls, detachHls } from './Upload';
-import { Avatar, avatarHue, handleFor, relativeTime } from './ui';
+import { Avatar, avatarHue, formatHandle, relativeTime } from './ui';
 
 type Tab = 'all' | 'videos' | 'creators';
 
@@ -12,6 +12,8 @@ type Tab = 'all' | 'videos' | 'creators';
 type CreatorHit = {
   creatorId: string;
   displayName: string;
+  /** Empty for creators whose videos were indexed before handles existed. */
+  handle: string;
   videoCount: number;
 };
 
@@ -68,9 +70,11 @@ export function SearchPanel() {
     return () => clearTimeout(timer);
   }, [query, term]);
 
-  const results = useQuery({
+  const results = useInfiniteQuery({
     queryKey: ['search', term],
-    queryFn: () => search(term),
+    queryFn: ({ pageParam }: { pageParam: number }) => search(term, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.page + 1 : undefined),
     enabled: term.length > 0,
     // Keep the previous page of hits on screen while the next term loads, so
     // refining a query doesn't flash the list back to empty on every keystroke.
@@ -79,14 +83,20 @@ export function SearchPanel() {
     retry: false,
   });
 
-  const hits = useMemo(() => results.data?.results ?? [], [results.data]);
+  const hits = useMemo(() => results.data?.pages.flatMap((p) => p.results) ?? [], [results.data]);
 
   const creators = useMemo(() => {
     const byId = new Map<string, CreatorHit>();
     for (const hit of hits) {
       const existing = byId.get(hit.creatorId);
       if (existing) existing.videoCount += 1;
-      else byId.set(hit.creatorId, { creatorId: hit.creatorId, displayName: hit.creatorDisplayName, videoCount: 1 });
+      else
+        byId.set(hit.creatorId, {
+          creatorId: hit.creatorId,
+          displayName: hit.creatorDisplayName,
+          handle: hit.creatorHandle,
+          videoCount: 1,
+        });
     }
     return [...byId.values()].sort((a, b) => b.videoCount - a.videoCount);
   }, [hits]);
@@ -287,7 +297,7 @@ export function SearchPanel() {
                           <Highlight text={creator.displayName} term={term} />
                         </div>
                         <div className="search-hit-sub">
-                          {handleFor(creator.creatorId)} · {creator.videoCount}{' '}
+                          {formatHandle(creator.handle, creator.creatorId)} · {creator.videoCount}{' '}
                           {creator.videoCount === 1 ? 'video' : 'videos'}
                         </div>
                       </div>
@@ -341,6 +351,19 @@ export function SearchPanel() {
                   );
                 })}
               </ul>
+
+              {/* The result set used to stop at one page with nothing to say it
+                  had, so a term with many matches looked like a term with
+                  twenty. */}
+              {results.hasNextPage && (
+                <button
+                  className="btn-ghost btn-sm comment-more"
+                  disabled={results.isFetchingNextPage}
+                  onClick={() => void results.fetchNextPage()}
+                >
+                  {results.isFetchingNextPage ? 'Loading…' : 'Load more results'}
+                </button>
+              )}
             </section>
           )}
         </div>
@@ -388,10 +411,31 @@ function FilterTab({
  * keyed off the video id at least gives each row a stable, distinct anchor to
  * scan by, in the shape the video will actually open in.
  */
+/**
+ * A real still from the video, with the coloured placeholder as the fallback it
+ * was always meant to be rather than the only thing on offer.
+ *
+ * <p>The placeholder stays mounted underneath and the image fades in over it, so
+ * a tile never flashes empty while the still loads, and a video the worker could
+ * not extract a frame from (or one processed before thumbnails existed) simply
+ * keeps the placeholder.
+ */
 export function VideoThumb({ hit }: { hit: SearchHit }) {
+  const [failed, setFailed] = useState(false);
+
   return (
     <span className="search-thumb" style={{ '--h': avatarHue(hit.videoId) } as React.CSSProperties} aria-hidden="true">
       <PlayIcon size={16} />
+      {!failed && (
+        <img
+          className="search-thumb-img"
+          src={posterUrl(hit.videoId)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(true)}
+        />
+      )}
     </span>
   );
 }
@@ -459,8 +503,16 @@ export function SearchHitPlayer({ hit }: { hit: SearchHit }) {
   // opens, rather than making the viewer press play a second time after
   // already clicking in.
   useEffect(() => {
+    // Captured while the effect runs, not read at cleanup time: React detaches
+    // refs during the commit phase, before passive effect cleanups are flushed,
+    // so `videoRef.current` is already null by then and detachHls silently does
+    // nothing -- leaving the hls.js instance alive with its MediaSource, segment
+    // loaders and retry timers still running. Same reasoning as Upload's Preview.
+    const element = videoRef.current;
     session.mutate();
-    return () => detachHls(videoRef.current);
+    return () => detachHls(element);
+    // `session` is a stable mutation object; re-running on its identity would
+    // re-request a playback session on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hit.videoId]);
 
@@ -483,7 +535,7 @@ export function SearchHitPlayer({ hit }: { hit: SearchHit }) {
         <div className="search-hit-text">
           <div className="search-hit-name">{hit.creatorDisplayName}</div>
           <div className="search-hit-sub">
-            {handleFor(hit.creatorId)} · {relativeTime(hit.publishedAt)}
+            {formatHandle(hit.creatorHandle, hit.creatorId)} · {relativeTime(hit.publishedAt)}
           </div>
         </div>
         {counts.data && (

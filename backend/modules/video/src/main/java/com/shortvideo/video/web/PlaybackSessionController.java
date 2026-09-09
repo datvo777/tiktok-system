@@ -10,6 +10,7 @@ import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.DeviceIdentity;
 import com.shortvideo.shared.security.PlaybackCookies;
 import com.shortvideo.shared.security.PlaybackMode;
 import com.shortvideo.shared.security.PlaybackTokenService;
@@ -17,6 +18,7 @@ import com.shortvideo.video.api.VideoPlaybackView;
 import com.shortvideo.video.domain.VideoExceptions;
 import com.shortvideo.video.domain.VideoService;
 import io.swagger.v3.oas.annotations.Operation;
+import jakarta.servlet.http.HttpServletRequest;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -45,6 +47,7 @@ public class PlaybackSessionController {
     private final DurableRevocationReader revocationReader;
     private final PlaybackTokenService tokenService;
     private final PlaybackCookies playbackCookies;
+    private final DeviceIdentity deviceIdentity;
 
     public PlaybackSessionController(
             VideoService videoService,
@@ -53,7 +56,8 @@ public class PlaybackSessionController {
             RevocationCache revocationCache,
             DurableRevocationReader revocationReader,
             PlaybackTokenService tokenService,
-            PlaybackCookies playbackCookies) {
+            PlaybackCookies playbackCookies,
+            DeviceIdentity deviceIdentity) {
         this.videoService = videoService;
         this.accountDirectory = accountDirectory;
         this.eligibilityDirectory = eligibilityDirectory;
@@ -61,6 +65,7 @@ public class PlaybackSessionController {
         this.revocationReader = revocationReader;
         this.tokenService = tokenService;
         this.playbackCookies = playbackCookies;
+        this.deviceIdentity = deviceIdentity;
     }
 
     @PostMapping("/{videoId}/preview-playback-session")
@@ -103,7 +108,9 @@ public class PlaybackSessionController {
     @PostMapping("/{videoId}/public-playback-session")
     @Operation(summary = "Public session; requires the full eligibility invariant (brief section 8)")
     public ResponseEntity<VideoDtos.PlaybackSessionResponse> publicSession(
-            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+            @PathVariable UUID videoId,
+            @AuthenticationPrincipal AuthenticatedAccount caller,
+            HttpServletRequest request) {
 
         // A missing projection row is unknown state and denies (Rule 9) — no
         // distinction is made between "not found" and "not yet eligible".
@@ -121,14 +128,33 @@ public class PlaybackSessionController {
         requireNotRevoked(RevocationSubjects.ACCOUNT, accountEligibility.accountId());
 
         int processingVersion = videoEligibility.processingVersion();
-        String viewerId = caller == null ? "anonymous" : caller.accountId();
+
+        // A signed-out viewer is bound to their browser rather than to an
+        // account. The viewer id was previously the literal string "anonymous",
+        // which every signed-out viewer would have shared -- so one leaked
+        // playback cookie would have worked for all of them. A per-device id
+        // keeps the gateway's "the cookie is not enough on its own" property.
+        String deviceId = null;
+        String viewerId;
+        if (caller != null) {
+            viewerId = caller.accountId();
+        } else {
+            deviceId = deviceIdentity.fromRequest(request).orElseGet(deviceIdentity::newDeviceId);
+            viewerId = DeviceIdentity.viewerId(deviceId);
+        }
+
         var issued = tokenService.issue(viewerId, videoId.toString(), processingVersion, PlaybackMode.PUBLIC);
         var cookie = playbackCookies.cookie(issued.token(), issued.expiresAt(), videoId.toString(), processingVersion);
 
-        return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, cookie.toString())
-                .body(new VideoDtos.PlaybackSessionResponse(
-                        videoId.toString(), processingVersion, PlaybackMode.PUBLIC, issued.expiresAt()));
+        ResponseEntity.BodyBuilder response =
+                ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie.toString());
+        if (deviceId != null) {
+            // Re-sent every time: harmless when the browser already has it, and it
+            // is what establishes the device on a first visit.
+            response.header(HttpHeaders.SET_COOKIE, deviceIdentity.cookie(deviceId).toString());
+        }
+        return response.body(new VideoDtos.PlaybackSessionResponse(
+                videoId.toString(), processingVersion, PlaybackMode.PUBLIC, issued.expiresAt()));
     }
 
     private void requireNotRevoked(String subjectType, String subjectId) {

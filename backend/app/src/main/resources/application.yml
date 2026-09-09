@@ -37,7 +37,7 @@ spring:
   flyway:
     enabled: true
     # Each module owns its migrations (brief section 9).
-    locations: classpath:db/migration/platform,classpath:db/migration/account,classpath:db/migration/upload,classpath:db/migration/video,classpath:db/migration/eligibility,classpath:db/migration/moderation,classpath:db/migration/publication,classpath:db/migration/social,classpath:db/migration/appeal,classpath:db/migration/notification
+    locations: classpath:db/migration/platform,classpath:db/migration/account,classpath:db/migration/upload,classpath:db/migration/video,classpath:db/migration/eligibility,classpath:db/migration/moderation,classpath:db/migration/publication,classpath:db/migration/social,classpath:db/migration/appeal,classpath:db/migration/report,classpath:db/migration/notification
     schemas: platform
     default-schema: platform
     create-schemas: true
@@ -65,6 +65,11 @@ server:
     include-stacktrace: never
 
 shortvideo:
+  security:
+    # The OpenAPI document and Swagger UI enumerate every route, /internal/**
+    # admin endpoints included. Closed by default so a deployment cannot leak the
+    # map of its own admin surface by omission; the local profile opens it.
+    public-api-docs: ${PUBLIC_API_DOCS:false}
   jwt:
     # No default: the application must fail to start rather than sign tokens with
     # a key that is published in this repository. Generate one with
@@ -177,6 +182,9 @@ spring:
       on-profile: local
 
 shortvideo:
+  security:
+    # Browsing the API in Swagger UI is the point of running locally.
+    public-api-docs: true
   jwt:
     secret: ${JWT_SECRET:local-dev-secret-change-me-at-least-32-bytes-long}
     # Permits the published placeholder above; refused in every other profile.

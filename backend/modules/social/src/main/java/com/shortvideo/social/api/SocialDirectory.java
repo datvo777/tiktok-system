@@ -29,4 +29,14 @@ public interface SocialDirectory {
      * follows, in one query rather than one per candidate.
      */
     Set<String> followedAmong(String followerId, Collection<String> creatorIds);
+
+    /**
+     * Which of {@code videoIds} this viewer has already been shown.
+     *
+     * <p>The feed had no notion of this at all, so a ranking recomputed after its
+     * short cache expired produced the same ordering from the same candidate pool
+     * and served the same videos again. One query over the whole candidate set,
+     * for the same reason the counts and follows are batched.
+     */
+    Set<String> viewedAmong(String viewerId, Collection<String> videoIds);
 }

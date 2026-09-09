@@ -1,6 +1,8 @@
 package com.shortvideo.moderation.domain;
 
 import com.shortvideo.moderation.api.ModerationDecisionView;
+import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.moderation.api.ModerationDirectory;
 import com.shortvideo.moderation.api.PolicyCategory;
 import com.shortvideo.shared.audit.AdminAction;
@@ -33,20 +35,38 @@ public class ModerationService implements ModerationDirectory {
     /** Revocation source type for a moderation rejection (brief section 16). */
     public static final String REJECTION_SOURCE = "MODERATION";
 
+    /**
+     * Recorded as the actor on an automated approval, so the audit trail can
+     * distinguish it from a decision a person made.
+     */
+    public static final String SYSTEM_ACTOR = "00000000-0000-0000-0000-000000000000";
+
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(ModerationService.class);
+
     private final ModerationJpaRepository repository;
     private final OutboxWriter outboxWriter;
     private final DurableRevocationWriter revocationWriter;
     private final AdminActionRecorder auditRecorder;
+    private final ModerationScreener screener;
+    private final ModerationProperties properties;
+    private final EligibilityDirectory eligibilityDirectory;
 
     public ModerationService(
             ModerationJpaRepository repository,
             OutboxWriter outboxWriter,
             DurableRevocationWriter revocationWriter,
-            AdminActionRecorder auditRecorder) {
+            AdminActionRecorder auditRecorder,
+            ModerationScreener screener,
+            ModerationProperties properties,
+            EligibilityDirectory eligibilityDirectory) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.revocationWriter = revocationWriter;
         this.auditRecorder = auditRecorder;
+        this.screener = screener;
+        this.properties = properties;
+        this.eligibilityDirectory = eligibilityDirectory;
     }
 
     /**
@@ -61,9 +81,52 @@ public class ModerationService implements ModerationDirectory {
         if (repository.existsById(id)) {
             return;
         }
-        repository.saveAndFlush(new ModerationEntity(id, UUID.fromString(creatorId)));
-        // No outbox event: nothing needs to react to "pending" — a missing or
-        // pending moderation record already denies public eligibility (Rule 9).
+        ModerationEntity record = repository.saveAndFlush(new ModerationEntity(id, UUID.fromString(creatorId)));
+        // No outbox event for "pending": nothing needs to react to it — a missing
+        // or pending moderation record already denies public eligibility (Rule 9).
+
+        autoApproveIfScreenerAllows(record, videoId, creatorId);
+    }
+
+    /**
+     * The automated first pass.
+     *
+     * <p>Every upload previously waited on a human, so time-to-publish was
+     * bounded by how fast someone was watching the queue. The screener can only
+     * ever move a video <em>out</em> of that queue, never take one down, so the
+     * worst case here is the behaviour that already existed.
+     *
+     * <p>Approving as {@code SYSTEM_ACTOR} rather than as a person keeps the
+     * audit trail honest: a reviewer looking back can tell which approvals a
+     * human actually made.
+     *
+     * <p>A screener that throws is treated as a referral. An automated stage
+     * failing must never be the reason something gets published.
+     */
+    private void autoApproveIfScreenerAllows(ModerationEntity record, String videoId, String creatorId) {
+        if (!properties.isAutoApproveEnabled()) {
+            return;
+        }
+        UUID creator = UUID.fromString(creatorId);
+        ScreeningVerdict verdict;
+        try {
+            var metadata = eligibilityDirectory.findVideoEligibility(videoId);
+            verdict = screener.screen(new ModerationScreener.ScreeningSubject(
+                    videoId,
+                    creatorId,
+                    metadata.map(VideoEligibilityView::title).orElse(null),
+                    metadata.map(VideoEligibilityView::description).orElse(null),
+                    repository.countByCreatorIdAndState(creator, ModerationState.APPROVED),
+                    repository.countByCreatorIdAndState(creator, ModerationState.REJECTED)));
+        } catch (RuntimeException e) {
+            log.warn("Moderation screener failed for {}; leaving it for a human", videoId, e);
+            return;
+        }
+
+        if (verdict == ScreeningVerdict.AUTO_APPROVE) {
+            log.debug("Auto-approving {} on the strength of creator standing", videoId);
+            approve(videoId, SYSTEM_ACTOR);
+        }
     }
 
     /** PENDING -> APPROVED, or REJECTED -> REINSTATED, clearing only the moderation revocation field. */

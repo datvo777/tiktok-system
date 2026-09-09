@@ -1,5 +1,7 @@
 package com.shortvideo.video.domain;
 
+import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.shared.audit.AdminAction;
 import com.shortvideo.shared.audit.AdminActionRecorder;
 import com.shortvideo.shared.audit.AuditActions;
@@ -25,7 +27,9 @@ import com.shortvideo.video.api.VideoView;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.slf4j.MDC;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -50,6 +54,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private final MinioAssetVerifier assetVerifier;
     private final DurableRevocationWriter revocationWriter;
     private final AdminActionRecorder auditRecorder;
+    /** Read-only: used to tell a creator whether their own video is actually published. */
+    private final EligibilityDirectory eligibilityDirectory;
     private final TransactionTemplate transactions;
 
     public VideoService(
@@ -59,6 +65,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             MinioAssetVerifier assetVerifier,
             DurableRevocationWriter revocationWriter,
             AdminActionRecorder auditRecorder,
+            EligibilityDirectory eligibilityDirectory,
             PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.supersededAssetRepository = supersededAssetRepository;
@@ -66,6 +73,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         this.assetVerifier = assetVerifier;
         this.revocationWriter = revocationWriter;
         this.auditRecorder = auditRecorder;
+        this.eligibilityDirectory = eligibilityDirectory;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -263,14 +271,55 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     /** Admin takedown (brief section 18 "remove video"): schedules the current version's assets for deletion. */
     @Transactional
     public void remove(String videoId, String reason, String actorAccountId) {
+        removeInternal(videoId, reason, actorAccountId, AuditActions.VIDEO_REMOVED, null);
+    }
+
+    /**
+     * A creator deleting their own video.
+     *
+     * <p>Runs the identical lifecycle to an admin takedown — schedule the assets
+     * for deletion, revoke, record the superseded assets for the cleanup job —
+     * because "gone" has to mean the same thing however it was asked for. Only
+     * two things differ: the caller must be the owner, and the audit records it
+     * as the creator's own action rather than a moderation decision.
+     *
+     * <p>Before this there was no owner-facing delete at all: publish was
+     * one-way, and a creator who uploaded the wrong file had to ask an
+     * administrator to take it down.
+     *
+     * <p>Publication follows on its own — {@code PublicationService} reacts to
+     * the lifecycle snapshot this appends and moves the video to REMOVED — so
+     * there is no second write here to keep in step.
+     */
+    @Transactional
+    public void deleteByOwner(String videoId, String ownerAccountId) {
+        removeInternal(videoId, null, ownerAccountId, AuditActions.VIDEO_DELETED_BY_OWNER, ownerAccountId);
+    }
+
+    /**
+     * @param requiredOwnerAccountId when non-null, the call is refused unless the
+     *     video belongs to this account.
+     */
+    private void removeInternal(
+            String videoId,
+            String reason,
+            String actorAccountId,
+            String auditAction,
+            String requiredOwnerAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
+        if (requiredOwnerAccountId != null
+                && !requiredOwnerAccountId.equals(video.getOwnerAccountId().toString())) {
+            // Same answer as a missing video: whether an id exists but belongs to
+            // somebody else is not something a caller needs to learn.
+            throw new VideoExceptions.VideoNotFound("No such video");
+        }
         if (!video.scheduleForDeletion()) {
             return; // already scheduled — not a new action, so nothing to audit
         }
         auditRecorder.record(AdminAction.of(
-                actorAccountId, AuditActions.VIDEO_REMOVED, AuditTargets.VIDEO, videoId, reason));
+                actorAccountId, auditAction, AuditTargets.VIDEO, videoId, reason));
         VideoEntity saved = repository.saveAndFlush(video);
         appendLifecycleSnapshotEvent(saved);
         revocationWriter.activate(new RevocationCommand(
@@ -344,7 +393,27 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     public VideoSummaryPage listMine(String ownerAccountId, int page) {
         Page<VideoEntity> result = repository.findByOwnerAccountIdOrderByCreatedAtDesc(
                 UUID.fromString(ownerAccountId), PageRequest.of(page, MINE_PAGE_SIZE));
-        return new VideoSummaryPage(result.getContent().stream().map(VideoService::toSummary).toList(), result.hasNext());
+        List<VideoEntity> videos = result.getContent();
+
+        // One batched read for the whole page rather than a lookup per row: the
+        // creator's list needs to say whether each video is actually published,
+        // and this projection is where publication state is visible from here.
+        Map<String, String> publicationStates = videos.isEmpty()
+                ? Map.of()
+                : eligibilityDirectory
+                        .findVideoEligibilities(videos.stream().map(v -> v.getVideoId().toString()).toList())
+                        .stream()
+                        .filter(v -> v.publicationState() != null)
+                        .collect(Collectors.toMap(
+                                VideoEligibilityView::videoId,
+                                VideoEligibilityView::publicationState,
+                                (first, second) -> first));
+
+        return new VideoSummaryPage(
+                videos.stream()
+                        .map(v -> toSummary(v, publicationStates.get(v.getVideoId().toString())))
+                        .toList(),
+                result.hasNext());
     }
 
     @Override
@@ -448,12 +517,13 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 video.getCreatedAt());
     }
 
-    private static VideoSummaryView toSummary(VideoEntity video) {
+    private static VideoSummaryView toSummary(VideoEntity video, String publicationState) {
         return new VideoSummaryView(
                 video.getVideoId().toString(),
                 video.getTitle(),
                 video.getProcessingState(),
                 video.getAssetLifecycleState(),
+                publicationState,
                 video.getCreatedAt());
     }
 

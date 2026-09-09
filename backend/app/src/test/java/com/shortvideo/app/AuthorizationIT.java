@@ -73,9 +73,71 @@ class AuthorizationIT {
 
     @Test
     void anonymousCallerGets401NotRedirectedOrForbidden() {
-        assertThat(get("/api/v1/feed", new HttpHeaders()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(get("/api/v1/notifications", new HttpHeaders()).getStatusCode())
                 .isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(get("/api/v1/videos", new HttpHeaders()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
+     * The anonymous read tier: public content is readable without a session, so a
+     * shared link, a search result and a creator page all resolve for a stranger.
+     * The feed used to answer 401 here, which is what made every one of those
+     * terminate at a signup wall.
+     */
+    @Test
+    void publicContentIsReadableWithoutASession() {
+        HttpHeaders none = new HttpHeaders();
+
+        assertThat(get("/api/v1/feed", none).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(get("/api/v1/search?q=anything", none).getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    /**
+     * The other half of that decision, and the one worth guarding: reading is
+     * open, participating is not. Each of these is a write, and each must still
+     * refuse a caller with no session.
+     */
+    @Test
+    void writesStillRequireASessionWhenReadsDoNot() {
+        HttpHeaders none = new HttpHeaders();
+        String videoId = UUID.randomUUID().toString();
+        String creatorId = UUID.randomUUID().toString();
+
+        assertThat(postStatusAnonymous("/api/v1/videos/" + videoId + "/likes")).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(postStatusAnonymous("/api/v1/videos/" + videoId + "/comments"))
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(postStatusAnonymous("/api/v1/videos/" + videoId + "/views")).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(postStatusAnonymous("/api/v1/creators/" + creatorId + "/follow"))
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(postStatusAnonymous("/api/v1/reports/" + videoId)).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(postStatusAnonymous("/api/v1/uploads")).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        // And the caller's own things stay private.
+        assertThat(get("/api/v1/auth/me", none).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(get("/api/v1/favorites/collections", none).getStatusCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
+     * A media asset is never readable on the strength of the path alone. Opening
+     * /media/** in the security config moved the whole decision to the gateway,
+     * which still requires a valid playback cookie — so a request without one is
+     * refused exactly as before.
+     */
+    @Test
+    void mediaStillRefusesARequestWithNoPlaybackCookie() {
+        assertThat(get("/media/videos/" + UUID.randomUUID() + "/1/master.m3u8", new HttpHeaders())
+                        .getStatusCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /** A POST with no credentials at all, for asserting that writes stay closed. */
+    private HttpStatus postStatusAnonymous(String path) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return (HttpStatus) rest.exchange(
+                        url(path), HttpMethod.POST, new HttpEntity<>(Map.of(), headers), String.class)
+                .getStatusCode();
     }
 
     /**

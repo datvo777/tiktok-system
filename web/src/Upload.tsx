@@ -10,6 +10,7 @@ import {
   publishVideo,
   postToPresignedUrl,
   submitAppeal,
+  UploadCancelled,
   type AppealResponse,
   type PublicationResponse,
   type VideoResponse,
@@ -71,10 +72,16 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
   const [videoId, setVideoId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [log, setLog] = useState('Pick a video and upload it.');
+  /** 0..1 while bytes are moving; null before and after. */
+  const [progress, setProgress] = useState<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const queryClient = useQueryClient();
 
   const upload = useMutation({
     mutationFn: async ({ selected, title, description }: { selected: File; title: string; description: string }) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       const session = await createUpload(title, description);
       // Checked before spending the upload: the policy caps the body server-side
       // too, but failing here explains why instead of surfacing EntityTooLarge.
@@ -84,18 +91,42 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
             `${(session.maxBytes / 1_048_576).toFixed(0)} MB.`,
         );
       }
-      await postToPresignedUrl(session, selected);
+      await postToPresignedUrl(session, selected, {
+        onProgress: setProgress,
+        signal: controller.signal,
+      });
       await completeUpload(session.uploadId);
       return session.videoId;
     },
-    onMutate: () => setLog('Creating upload session...'),
+    onMutate: () => {
+      setProgress(0);
+      setLog('Getting your upload ready…');
+    },
     onSuccess: (newVideoId) => {
       setVideoId(newVideoId);
       setStartedAt(Date.now());
-      setLog(`Uploaded. Polling ${newVideoId} for processing status...`);
+      setProgress(null);
+      // No identifiers in copy the uploader reads: what they need to know is
+      // that the file arrived and something is happening to it, not the id the
+      // client is polling.
+      setLog('Uploaded. Preparing your video…');
     },
-    onError: (error) => setLog(`Upload failed: ${(error as Error).message}`),
+    onError: (error) => {
+      setProgress(null);
+      setLog(
+        error instanceof UploadCancelled
+          ? 'Upload cancelled.'
+          : `Upload failed: ${(error as Error).message}`,
+      );
+    },
+    onSettled: () => {
+      abortRef.current = null;
+    },
   });
+
+  // A navigation away mid-upload should stop the transfer, not leave it running
+  // against a component that is gone.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const status = useQuery<VideoResponse>({
     queryKey: ['video', videoId],
@@ -112,9 +143,15 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
 
   useEffect(() => {
     if (status.data?.processingState === 'FAILED') {
-      setLog(`Processing failed: ${status.data.failureClass ?? 'unknown'}.`);
+      // failureClass is an internal taxonomy (TERMINAL/TRANSIENT and friends);
+      // what the uploader needs is whether trying again is worth their time.
+      setLog(
+        status.data.failureClass === 'TRANSIENT'
+          ? "We couldn't process that video. Try uploading it again."
+          : "We couldn't process that video. Check that it plays locally, then try a different file.",
+      );
     } else if (status.data?.processingState === 'READY') {
-      setLog('Ready. Click Preview to play it back through the media gateway.');
+      setLog('Ready. Preview it below, then publish when you\u2019re happy with it.');
     }
   }, [status.data?.processingState, status.data?.failureClass]);
 
@@ -159,30 +196,53 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
         />
       </label>
 
-      <button
-        className="btn-primary btn-block"
-        disabled={!file || !title.trim() || upload.isPending}
-        onClick={() => {
-          if (file) upload.mutate({ selected: file, title: title.trim(), description: description.trim() });
-        }}
-      >
-        {upload.isPending ? 'Uploading…' : 'Upload'}
-      </button>
+      {upload.isPending ? (
+        <div className="upload-progress">
+          <div
+            className="upload-progress-track"
+            role="progressbar"
+            aria-label="Upload progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            {...(progress !== null ? { 'aria-valuenow': Math.round(progress * 100) } : {})}
+          >
+            <span
+              className={`upload-progress-fill${progress === null ? ' is-indeterminate' : ''}`}
+              style={progress === null ? undefined : { transform: `scaleX(${progress})` }}
+            />
+          </div>
+          <div className="upload-progress-foot">
+            <span>
+              {progress === null
+                ? 'Finishing up…'
+                : `${Math.round(progress * 100)}%${
+                    file ? ` of ${(file.size / 1_048_576).toFixed(1)} MB` : ''
+                  }`}
+            </span>
+            <button className="btn-ghost btn-sm" onClick={() => abortRef.current?.abort()}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className="btn-primary btn-block"
+          disabled={!file || !title.trim()}
+          onClick={() => {
+            if (file) upload.mutate({ selected: file, title: title.trim(), description: description.trim() });
+          }}
+        >
+          Upload
+        </button>
+      )}
 
-      {videoId && (
+      {videoId && badge && (
         <div className="upload-meta">
-          {badge && <span className={`badge ${badge.variant}`}>{badge.label}</span>}
-          {status.data?.processingVersion != null && (
-            <span className="badge badge-neutral">v{status.data.processingVersion}</span>
-          )}
-          <span className="mono">{videoId}</span>
+          <span className={`badge ${badge.variant}`}>{badge.label}</span>
         </div>
       )}
 
-      <div className={`status-line${isFailure ? ' is-error' : ''}`}>
-        {upload.isPending && <span className="spinner" style={{ width: 15, height: 15, borderWidth: 2 }} />}
-        {log}
-      </div>
+      <div className={`status-line${isFailure ? ' is-error' : ''}`}>{log}</div>
 
       {videoId && status.data?.processingState === 'READY' && (
         <>
@@ -270,12 +330,12 @@ function AppealPanel({ videoId, onLog }: { videoId: string; onLog: (message: str
 
   const appeal = useMutation({
     mutationFn: () => submitAppeal(videoId, reason),
-    onMutate: () => onLog('Submitting appeal...'),
+    onMutate: () => onLog('Sending your appeal\u2026'),
     onSuccess: (response) => {
       setResult(response);
-      onLog('Appeal submitted; awaiting admin review.');
+      onLog("Appeal sent. We'll let you know in your Inbox once it's reviewed.");
     },
-    onError: (error) => onLog(`Appeal failed: ${(error as Error).message}`),
+    onError: (error) => onLog(`Couldn't send that appeal: ${(error as Error).message}`),
   });
 
   if (result) {
@@ -331,12 +391,12 @@ function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string)
 
   const session = useMutation({
     mutationFn: () => createPreviewSession(videoId),
-    onMutate: () => onLog('Requesting preview session...'),
+    onMutate: () => onLog('Loading your preview\u2026'),
     onSuccess: (result) => {
-      onLog(`Preview session issued (expires ${result.expiresAt}). Attaching player...`);
+      onLog('Playing your preview.');
       attachHls(videoRef.current, videoId, result.processingVersion, onLog);
     },
-    onError: (error) => onLog(`Preview session failed: ${(error as Error).message}`),
+    onError: (error) => onLog(`Couldn't load the preview: ${(error as Error).message}`),
   });
 
   return (
@@ -367,6 +427,15 @@ function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string)
 // whatever state the first response happened to catch, e.g. PUBLISH_PENDING,
 // forever, even once the video is actually live.
 const PUBLISH_POLL_MS = 3000;
+
+/** Short badge wording per publication state; the callout below carries the detail. */
+const PUBLICATION_LABEL: Record<string, string> = {
+  PUBLISHED: 'Published',
+  PUBLISH_PENDING: 'In review',
+  SUSPENDED: 'Suspended',
+  PRIVATE: 'Private',
+  REMOVED: 'Removed',
+};
 
 /** What to tell the uploader, and whether there's still anything for them to wait on here. */
 const PUBLICATION_GUIDANCE: Record<string, { text: string; settled: boolean }> = {
@@ -401,12 +470,14 @@ function PublishButton({
 
   useEffect(() => {
     if (status.isError) {
-      onLog(`Publish failed: ${(status.error as Error).message}`);
+      onLog(`Couldn't publish that: ${(status.error as Error).message}`);
     } else if (status.data) {
+      // A raw state code is not an explanation; PUBLICATION_GUIDANCE below says
+      // what each state actually means for the person waiting.
       onLog(
         status.data.state === 'PUBLISHED'
-          ? 'Published — visible in the public feed.'
-          : `Publication intent recorded; state is ${status.data.state} until moderation approves it.`,
+          ? 'Published \u2014 it\u2019s in the feed now.'
+          : (PUBLICATION_GUIDANCE[status.data.state]?.text ?? 'Waiting on review.'),
       );
       // The Feed stays mounted behind this modal the whole time, so its
       // ['feed'] query never remounts to pick up the new video on its own —
@@ -433,11 +504,8 @@ function PublishButton({
           {requested && status.isFetching && !status.data ? 'Publishing...' : 'Publish'}
         </button>
         {status.data && (
-          <span
-            className={`badge ${status.data.state === 'PUBLISHED' ? 'badge-success' : 'badge-warning'}`}
-            style={{ textTransform: 'none' }}
-          >
-            {status.data.state}
+          <span className={`badge ${status.data.state === 'PUBLISHED' ? 'badge-success' : 'badge-warning'}`}>
+            {PUBLICATION_LABEL[status.data.state] ?? 'In review'}
           </span>
         )}
       </div>
@@ -488,7 +556,12 @@ export function attachHls(
       activeHlsByElement.set(video, hls);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) onLog(`Playback error: ${data.type} — ${data.details}`);
+        if (data.fatal) {
+          // hls.js error types and details are diagnostics; keep them in the
+          // console for debugging and tell the viewer something actionable.
+          console.error('hls.js fatal error', data.type, data.details);
+          onLog("This video couldn't be played. Try reloading the page.");
+        }
       });
     }
     hls.loadSource(url);
@@ -497,7 +570,7 @@ export function attachHls(
     // cookies set moments ago are what authorize it.
     video.src = url;
   } else {
-    onLog('This browser supports neither MSE (hls.js) nor native HLS playback.');
+    onLog('This browser cannot play this video. Try a recent Chrome, Safari, Firefox or Edge.');
   }
 }
 

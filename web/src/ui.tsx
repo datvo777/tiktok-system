@@ -38,9 +38,21 @@ export function Avatar({
   );
 }
 
-/** A creator handle derived from the account id, since there are no usernames. */
-export function handleFor(creatorId: string): string {
-  return `@${creatorId.replace(/-/g, '').slice(0, 10)}`;
+/**
+ * Renders a real handle for display.
+ *
+ * <p>This used to *fabricate* one from the account id -- `@` plus ten hex
+ * characters -- because there were no usernames in the system. Accounts now
+ * carry a real unique handle, so this only adds the `@` sigil.
+ *
+ * <p>The id fallback is kept for the two places that still have only an id to
+ * hand (a comment posted in this session, before the list refetches). It
+ * produces exactly what the old function did, which is also what the backfill
+ * seeded existing accounts with, so the two agree.
+ */
+export function formatHandle(handle: string | null | undefined, fallbackId?: string): string {
+  if (handle) return `@${handle}`;
+  return fallbackId ? `@${fallbackId.replace(/-/g, '').slice(0, 10)}` : '';
 }
 
 /** 1200 -> "1.2K": count labels have room for four characters, not four digits. */

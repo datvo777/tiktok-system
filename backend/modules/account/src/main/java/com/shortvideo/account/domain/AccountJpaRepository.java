@@ -13,6 +13,10 @@ interface AccountJpaRepository extends JpaRepository<AccountEntity, UUID> {
 
     boolean existsByEmail(String email);
 
+    Optional<AccountEntity> findByHandleLower(String handleLower);
+
+    boolean existsByHandleLower(String handleLower);
+
     /** Admin search (brief section 18-adjacent admin surface): partial, case-insensitive email match. */
     List<AccountEntity> findByEmailContainingIgnoreCaseOrderByCreatedAtDesc(String emailFragment, Pageable pageable);
 }
