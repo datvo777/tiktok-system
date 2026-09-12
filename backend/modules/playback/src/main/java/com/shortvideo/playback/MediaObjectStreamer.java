@@ -52,20 +52,39 @@ class MediaObjectStreamer {
         }
 
         long totalSize = stat.size();
-        long[] range = rangeHeader == null ? null : parseRange(rangeHeader, totalSize);
-        long offset = range == null ? 0 : range[0];
-        long length = range == null ? totalSize : range[1] - range[0] + 1;
-        boolean partial = range != null;
+        Range range = parseRange(rangeHeader, totalSize);
+        if (range instanceof Range.Unsatisfiable) {
+            // RFC 9110 §15.5.17: a syntactically valid range that cannot be met gets
+            // 416 plus the object's true size, not a silent 200 with the whole body.
+            throw new MediaRangeNotSatisfiableException(totalSize);
+        }
 
-        StreamingResponseBody body = out -> streamRange(key.objectKey(), offset, length, out);
+        boolean partial = range instanceof Range.Satisfiable;
+        long offset = partial ? ((Range.Satisfiable) range).start() : 0;
+        long length = partial ? ((Range.Satisfiable) range).length() : totalSize;
+
+        // Acquired here, before the controller builds the response, so exhaustion
+        // becomes a 503 the client can act on. Acquiring inside the body ran after
+        // the status line and Content-Length were already committed, so an
+        // overloaded gateway answered "200, here are N bytes" and then delivered
+        // fewer — which hls.js reads as a corrupt segment and retries, adding load
+        // to a gateway that was already saturated.
+        if (!concurrencyLimiter.tryAcquire()) {
+            throw new MediaStreamsExhaustedException("Too many concurrent media streams");
+        }
+
+        StreamingResponseBody body = out -> {
+            try {
+                streamRange(key.objectKey(), offset, length, out);
+            } finally {
+                concurrencyLimiter.release();
+            }
+        };
         String contentRange = partial ? "bytes " + offset + "-" + (offset + length - 1) + "/" + totalSize : null;
         return new PreparedStream(body, length, partial, contentRange);
     }
 
     private void streamRange(String objectKey, long offset, long length, OutputStream out) throws IOException {
-        if (!concurrencyLimiter.tryAcquire()) {
-            throw new IOException("Too many concurrent media streams");
-        }
         try (GetObjectResponse object = minioClient.getObject(GetObjectArgs.builder()
                 .bucket(bucket)
                 .object(objectKey)
@@ -82,35 +101,70 @@ class MediaObjectStreamer {
             throw e;
         } catch (Exception e) {
             throw new IOException("Failed to stream media object " + objectKey, e);
-        } finally {
-            concurrencyLimiter.release();
         }
     }
 
-    /** Supports "bytes=start-end", "bytes=start-", and the "bytes=-suffixLength" forms. Single range only. */
-    long[] parseRange(String header, long totalSize) {
-        if (!header.startsWith("bytes=")) {
-            return null;
+    /**
+     * Supports "bytes=start-end", "bytes=start-", and the "bytes=-suffixLength"
+     * forms. Single range only.
+     *
+     * <p>Three outcomes, kept distinct: {@link Range.Ignored} for a header this
+     * gateway does not parse (respond 200 with the whole object), {@link
+     * Range.Unsatisfiable} for a well-formed range outside the object (respond 416),
+     * and {@link Range.Satisfiable}. Collapsing the first two onto {@code null}
+     * meant an unsatisfiable range silently returned the entire object.
+     */
+    Range parseRange(String header, long totalSize) {
+        if (header == null || !header.startsWith("bytes=")) {
+            return Range.IGNORED;
         }
         String spec = header.substring("bytes=".length()).split(",", 2)[0].trim();
         String[] parts = spec.split("-", 2);
         if (parts.length != 2) {
-            return null;
+            return Range.IGNORED;
         }
         try {
             if (parts[0].isEmpty()) {
                 long suffixLength = Long.parseLong(parts[1]);
+                // "bytes=-0" asks for the last zero bytes, and "bytes=--5" parses as
+                // a suffix of -5. Both used to produce start > end, hence a negative
+                // Content-Length and a MinIO argument error thrown mid-response.
+                if (suffixLength <= 0) {
+                    return Range.UNSATISFIABLE;
+                }
+                if (totalSize == 0) {
+                    return Range.UNSATISFIABLE;
+                }
                 long start = Math.max(0, totalSize - suffixLength);
-                return new long[] {start, totalSize - 1};
+                return new Range.Satisfiable(start, totalSize - 1);
             }
             long start = Long.parseLong(parts[0]);
             long end = parts[1].isEmpty() ? totalSize - 1 : Long.parseLong(parts[1]);
-            if (start < 0 || start >= totalSize || end < start) {
-                return null;
+            if (start < 0 || end < start) {
+                return Range.IGNORED; // malformed rather than merely unmeetable
             }
-            return new long[] {start, Math.min(end, totalSize - 1)};
+            if (start >= totalSize) {
+                return Range.UNSATISFIABLE;
+            }
+            return new Range.Satisfiable(start, Math.min(end, totalSize - 1));
         } catch (NumberFormatException e) {
-            return null;
+            return Range.IGNORED;
+        }
+    }
+
+    /** The three ways a Range header can resolve. */
+    sealed interface Range {
+        Range IGNORED = new Ignored();
+        Range UNSATISFIABLE = new Unsatisfiable();
+
+        record Ignored() implements Range {}
+
+        record Unsatisfiable() implements Range {}
+
+        record Satisfiable(long start, long end) implements Range {
+            long length() {
+                return end - start + 1;
+            }
         }
     }
 

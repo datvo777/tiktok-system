@@ -1,5 +1,6 @@
 package com.shortvideo.moderation.domain;
 
+import com.shortvideo.moderation.api.PolicyCategory;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -25,8 +26,20 @@ public class ModerationEntity {
     @Column(name = "state", nullable = false, length = 30)
     private ModerationState state;
 
+    /** Optional elaboration. The authoritative reason is {@link #policyCategory}. */
     @Column(name = "reason", length = 200)
     private String reason;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "policy_category", length = 40)
+    private PolicyCategory policyCategory;
+
+    /**
+     * Denormalised from {@link PolicyCategory#tier()} so severity can be filtered
+     * and ordered in SQL without teaching the database the enum's mapping.
+     */
+    @Column(name = "policy_tier", length = 4)
+    private String policyTier;
 
     /** Optimistic concurrency and the aggregate version carried by events (Rule 10). */
     @Version
@@ -54,13 +67,20 @@ public class ModerationEntity {
     public boolean approve() {
         boolean wasRejected = this.state == ModerationState.REJECTED;
         this.state = wasRejected ? ModerationState.REINSTATED : ModerationState.APPROVED;
+        // The prior rejection's classification is cleared with it: leaving it
+        // behind would make an approved video look like it still carries a
+        // policy finding in every count that groups by category.
         this.reason = null;
+        this.policyCategory = null;
+        this.policyTier = null;
         this.updatedAt = Instant.now();
         return wasRejected;
     }
 
-    public void reject(String reason) {
+    public void reject(PolicyCategory policyCategory, String reason) {
         this.state = ModerationState.REJECTED;
+        this.policyCategory = policyCategory;
+        this.policyTier = policyCategory.tier();
         this.reason = reason;
         this.updatedAt = Instant.now();
     }
@@ -69,6 +89,8 @@ public class ModerationEntity {
     public UUID getCreatorId() { return creatorId; }
     public ModerationState getState() { return state; }
     public String getReason() { return reason; }
+    public PolicyCategory getPolicyCategory() { return policyCategory; }
+    public String getPolicyTier() { return policyTier; }
     public long getAggregateVersion() { return aggregateVersion; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

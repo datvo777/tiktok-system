@@ -39,6 +39,16 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
             )
             """;
 
+    /**
+     * Uses the same {@code (subject_type, subject_id) WHERE active} partial index as
+     * {@link #IS_ACTIVE}; {@code = ANY(?)} keeps the statement text constant
+     * regardless of how many subjects are asked about.
+     */
+    private static final String ACTIVE_AMONG = """
+            SELECT DISTINCT subject_id FROM platform.revocation
+            WHERE subject_type = ? AND active = true AND subject_id = ANY(?)
+            """;
+
     private static final String FIND_ALL_ACTIVE =
             "SELECT subject_type, subject_id, source_type, reason FROM platform.revocation WHERE active = true";
 
@@ -87,6 +97,17 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
     public boolean isActive(String subjectType, String subjectId) {
         Boolean active = jdbc.queryForObject(IS_ACTIVE, Boolean.class, subjectType, subjectId);
         return Boolean.TRUE.equals(active);
+    }
+
+    @Override
+    public java.util.Set<String> activeAmong(String subjectType, java.util.Collection<String> subjectIds) {
+        if (subjectIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        // subject_id is VARCHAR here (it holds both video and account ids), so the
+        // array is bound as text rather than uuid.
+        String[] ids = subjectIds.toArray(String[]::new);
+        return new java.util.HashSet<>(jdbc.queryForList(ACTIVE_AMONG, String.class, subjectType, ids));
     }
 
     /** Brief section 16: "After a Redis restart, rebuild hashes from active durable revocations." */

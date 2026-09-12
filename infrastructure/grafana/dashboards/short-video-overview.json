@@ -1,0 +1,122 @@
+{
+  "title": "Short Video - Overview",
+  "uid": "short-video-overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "title": "HTTP request rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (uri, status) (rate(http_server_requests_seconds_count{application=\"short-video-backend\"}[1m]))",
+          "legendFormat": "{{uri}} [{{status}}]"
+        }
+      ]
+    },
+    {
+      "title": "HTTP request latency (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_requests_seconds_bucket{application=\"short-video-backend\"}[5m])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{application=\"short-video-backend\"}[5m])))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{application=\"short-video-backend\"}[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "title": "Media gateway authorization latency, by outcome",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(media_authorization_seconds_bucket[5m])))", "legendFormat": "{{outcome}} p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le, outcome) (rate(media_authorization_seconds_bucket[5m])))", "legendFormat": "{{outcome}} p99" }
+      ],
+      "description": "Milestone 8 acceptance: revocation-aware latency distributions under concurrent load."
+    },
+    {
+      "title": "Durable revocation check latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le, subject_type) (rate(media_revocation_check_seconds_bucket[5m])))", "legendFormat": "{{subject_type}} p50" },
+        { "expr": "histogram_quantile(0.99, sum by (le, subject_type) (rate(media_revocation_check_seconds_bucket[5m])))", "legendFormat": "{{subject_type}} p99" }
+      ]
+    },
+    {
+      "title": "Outbox relay throughput",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(outbox_events_published_total[1m]))", "legendFormat": "published/s" },
+        { "expr": "sum(rate(outbox_events_failed_total[1m]))", "legendFormat": "failed/s" },
+        { "expr": "sum(rate(outbox_events_dead_total[1m]))", "legendFormat": "dead-lettered/s" }
+      ],
+      "description": "A sustained failed/dead rate without a matching drop in published indicates the relay is stuck reclaiming a crashed lease."
+    },
+    {
+      "title": "Revocation cache health",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "targets": [{ "expr": "revocation_cache_state" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": {
+              "0": { "text": "WARMING", "color": "yellow" },
+              "1": { "text": "READY", "color": "green" },
+              "2": { "text": "DEGRADED", "color": "orange" },
+              "3": { "text": "STALE", "color": "red" }
+            } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "title": "Revocation cache rebuild / drift",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(revocation_cache_rebuilds_total[5m]))", "legendFormat": "rebuilds/s" },
+        { "expr": "sum(rate(revocation_cache_drift_entries_removed_total[5m]))", "legendFormat": "stray entries removed/s" }
+      ]
+    },
+    {
+      "title": "Eligibility reconciliation sweeps",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "sum(rate(eligibility_reconciliation_videos_swept_total[5m]))", "legendFormat": "videos corrected/s" },
+        { "expr": "sum(rate(eligibility_reconciliation_accounts_swept_total[5m]))", "legendFormat": "accounts corrected/s" }
+      ]
+    },
+    {
+      "title": "Inbox cleanup",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "targets": [
+        { "expr": "sum(rate(inbox_cleanup_rows_deleted_total[1h]))", "legendFormat": "rows deleted/s" }
+      ],
+      "description": "Milestone 8 acceptance: inbox cleanup preserves the supported Kafka replay window."
+    },
+    {
+      "title": "JVM heap used (backend)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(jvm_memory_used_bytes{application=\"short-video-backend\", area=\"heap\"})", "legendFormat": "heap used" }
+      ],
+      "description": "Milestone 8 acceptance: gateway memory stays flat while serving concurrent range requests."
+    }
+  ]
+}

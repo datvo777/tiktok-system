@@ -22,5 +22,15 @@ public final class UploadExceptions {
         public UploadSizeOutOfRange(String message) { super(message); }
     }
 
+    /**
+     * One account is holding open more unfinished upload sessions than the cap
+     * allows. Each open session carries a presigned policy the holder can still
+     * write against, so an unbounded number of them is an unbounded write
+     * allowance regardless of the per-object size cap.
+     */
+    public static class TooManyOpenUploads extends RuntimeException {
+        public TooManyOpenUploads(String message) { super(message); }
+    }
+
     private UploadExceptions() {}
 }

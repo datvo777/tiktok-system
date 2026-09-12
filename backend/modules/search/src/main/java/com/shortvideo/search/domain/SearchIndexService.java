@@ -33,39 +33,86 @@ public class SearchIndexService {
     private static final String INDEX = "videos";
 
     private final RestClient client;
+    /** Set once the index is known to exist, so the lazy retry stops probing. */
+    private volatile boolean indexReady;
 
     public SearchIndexService(RestClient openSearchClient) {
         this.client = openSearchClient;
     }
 
+    /**
+     * An exception thrown from an {@code ApplicationReadyEvent} listener propagates
+     * out of {@code SpringApplication.run} and terminates the process. Left
+     * unguarded, a slow or absent OpenSearch at boot took upload, playback,
+     * moderation and the feed down with it — the exact coupling this class's
+     * contract promises does not exist. Failure is logged and retried lazily
+     * instead.
+     */
     @EventListener(ApplicationReadyEvent.class)
-    void ensureIndex() {
+    void ensureIndexOnStartup() {
+        if (!tryEnsureIndex()) {
+            log.warn(
+                    "OpenSearch index '{}' could not be prepared at startup; search will retry on first use. "
+                            + "Indexing and search are degraded until then; nothing else is affected.",
+                    INDEX);
+        }
+    }
+
+    /** @return true when the index is known to exist. */
+    private boolean tryEnsureIndex() {
+        if (indexReady) {
+            return true;
+        }
         Map<String, Object> mapping = Map.of(
                 "mappings", Map.of(
                         "properties", Map.of(
                                 "videoId", Map.of("type", "keyword"),
                                 "creatorId", Map.of("type", "keyword"),
                                 "creatorDisplayName", Map.of("type", "text"),
+                                // keyword, not text: a handle is one indivisible
+                                // token that people type exactly, so it should not
+                                // be split on underscores or stemmed.
+                                "creatorHandle", Map.of("type", "keyword"),
+                                "title", Map.of("type", "text"),
+                                "description", Map.of("type", "text"),
                                 "publishedAt", Map.of("type", "date"))));
-        HttpStatusCode status = client.put()
-                .uri("/{index}", INDEX)
-                .body(mapping)
-                .exchange((request, resp) -> resp.getStatusCode());
-        if (status.is2xxSuccessful()) {
-            log.info("OpenSearch index '{}' created", INDEX);
-        } else if (status.value() == 400) {
-            log.info("OpenSearch index '{}' already exists", INDEX);
-        } else {
-            log.warn("Unexpected status creating OpenSearch index '{}': {}", INDEX, status);
+        try {
+            HttpStatusCode status = client.put()
+                    .uri("/{index}", INDEX)
+                    .body(mapping)
+                    .exchange((request, resp) -> resp.getStatusCode());
+            if (status.is2xxSuccessful()) {
+                log.info("OpenSearch index '{}' created", INDEX);
+                indexReady = true;
+            } else if (status.value() == 400) {
+                log.info("OpenSearch index '{}' already exists", INDEX);
+                indexReady = true;
+            } else {
+                log.warn("Unexpected status creating OpenSearch index '{}': {}", INDEX, status);
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not reach OpenSearch to prepare index '{}': {}", INDEX, e.getMessage());
         }
+        return indexReady;
     }
 
     /** Best-effort, version-guarded upsert. A 409 means a newer version already won -- not an error. */
-    public void indexVideo(String videoId, String creatorId, String creatorDisplayName, String publishedAt, long version) {
+    public void indexVideo(
+            String videoId,
+            String creatorId,
+            String creatorDisplayName,
+            String creatorHandle,
+            String title,
+            String description,
+            String publishedAt,
+            long version) {
         Map<String, Object> doc = new LinkedHashMap<>();
         doc.put("videoId", videoId);
         doc.put("creatorId", creatorId);
         doc.put("creatorDisplayName", creatorDisplayName);
+        doc.put("creatorHandle", creatorHandle == null ? "" : creatorHandle);
+        doc.put("title", title == null ? "" : title);
+        doc.put("description", description == null ? "" : description);
         doc.put("publishedAt", publishedAt);
         write("PUT", videoId, version, doc);
     }
@@ -75,23 +122,90 @@ public class SearchIndexService {
         write("DELETE", videoId, version, null);
     }
 
-    /** Matches indexed videos by creator display name. Never touches upload or playback. */
+    /**
+     * Matches indexed videos by creator display name, title, or description.
+     * Never touches upload or playback.
+     *
+     * <p>{@code query} is a bound value inside a structured {@code multi_match}
+     * clause, not concatenated into a query string, so there is no query-DSL
+     * injection here.
+     *
+     * <p>A search-side outage answers 503 rather than 500: it is a dependency being
+     * unavailable, not this service failing, and the distinction is what tells a
+     * client to retry. The response shape is also navigated defensively — an
+     * unexpected body should produce no results, not a {@code NullPointerException}
+     * rendered as an internal error.
+     */
+    /**
+     * @param from offset into the result set. Offset paging rather than a cursor
+     *     here, deliberately: relevance ordering is not a stable sort key, so
+     *     there is nothing to seek from — and unlike a comment thread, a search
+     *     result set is re-issued from the top whenever the term changes.
+     */
+    public List<Map<String, Object>> search(String query, int from, int size) {
+        // A leading @ is how people write a handle; it is not part of the token
+        // the index holds, so searching "@dat" has to match the same document as
+        // "dat".
+        String normalised = query.startsWith("@") ? query.substring(1) : query;
+        return runQuery(Map.of(
+                "query", Map.of(
+                        "multi_match", Map.of(
+                                "query", normalised,
+                                // Handles are boosted: someone typing a username is
+                                // looking for that person, not for videos whose
+                                // description happens to contain the word.
+                                "fields", List.of(
+                                        "creatorHandle^3", "creatorDisplayName^2", "title", "description"))),
+                "from", from,
+                "size", size));
+    }
+
+    /**
+     * A creator's published videos, newest first. The index only ever holds
+     * published documents (see {@link VideoSearchListener}), so -- same as
+     * {@link #search} -- no separate eligibility check is needed here.
+     */
+    public List<Map<String, Object>> byCreator(String creatorId, int from, int size) {
+        return runQuery(Map.of(
+                "query", Map.of("term", Map.of("creatorId", creatorId)),
+                "sort", List.of(Map.of("publishedAt", "desc")),
+                "from", from,
+                "size", size));
+    }
+
+    /**
+     * A search-side outage answers 503 rather than 500: it is a dependency being
+     * unavailable, not this service failing, and the distinction is what tells a
+     * client to retry. The response shape is also navigated defensively — an
+     * unexpected body should produce no results, not a {@code NullPointerException}
+     * rendered as an internal error.
+     */
     @SuppressWarnings("unchecked")
-    public List<Map<String, Object>> search(String query, int limit) {
-        Map<String, Object> body = Map.of(
-                "query", Map.of("match", Map.of("creatorDisplayName", query)),
-                "size", limit);
-        Map<String, Object> response = client.post()
-                .uri("/{index}/_search", INDEX)
-                .body(body)
-                .retrieve()
-                .body(Map.class);
-        if (response == null) {
+    private List<Map<String, Object>> runQuery(Map<String, Object> body) {
+        tryEnsureIndex();
+        Map<String, Object> response;
+        try {
+            response = client.post()
+                    .uri("/{index}/_search", INDEX)
+                    .body(body)
+                    .retrieve()
+                    .body(Map.class);
+        } catch (RuntimeException e) {
+            log.warn("OpenSearch query failed: {}", e.getMessage());
+            throw new SearchUnavailableException("Search is temporarily unavailable", e);
+        }
+        if (!(response instanceof Map) || !(response.get("hits") instanceof Map<?, ?> hitsOuter)) {
             return List.of();
         }
-        Map<String, Object> hitsOuter = (Map<String, Object>) response.get("hits");
-        List<Map<String, Object>> hits = (List<Map<String, Object>>) hitsOuter.get("hits");
-        return hits.stream().map(h -> (Map<String, Object>) h.get("_source")).toList();
+        if (!(hitsOuter.get("hits") instanceof List<?> hits)) {
+            return List.of();
+        }
+        return hits.stream()
+                .filter(Map.class::isInstance)
+                .map(h -> ((Map<String, Object>) h).get("_source"))
+                .filter(Map.class::isInstance)
+                .map(source -> (Map<String, Object>) source)
+                .toList();
     }
 
     private void write(String method, String videoId, long version, Map<String, Object> doc) {

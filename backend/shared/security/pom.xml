@@ -15,6 +15,19 @@
     <packaging>jar</packaging>
 
     <dependencies>
+        <!--
+            The authentication filter must fail closed on a suspended account, which
+            means consulting the revocation record on every request. revocation does
+            not depend on security, so this direction introduces no cycle.
+        -->
+        <dependency>
+            <groupId>com.shortvideo</groupId>
+            <artifactId>revocation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>

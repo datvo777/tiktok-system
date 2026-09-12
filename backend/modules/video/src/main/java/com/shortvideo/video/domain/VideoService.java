@@ -1,5 +1,11 @@
 package com.shortvideo.video.domain;
 
+import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.VideoEligibilityView;
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -15,14 +21,22 @@ import com.shortvideo.video.api.VideoDraft;
 import com.shortvideo.video.api.VideoDraftRegistrar;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import com.shortvideo.video.api.VideoPlaybackView;
+import com.shortvideo.video.api.VideoSummaryPage;
+import com.shortvideo.video.api.VideoSummaryView;
 import com.shortvideo.video.api.VideoView;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.slf4j.MDC;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory {
@@ -39,31 +53,58 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private final OutboxWriter outboxWriter;
     private final MinioAssetVerifier assetVerifier;
     private final DurableRevocationWriter revocationWriter;
+    private final AdminActionRecorder auditRecorder;
+    /** Read-only: used to tell a creator whether their own video is actually published. */
+    private final EligibilityDirectory eligibilityDirectory;
+    private final TransactionTemplate transactions;
 
     public VideoService(
             VideoJpaRepository repository,
             SupersededAssetJpaRepository supersededAssetRepository,
             OutboxWriter outboxWriter,
             MinioAssetVerifier assetVerifier,
-            DurableRevocationWriter revocationWriter) {
+            DurableRevocationWriter revocationWriter,
+            AdminActionRecorder auditRecorder,
+            EligibilityDirectory eligibilityDirectory,
+            PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.supersededAssetRepository = supersededAssetRepository;
         this.outboxWriter = outboxWriter;
         this.assetVerifier = assetVerifier;
         this.revocationWriter = revocationWriter;
+        this.auditRecorder = auditRecorder;
+        this.eligibilityDirectory = eligibilityDirectory;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
-    /** Called by the Upload module inside its own transaction (brief section 7.1). No event here: nothing consumes "drafted" yet. */
+    /**
+     * Called by the Upload module inside its own transaction (brief section 7.1).
+     * Emits {@link EventTypes#VIDEO_METADATA_SET} so the eligibility projector (and
+     * anything else that ends up caring, e.g. the Feed) learns the title/description
+     * — the only time it will, since these never change after this call.
+     */
     @Override
     @Transactional
-    public VideoDraft createDraft(String ownerAccountId) {
-        VideoEntity video = new VideoEntity(UUID.randomUUID(), UUID.fromString(ownerAccountId));
+    public VideoDraft createDraft(String ownerAccountId, String title, String description) {
+        VideoEntity video = new VideoEntity(UUID.randomUUID(), UUID.fromString(ownerAccountId), title, description);
         VideoEntity saved = repository.saveAndFlush(video);
+        appendMetadataSetEvent(saved);
         return new VideoDraft(
                 saved.getVideoId().toString(),
                 saved.getOwnerAccountId().toString(),
                 saved.getAggregateVersion(),
                 saved.getCreatedAt());
+    }
+
+    /** Called by the Upload module's expired-session reaper (brief section 7.1). No event: nothing consumed "drafted" either. */
+    @Override
+    @Transactional
+    public void expireDraft(String videoId) {
+        VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
+        if (video == null || !video.expireDraft()) {
+            return;
+        }
+        repository.saveAndFlush(video);
     }
 
     /**
@@ -155,60 +196,130 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * un-quarantine action, which shares the same "restore only if still valid"
      * semantics.
      */
-    @Transactional
     void restoreIfValid(String videoId) {
         VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
         if (video == null) {
             return;
         }
+        // Outside the transaction: verify() stats every asset in MinIO, and holding
+        // a pooled connection across that network I/O is what turns a slow object
+        // store into connection-pool exhaustion. See restoreFromQuarantine.
         boolean assetsValid = assetVerifier.verify(video.getMasterPlaylistKey(), video.getVariantPlaylists());
-        if (!video.restoreIfValid(assetsValid)) {
-            return;
-        }
-        appendLifecycleSnapshotEvent(repository.saveAndFlush(video));
+
+        transactions.executeWithoutResult(status -> {
+            VideoEntity fresh = repository.findById(UUID.fromString(videoId)).orElse(null);
+            if (fresh == null || !fresh.restoreIfValid(assetsValid)) {
+                return;
+            }
+            appendLifecycleSnapshotEvent(repository.saveAndFlush(fresh));
+        });
     }
 
     /** Admin lifecycle hold, independent of moderation (brief section 18, Milestone 6). */
     @Transactional
-    public void quarantine(String videoId, String reason) {
+    public void quarantine(String videoId, String reason, String actorAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
         if (!video.quarantine()) {
-            return;
+            return; // already held — not a new action, so nothing to audit
         }
         VideoEntity saved = repository.saveAndFlush(video);
         appendLifecycleSnapshotEvent(saved);
         revocationWriter.activate(new RevocationCommand(
                 RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, saved.getAggregateVersion(), reason));
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.VIDEO_QUARANTINED, AuditTargets.VIDEO, videoId, reason));
     }
 
-    /** Reverses an admin quarantine, only if the assets are still verifiably present. */
-    @Transactional
-    public void restoreFromQuarantine(String videoId) {
+    /**
+     * Reverses an admin quarantine, only if the assets are still verifiably present.
+     *
+     * <p>The MinIO check runs before the transaction opens: {@code verify()} stats
+     * the master playlist and every variant, so performing it with a connection
+     * checked out pins that connection across several round trips to a system that
+     * can be slow or down. Re-reading the entity inside the transaction keeps the
+     * write itself guarded by optimistic locking, so the brief gap between checking
+     * the assets and applying the decision cannot produce a lost update.
+     */
+    public void restoreFromQuarantine(String videoId, String actorAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
-        long previousVersion = video.getAggregateVersion();
         boolean assetsValid = assetVerifier.verify(video.getMasterPlaylistKey(), video.getVariantPlaylists());
-        if (!video.restoreIfValid(assetsValid)) {
-            throw new VideoExceptions.VideoNotReady("Assets are not verifiably present; cannot restore");
-        }
-        VideoEntity saved = repository.saveAndFlush(video);
-        appendLifecycleSnapshotEvent(saved);
-        revocationWriter.clear(new RevocationClearCommand(
-                RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, previousVersion));
+
+        transactions.executeWithoutResult(status -> {
+            VideoEntity fresh = repository
+                    .findById(UUID.fromString(videoId))
+                    .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
+            long previousVersion = fresh.getAggregateVersion();
+            if (!fresh.restoreIfValid(assetsValid)) {
+                throw new VideoExceptions.VideoNotReady("Assets are not verifiably present; cannot restore");
+            }
+            VideoEntity saved = repository.saveAndFlush(fresh);
+            appendLifecycleSnapshotEvent(saved);
+            revocationWriter.clear(new RevocationClearCommand(
+                    RevocationSubjects.VIDEO, saved.getVideoId().toString(), LIFECYCLE_SOURCE, previousVersion));
+            // Inside the lambda so the audit row shares this transaction, as it
+            // does everywhere else — a restore that rolls back must not leave a
+            // record claiming it happened.
+            auditRecorder.record(AdminAction.of(
+                    actorAccountId, AuditActions.VIDEO_RESTORED, AuditTargets.VIDEO, videoId));
+        });
     }
 
     /** Admin takedown (brief section 18 "remove video"): schedules the current version's assets for deletion. */
     @Transactional
-    public void remove(String videoId, String reason) {
+    public void remove(String videoId, String reason, String actorAccountId) {
+        removeInternal(videoId, reason, actorAccountId, AuditActions.VIDEO_REMOVED, null);
+    }
+
+    /**
+     * A creator deleting their own video.
+     *
+     * <p>Runs the identical lifecycle to an admin takedown — schedule the assets
+     * for deletion, revoke, record the superseded assets for the cleanup job —
+     * because "gone" has to mean the same thing however it was asked for. Only
+     * two things differ: the caller must be the owner, and the audit records it
+     * as the creator's own action rather than a moderation decision.
+     *
+     * <p>Before this there was no owner-facing delete at all: publish was
+     * one-way, and a creator who uploaded the wrong file had to ask an
+     * administrator to take it down.
+     *
+     * <p>Publication follows on its own — {@code PublicationService} reacts to
+     * the lifecycle snapshot this appends and moves the video to REMOVED — so
+     * there is no second write here to keep in step.
+     */
+    @Transactional
+    public void deleteByOwner(String videoId, String ownerAccountId) {
+        removeInternal(videoId, null, ownerAccountId, AuditActions.VIDEO_DELETED_BY_OWNER, ownerAccountId);
+    }
+
+    /**
+     * @param requiredOwnerAccountId when non-null, the call is refused unless the
+     *     video belongs to this account.
+     */
+    private void removeInternal(
+            String videoId,
+            String reason,
+            String actorAccountId,
+            String auditAction,
+            String requiredOwnerAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
-        if (!video.scheduleForDeletion()) {
-            return;
+        if (requiredOwnerAccountId != null
+                && !requiredOwnerAccountId.equals(video.getOwnerAccountId().toString())) {
+            // Same answer as a missing video: whether an id exists but belongs to
+            // somebody else is not something a caller needs to learn.
+            throw new VideoExceptions.VideoNotFound("No such video");
         }
+        if (!video.scheduleForDeletion()) {
+            return; // already scheduled — not a new action, so nothing to audit
+        }
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, auditAction, AuditTargets.VIDEO, videoId, reason));
         VideoEntity saved = repository.saveAndFlush(video);
         appendLifecycleSnapshotEvent(saved);
         revocationWriter.activate(new RevocationCommand(
@@ -226,7 +337,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * superseded-asset row — never deleted synchronously on the request path.
      */
     @Transactional
-    public void reprocess(String videoId) {
+    public void reprocess(String videoId, String actorAccountId) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
@@ -236,6 +347,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         if (video.getProcessingState() == ProcessingState.TRANSCODING) {
             return; // a job is already in flight — redelivery/duplicate-click no-op
         }
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.VIDEO_REPROCESSED, AuditTargets.VIDEO, videoId));
 
         Integer previousVersion = video.getProcessingVersion();
         String previousMaster = video.getMasterPlaylistKey();
@@ -269,6 +382,40 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         return toView(video);
     }
 
+    private static final int MINE_PAGE_SIZE = 20;
+
+    /**
+     * Owner's own video list — lets a creator find a past rejection to appeal
+     * without keeping the original upload tab open (brief section 12.3 covers
+     * only the single-video poll; nothing previously listed a creator's history).
+     */
+    @Transactional(readOnly = true)
+    public VideoSummaryPage listMine(String ownerAccountId, int page) {
+        Page<VideoEntity> result = repository.findByOwnerAccountIdOrderByCreatedAtDesc(
+                UUID.fromString(ownerAccountId), PageRequest.of(page, MINE_PAGE_SIZE));
+        List<VideoEntity> videos = result.getContent();
+
+        // One batched read for the whole page rather than a lookup per row: the
+        // creator's list needs to say whether each video is actually published,
+        // and this projection is where publication state is visible from here.
+        Map<String, String> publicationStates = videos.isEmpty()
+                ? Map.of()
+                : eligibilityDirectory
+                        .findVideoEligibilities(videos.stream().map(v -> v.getVideoId().toString()).toList())
+                        .stream()
+                        .filter(v -> v.publicationState() != null)
+                        .collect(Collectors.toMap(
+                                VideoEligibilityView::videoId,
+                                VideoEligibilityView::publicationState,
+                                (first, second) -> first));
+
+        return new VideoSummaryPage(
+                videos.stream()
+                        .map(v -> toSummary(v, publicationStates.get(v.getVideoId().toString())))
+                        .toList(),
+                result.hasNext());
+    }
+
     @Override
     @Transactional(readOnly = true)
     public Optional<VideoPlaybackView> findForPlayback(String videoId) {
@@ -287,6 +434,16 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 video.getAssetLifecycleState(),
                 video.getLegalServingState(),
                 video.getAggregateVersion()));
+    }
+
+    private void appendMetadataSetEvent(VideoEntity video) {
+        var payload = new VideoEvents.VideoMetadataSet(
+                video.getVideoId().toString(),
+                video.getOwnerAccountId().toString(),
+                video.getTitle(),
+                video.getDescription(),
+                video.getAggregateVersion());
+        append(video, EventTypes.VIDEO_METADATA_SET, payload);
     }
 
     private void appendReadyEvent(VideoEntity video) {
@@ -357,6 +514,16 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 video.getAssetLifecycleState(),
                 video.getFailureClass(),
                 video.getAggregateVersion(),
+                video.getCreatedAt());
+    }
+
+    private static VideoSummaryView toSummary(VideoEntity video, String publicationState) {
+        return new VideoSummaryView(
+                video.getVideoId().toString(),
+                video.getTitle(),
+                video.getProcessingState(),
+                video.getAssetLifecycleState(),
+                publicationState,
                 video.getCreatedAt());
     }
 

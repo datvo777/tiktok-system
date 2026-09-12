@@ -57,10 +57,20 @@ export default function () {
     headers: { Cookie: cookie, 'Content-Type': 'application/json' },
   });
   check(createUpload, { 'upload session created': (r) => r.status === 200 || r.status === 201 });
-  const { uploadId, videoId, uploadUrl } = createUpload.json();
+  const { uploadId, videoId, uploadUrl, formFields } = createUpload.json();
 
-  const put = http.put(uploadUrl, VIDEO_FILE, { headers: { 'Content-Type': 'video/mp4' } });
-  check(put, { 'uploaded to storage': (r) => r.status === 200 });
+  // Presigned POST, not PUT: the policy carries a content-length-range condition
+  // the object store enforces at write time, so an oversized body is rejected
+  // there rather than accepted and audited afterwards. Every policy field must
+  // precede the file part or MinIO rejects the request outright.
+  const form = {};
+  for (const [name, value] of Object.entries(formFields)) {
+    form[name] = value;
+  }
+  form.file = http.file(VIDEO_FILE, 'source.mp4', 'video/mp4');
+
+  const upload = http.post(uploadUrl, form);
+  check(upload, { 'uploaded to storage': (r) => r.status === 204 || r.status === 200 });
 
   const complete = http.post(`${BASE_URL}/api/v1/uploads/${uploadId}/complete`, null, {
     headers: { Cookie: cookie },

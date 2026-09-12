@@ -6,13 +6,15 @@ import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
 import com.shortvideo.video.api.VideoDraft;
 import com.shortvideo.video.api.VideoDraftRegistrar;
-import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
+import io.minio.PostPolicy;
 import io.minio.StatObjectArgs;
 import io.minio.StatObjectResponse;
 import io.minio.errors.ErrorResponseException;
-import io.minio.http.Method;
 import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,23 +30,33 @@ public class UploadService {
     private static final long DEFAULT_MIN_BYTES = 1;
     private static final long DEFAULT_MAX_BYTES = 500L * 1024 * 1024;
 
+    /**
+     * Generous for a person — nobody legitimately uploads five videos at once from
+     * a browser — and low enough that opening sessions in a loop stops being a way
+     * to accumulate write allowance against the bucket.
+     */
+    private static final int MAX_OPEN_SESSIONS_PER_ACCOUNT = 5;
+
     private final UploadJpaRepository repository;
     private final OutboxWriter outboxWriter;
     private final VideoDraftRegistrar videoDraftRegistrar;
     private final MinioClient minioClient;
     private final String bucket;
+    private final String minioEndpoint;
 
     public UploadService(
             UploadJpaRepository repository,
             OutboxWriter outboxWriter,
             VideoDraftRegistrar videoDraftRegistrar,
             MinioClient minioClient,
-            @Value("${shortvideo.minio.bucket}") String bucket) {
+            @Value("${shortvideo.minio.bucket}") String bucket,
+            @Value("${shortvideo.minio.endpoint}") String minioEndpoint) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDraftRegistrar = videoDraftRegistrar;
         this.minioClient = minioClient;
         this.bucket = bucket;
+        this.minioEndpoint = minioEndpoint;
     }
 
     /**
@@ -53,8 +65,20 @@ public class UploadService {
      * 7.1).
      */
     @Transactional
-    public UploadSessionCreated createSession(String accountId) {
-        VideoDraft draft = videoDraftRegistrar.createDraft(accountId);
+    public UploadSessionCreated createSession(String accountId, String title, String description) {
+        // The per-object size cap in the presigned policy bounds one upload; it does
+        // not bound how many an account may have in flight. Without this, opening
+        // sessions in a loop is an unbounded write allowance against the bucket, and
+        // each one also creates a video draft row.
+        UUID owner = UUID.fromString(accountId);
+        long open = repository.countByAccountIdAndStatusAndExpiresAtAfter(
+                owner, UploadStatus.PENDING, Instant.now());
+        if (open >= MAX_OPEN_SESSIONS_PER_ACCOUNT) {
+            throw new UploadExceptions.TooManyOpenUploads(
+                    "You already have " + open + " uploads in progress. Finish or abandon one before starting another.");
+        }
+
+        VideoDraft draft = videoDraftRegistrar.createDraft(accountId, title, description);
 
         UUID uploadId = UUID.randomUUID();
         String objectKey = "uploads/" + accountId + "/" + uploadId + "/original";
@@ -63,15 +87,20 @@ public class UploadService {
         UploadSessionEntity session = new UploadSessionEntity(
                 uploadId,
                 UUID.fromString(draft.videoId()),
-                UUID.fromString(accountId),
+                owner,
                 objectKey,
                 DEFAULT_MIN_BYTES,
                 DEFAULT_MAX_BYTES,
                 expiresAt);
         repository.saveAndFlush(session);
 
-        String uploadUrl = presign(objectKey);
-        return new UploadSessionCreated(uploadId.toString(), draft.videoId(), uploadUrl, expiresAt);
+        return new UploadSessionCreated(
+                uploadId.toString(),
+                draft.videoId(),
+                uploadEndpoint(),
+                presignPost(objectKey, DEFAULT_MAX_BYTES),
+                DEFAULT_MAX_BYTES,
+                expiresAt);
     }
 
     /**
@@ -139,17 +168,35 @@ public class UploadService {
         return toView(session);
     }
 
-    private String presign(String objectKey) {
+    /**
+     * A presigned {@code PUT} places no ceiling on what the client uploads: the
+     * {@link #DEFAULT_MAX_BYTES} check in {@link #complete} runs only after the
+     * bytes are already in the object store, and a client that simply never calls
+     * complete is never checked at all. A presigned POST policy carries a
+     * {@code content-length-range} condition that MinIO enforces at write time, so
+     * an oversized body is rejected by the object store rather than accepted and
+     * audited later.
+     *
+     * @return the form fields the client must post, including the policy. The
+     *     browser sends a multipart form to {@link #uploadEndpoint()} rather than
+     *     PUTting the raw file.
+     */
+    private Map<String, String> presignPost(String objectKey, long maxBytes) {
         try {
-            return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
-                    .method(Method.PUT)
-                    .bucket(bucket)
-                    .object(objectKey)
-                    .expiry(URL_EXPIRY_SECONDS)
-                    .build());
+            PostPolicy policy = new PostPolicy(bucket, ZonedDateTime.now().plusSeconds(URL_EXPIRY_SECONDS));
+            policy.addEqualsCondition("key", objectKey);
+            policy.addContentLengthRangeCondition(DEFAULT_MIN_BYTES, maxBytes);
+            Map<String, String> formData = new LinkedHashMap<>(minioClient.getPresignedPostFormData(policy));
+            formData.put("key", objectKey);
+            return formData;
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to presign upload URL", e);
+            throw new IllegalStateException("Failed to presign upload policy", e);
         }
+    }
+
+    /** Where the presigned form is posted; the bucket is addressed path-style. */
+    private String uploadEndpoint() {
+        return minioEndpoint.replaceAll("/+$", "") + "/" + bucket;
     }
 
     private long statSize(String objectKey) {
