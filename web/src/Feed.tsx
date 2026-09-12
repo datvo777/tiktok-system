@@ -276,21 +276,25 @@ export function Feed() {
           </div>
         )}
 
-        {items.map((item, i) => (
-          <FeedSlide
-            key={item.videoId}
-            item={item}
-            isActive={i === activeIndex}
-            // The next slide opens its session and buffers its first segments
-            // while the current one is still playing. Without it, the next
-            // video only started loading once the viewer had already scrolled
-            // to it -- request, HLS attach, first segment -- which is the gap
-            // that makes a feed feel slow.
-            preload={i === activeIndex + 1}
-            muted={muted}
-            onToggleMuted={toggleMuted}
-          />
-        ))}
+        {items.map((item, i) =>
+          Math.abs(i - activeIndex) <= RENDER_RADIUS ? (
+            <FeedSlide
+              key={item.videoId}
+              item={item}
+              isActive={i === activeIndex}
+              // The next slide opens its session and buffers its first segments
+              // while the current one is still playing. Without it, the next
+              // video only started loading once the viewer had already scrolled
+              // to it -- request, HLS attach, first segment -- which is the gap
+              // that makes a feed feel slow.
+              preload={i === activeIndex + 1}
+              muted={muted}
+              onToggleMuted={toggleMuted}
+            />
+          ) : (
+            <FeedSlidePlaceholder key={item.videoId} item={item} />
+          ),
+        )}
       </div>
 
       {items.length > 1 && (
@@ -317,6 +321,17 @@ export function Feed() {
   );
 }
 
+/**
+ * How many slides on each side of the active one stay fully mounted -- video
+ * element, HLS session, per-slide queries, event listeners. A long scroll used
+ * to keep every slide the viewer had ever passed alive in the DOM (an unbounded
+ * `<video>` plus three queries per item), so a session of a few hundred videos
+ * grew the page linearly forever. Slides outside this radius fall back to a
+ * poster-only placeholder that keeps the same height, so the scroll-snap math
+ * elsewhere (index * clientHeight) is unaffected.
+ */
+const RENDER_RADIUS = 3;
+
 /** Window a second tap has to land in to count as a double-tap. */
 const DOUBLE_TAP_MS = 220;
 
@@ -326,6 +341,24 @@ const DOUBLE_TAP_MS = 220;
  * short enough that a genuine watch of a six-second clip still registers.
  */
 const VIEW_THRESHOLD_MS = 3000;
+
+/**
+ * Stands in for a slide outside the render window: same outer box (so scroll
+ * position stays a simple index * clientHeight) but no video element, no HLS
+ * session, and none of `FeedSlide`'s per-item queries -- just a poster image,
+ * which is already fetched for every slide.
+ */
+function FeedSlidePlaceholder({ item }: { item: FeedItem }) {
+  return (
+    <div className="feed-slide" data-testid={`feed-card-${item.videoId}`}>
+      <div className="slide-player">
+        <img className="slide-video" src={posterUrl(item.videoId)} alt="" loading="lazy" decoding="async" />
+        <div className="slide-scrim-top" />
+        <div className="slide-scrim" />
+      </div>
+    </div>
+  );
+}
 
 function FeedSlide({
   item,
