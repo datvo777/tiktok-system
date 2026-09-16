@@ -32,7 +32,22 @@ services:
   redis:
     image: redis:7.4.2-alpine
     container_name: sv-redis
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # No persistence: Redis here is acceleration only, Postgres is authoritative
+    # (brief section 16, Rule 12) and every cached entry is rebuilt from it.
+    # maxmemory-policy=allkeys-lru, not noeviction (the server default): under
+    # memory pressure Redis should silently evict the least-recently-used entry
+    # rather than start refusing writes. Evicting a revocation entry is safe —
+    # the deny check falls back to Postgres on a cache miss — so there is no
+    # safety reason to keep every entry forever; capacity pressure is the only
+    # reason to ever drop one, never a TTL (no safety TTL, same rule).
+    command:
+      [
+        "redis-server",
+        "--save", "",
+        "--appendonly", "no",
+        "--maxmemory", "256mb",
+        "--maxmemory-policy", "allkeys-lru",
+      ]
     ports:
       - "6379:6379"
     healthcheck:
