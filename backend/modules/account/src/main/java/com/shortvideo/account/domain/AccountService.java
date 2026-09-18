@@ -15,6 +15,7 @@ import com.shortvideo.shared.revocation.DurableRevocationWriter;
 import com.shortvideo.shared.revocation.RevocationClearCommand;
 import com.shortvideo.shared.revocation.RevocationCommand;
 import com.shortvideo.shared.revocation.RevocationSubjects;
+import com.shortvideo.shared.security.CredentialFreshnessCache;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
@@ -32,6 +33,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
@@ -55,6 +58,7 @@ public class AccountService implements AccountDirectory {
     private final PasswordEncoder passwordEncoder;
     private final OutboxWriter outboxWriter;
     private final DurableRevocationWriter revocationWriter;
+    private final CredentialFreshnessCache credentialFreshnessCache;
     private final AdminActionRecorder auditRecorder;
     private final TransactionTemplate transactions;
 
@@ -63,12 +67,14 @@ public class AccountService implements AccountDirectory {
             PasswordEncoder passwordEncoder,
             OutboxWriter outboxWriter,
             DurableRevocationWriter revocationWriter,
+            CredentialFreshnessCache credentialFreshnessCache,
             AdminActionRecorder auditRecorder,
             PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.passwordEncoder = passwordEncoder;
         this.outboxWriter = outboxWriter;
         this.revocationWriter = revocationWriter;
+        this.credentialFreshnessCache = credentialFreshnessCache;
         this.auditRecorder = auditRecorder;
         this.transactions = new TransactionTemplate(transactionManager);
     }
@@ -319,7 +325,15 @@ public class AccountService implements AccountDirectory {
             throw new AccountExceptions.InvalidCredentials("Current password is incorrect");
         }
         account.changePassword(passwordEncoder.encode(newPassword));
-        repository.saveAndFlush(account);
+        AccountEntity saved = repository.saveAndFlush(account);
+
+        // Every session token minted before this moment must stop working — the
+        // DB row (just committed above, in this same transaction as the password
+        // hash) is the source of truth; the Redis cache is only updated afterwards,
+        // write-through, so JwtAuthenticationFilter's fast path picks it up
+        // immediately instead of waiting out its own TTL.
+        Instant changedAt = saved.getPasswordChangedAt();
+        afterCommit(() -> credentialFreshnessCache.put(accountId, changedAt));
     }
 
     @Override
@@ -374,6 +388,16 @@ public class AccountService implements AccountDirectory {
                 .filter(role -> !role.isEmpty())
                 .map(role -> role.toUpperCase(Locale.ROOT))
                 .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /** Runs {@code action} once this transaction commits — never if it rolls back. */
+    private void afterCommit(Runnable action) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private void appendStateEvent(AccountEntity account, String eventType, String reason) {

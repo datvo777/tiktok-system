@@ -9,7 +9,9 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -37,7 +39,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <li>the account must not be revoked, so an admin suspension takes effect on
  *       the next request instead of after up to a full token TTL. This mirrors
  *       the authority order the media gateway already applies — Redis deny fast
- *       path, then the durable PostgreSQL record.
+ *       path, then the durable PostgreSQL record;
+ *   <li>the token must have been issued at or after the account's last password
+ *       change, so changing a password actually ends every session minted with
+ *       the old credential instead of leaving them valid for the rest of their
+ *       TTL.
  * </ul>
  *
  * <p>Rule 9 applies to the durable check: if PostgreSQL cannot answer, the request
@@ -54,18 +60,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final SessionTokenDenyList denyList;
     private final RevocationCache revocationCache;
     private final DurableRevocationReader revocationReader;
+    private final CredentialFreshnessCache credentialFreshnessCache;
+    private final CredentialFreshnessReader credentialFreshnessReader;
 
     public JwtAuthenticationFilter(
             JwtService jwtService,
             SessionCookies sessionCookies,
             SessionTokenDenyList denyList,
             RevocationCache revocationCache,
-            DurableRevocationReader revocationReader) {
+            DurableRevocationReader revocationReader,
+            CredentialFreshnessCache credentialFreshnessCache,
+            CredentialFreshnessReader credentialFreshnessReader) {
         this.jwtService = jwtService;
         this.sessionCookieName = sessionCookies.sessionCookieName();
         this.denyList = denyList;
         this.revocationCache = revocationCache;
         this.revocationReader = revocationReader;
+        this.credentialFreshnessCache = credentialFreshnessCache;
+        this.credentialFreshnessReader = credentialFreshnessReader;
     }
 
     @Override
@@ -119,7 +131,36 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             log.warn("Revocation state unavailable; refusing to authenticate", e);
             return false;
         }
+        try {
+            if (isStaleAgainstPasswordChange(account, request)) {
+                return false;
+            }
+        } catch (DataAccessException e) {
+            log.warn("Credential-freshness state unavailable; refusing to authenticate", e);
+            return false;
+        }
         return true;
+    }
+
+    /** @return true when the token predates the account's last password change. */
+    private boolean isStaleAgainstPasswordChange(AuthenticatedAccount account, HttpServletRequest request) {
+        Optional<Instant> cached = credentialFreshnessCache.get(account.accountId());
+        Instant changedAt;
+        if (cached.isPresent()) {
+            changedAt = cached.get();
+        } else {
+            // Cache miss (expired TTL, or Redis unreachable): the durable row is
+            // always consulted — a miss here is never itself a reason to allow.
+            changedAt = credentialFreshnessReader
+                    .passwordChangedAt(account.accountId())
+                    .orElse(Instant.EPOCH);
+            credentialFreshnessCache.put(account.accountId(), changedAt);
+        }
+        if (account.issuedAt().isBefore(changedAt)) {
+            log.debug("Rejected token issued before the last password change on {}", request.getRequestURI());
+            return true;
+        }
+        return false;
     }
 
     private String resolveToken(HttpServletRequest request) {

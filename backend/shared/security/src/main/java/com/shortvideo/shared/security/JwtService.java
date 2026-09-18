@@ -127,8 +127,13 @@ public class JwtService {
                 throw new InvalidTokenException("Token has no id");
             }
 
+            Date issuedAt = claims.getIssuedAt();
+            if (issuedAt == null) {
+                throw new InvalidTokenException("Token has no issued-at claim");
+            }
+
             return new AuthenticatedAccount(
-                    subject, readRoles(claims), tokenId, claims.getExpiration().toInstant());
+                    subject, readRoles(claims), tokenId, issuedAt.toInstant(), claims.getExpiration().toInstant());
         } catch (JwtException | IllegalArgumentException e) {
             throw new InvalidTokenException("Token rejected: " + e.getMessage(), e);
         }

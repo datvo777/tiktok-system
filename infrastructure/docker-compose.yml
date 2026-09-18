@@ -32,14 +32,18 @@ services:
   redis:
     image: redis:7.4.2-alpine
     container_name: sv-redis
-    # No persistence: Redis here is acceleration only, Postgres is authoritative
-    # (brief section 16, Rule 12) and every cached entry is rebuilt from it.
+    # No persistence: several keys here (session deny-list, rate limiter, feed
+    # cache) are pure TTL caches and fine to lose on restart. Revocation entries
+    # (RevocationCache) are the one namespace that must never carry a TTL — a
+    # deny entry expiring on its own would silently re-permit a video/account
+    # nobody re-approved (brief section 16, Rule 12) — so they are rebuilt from
+    # Postgres on startup and reconciled periodically instead.
+    #
     # maxmemory-policy=allkeys-lru, not noeviction (the server default): under
-    # memory pressure Redis should silently evict the least-recently-used entry
-    # rather than start refusing writes. Evicting a revocation entry is safe —
-    # the deny check falls back to Postgres on a cache miss — so there is no
-    # safety reason to keep every entry forever; capacity pressure is the only
-    # reason to ever drop one, never a TTL (no safety TTL, same rule).
+    # memory pressure Redis should evict the least-recently-used key rather than
+    # start refusing writes. This is safe even for the un-TTL'd revocation keys,
+    # since RevocationCache.isDenied falls back to the durable Postgres check on
+    # any cache miss — eviction only costs a slower deny, never a wrong one.
     command:
       [
         "redis-server",

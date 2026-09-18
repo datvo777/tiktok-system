@@ -58,6 +58,14 @@ public class AccountEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * When the password hash was last set. A session token issued before this
+     * moment is stale and must be rejected regardless of its own expiry — see
+     * {@code CredentialFreshnessReader}.
+     */
+    @Column(name = "password_changed_at", nullable = false)
+    private Instant passwordChangedAt;
+
     protected AccountEntity() {}
 
     public AccountEntity(
@@ -73,6 +81,7 @@ public class AccountEntity {
         this.state = AccountState.ACTIVE;
         this.createdAt = now;
         this.updatedAt = now;
+        this.passwordChangedAt = now;
     }
 
     public void transitionTo(AccountState next) {
@@ -120,8 +129,10 @@ public class AccountEntity {
     }
 
     public void changePassword(String newPasswordHash) {
+        Instant now = Instant.now();
         this.passwordHash = newPasswordHash;
-        this.updatedAt = Instant.now();
+        this.passwordChangedAt = now;
+        this.updatedAt = now;
     }
 
     public UUID getAccountId() { return accountId; }
@@ -136,4 +147,5 @@ public class AccountEntity {
     public long getAggregateVersion() { return aggregateVersion; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public Instant getPasswordChangedAt() { return passwordChangedAt; }
 }

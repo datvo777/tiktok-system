@@ -2,6 +2,8 @@ package com.shortvideo.app.config;
 
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
+import com.shortvideo.shared.security.CredentialFreshnessCache;
+import com.shortvideo.shared.security.CredentialFreshnessReader;
 import com.shortvideo.shared.security.JwtAuthenticationFilter;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.SessionCookies;
@@ -38,9 +40,17 @@ public class SecurityConfig {
             SessionCookies sessionCookies,
             SessionTokenDenyList denyList,
             RevocationCache revocationCache,
-            DurableRevocationReader revocationReader) {
+            DurableRevocationReader revocationReader,
+            CredentialFreshnessCache credentialFreshnessCache,
+            CredentialFreshnessReader credentialFreshnessReader) {
         return new JwtAuthenticationFilter(
-                jwtService, sessionCookies, denyList, revocationCache, revocationReader);
+                jwtService,
+                sessionCookies,
+                denyList,
+                revocationCache,
+                revocationReader,
+                credentialFreshnessCache,
+                credentialFreshnessReader);
     }
 
     /**
