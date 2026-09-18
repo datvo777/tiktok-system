@@ -30,6 +30,8 @@ import java.util.Optional;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -41,6 +43,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory {
 
+    private static final Logger log = LoggerFactory.getLogger(VideoService.class);
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "video";
     private static final List<String> DEFAULT_RENDITIONS = List.of("720p");
@@ -377,6 +380,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         // Owner-only (brief section 12.3): processing status is not a public
         // read model. Public discovery is the Feed module's job (Milestone 4).
         if (!video.getOwnerAccountId().toString().equals(callerAccountId)) {
+            log.debug("Video {} requested by non-owner {} (owner is {})",
+                    videoId, callerAccountId, video.getOwnerAccountId());
             throw new VideoExceptions.VideoNotFound("No such video");
         }
         return toView(video);

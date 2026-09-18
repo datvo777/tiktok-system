@@ -16,6 +16,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SocialService implements SocialDirectory {
 
+    private static final Logger log = LoggerFactory.getLogger(SocialService.class);
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "social";
 
@@ -252,7 +255,10 @@ public class SocialService implements SocialDirectory {
         accountDirectory
                 .find(followeeId)
                 .filter(AccountView::isEligible)
-                .orElseThrow(() -> new SocialExceptions.CreatorNotFound("No such creator"));
+                .orElseThrow(() -> {
+                    log.debug("Follow attempted on ineligible/suspended account {}", followeeId);
+                    return new SocialExceptions.CreatorNotFound("No such creator");
+                });
         if (repository.follow(followerId, followeeId)) {
             append(EventTypes.SOCIAL_CREATOR_FOLLOWED, new SocialEvents.CreatorFollowed(followerId, followeeId));
         }
@@ -274,7 +280,10 @@ public class SocialService implements SocialDirectory {
         AccountView account = accountDirectory
                 .find(accountId)
                 .filter(AccountView::isEligible)
-                .orElseThrow(() -> new SocialExceptions.CreatorNotFound("No such creator"));
+                .orElseThrow(() -> {
+                    log.debug("Creator profile requested for ineligible/suspended account {}", accountId);
+                    return new SocialExceptions.CreatorNotFound("No such creator");
+                });
         return new CreatorProfileView(
                 account.accountId(),
                 account.displayName(),

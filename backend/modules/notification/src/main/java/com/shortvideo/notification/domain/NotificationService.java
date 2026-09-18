@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class NotificationService {
 
+    private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "notification";
 
@@ -72,6 +75,8 @@ public class NotificationService {
                 .orElseThrow(() -> new NotificationExceptions.NotificationNotFound("No such notification"));
         if (!entity.getRecipientAccountId().toString().equals(callerAccountId)) {
             // Same response as a missing notification: do not confirm existence to a non-recipient.
+            log.debug("Notification {} requested by non-recipient {} (recipient is {})",
+                    notificationId, callerAccountId, entity.getRecipientAccountId());
             throw new NotificationExceptions.NotificationNotFound("No such notification");
         }
         entity.markRead();
