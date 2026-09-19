@@ -107,13 +107,30 @@ components:
   schemas:
     CreateUploadResponse:
       type: object
-      required: [uploadId, videoId, uploadUrl, expiresAt]
+      required: [uploadId, videoId, uploadUrl, formFields, maxBytes, expiresAt]
       properties:
         uploadId: { type: string, format: uuid }
         videoId: { type: string, format: uuid }
         uploadUrl:
           type: string
-          description: Presigned MinIO PUT URL, 15-minute expiry. Never a processed/ read URL (Rule 18).
+          description: >-
+            Endpoint for a presigned multipart POST, 15-minute expiry. Never a
+            processed/ read URL (Rule 18). A presigned POST rather than a PUT
+            because the policy carries a content-length-range condition the
+            object store enforces at write time; a PUT has no size ceiling, so an
+            oversized body was stored first and only rejected at completion — and
+            never rejected at all if the client simply skipped completion.
+        formFields:
+          type: object
+          additionalProperties: { type: string }
+          description: >-
+            Signed policy fields. Send all of them as form parts BEFORE the file
+            part; MinIO rejects the request ("the name of the uploaded key is
+            missing") if `key` arrives after the file.
+        maxBytes:
+          type: integer
+          format: int64
+          description: The cap the policy encodes, so a client can reject an oversized file up front.
         expiresAt: { type: string, format: date-time }
 
     UploadResponse:

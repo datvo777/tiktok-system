@@ -135,7 +135,7 @@ class UploadTranscodeFlowIT {
 
         // 1. Create the upload session; the video draft is created in the same
         // transaction (brief section 7.1).
-        ResponseEntity<Map> created = post("/api/v1/uploads", null, auth);
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), auth);
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String uploadId = (String) created.getBody().get("uploadId");
         String videoId = (String) created.getBody().get("videoId");
@@ -219,7 +219,7 @@ class UploadTranscodeFlowIT {
         register(email, "correct-horse-battery");
         HttpHeaders auth = bearer((String) login(email, "correct-horse-battery").getBody().get("token"));
 
-        ResponseEntity<Map> created = post("/api/v1/uploads", null, auth);
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), auth);
         String uploadId = (String) created.getBody().get("uploadId");
         String videoId = (String) created.getBody().get("videoId");
         String uploadUrl = (String) created.getBody().get("uploadUrl");

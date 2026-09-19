@@ -1,0 +1,16 @@
+{
+  "name": "short-video-clients",
+  "private": true,
+  "version": "0.1.0",
+  "//": "npm workspaces, so the two clients can share one copy of the HTTP layer instead of maintaining two identical ones.",
+  "workspaces": [
+    "shared",
+    "web",
+    "admin-web"
+  ],
+  "scripts": {
+    "lint": "npm run lint --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  }
+}

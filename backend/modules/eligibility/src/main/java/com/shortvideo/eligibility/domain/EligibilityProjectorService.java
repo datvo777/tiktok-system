@@ -6,6 +6,7 @@ import com.shortvideo.eligibility.api.EligibilityDirectory;
 import com.shortvideo.eligibility.api.VideoEligibilityView;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
                 sourceVersion,
                 Timestamp.from(Instant.now()));
         repository.recomputeEligibility(videoId);
+    }
+
+    /** Never affects {@code is_video_eligible} (Rule 12), so unlike the other three sources this skips recompute. */
+    @Transactional
+    void applyMetadata(String videoId, String creatorId, String title, String description, long sourceVersion) {
+        repository.upsertMetadata(videoId, creatorId, title, description, sourceVersion, Timestamp.from(Instant.now()));
     }
 
     @Transactional
@@ -82,6 +89,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
 
     @Override
     @Transactional(readOnly = true)
+    public List<VideoEligibilityView> findVideoEligibilities(Collection<String> videoIds) {
+        return repository.findVideos(videoIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<AccountEligibilityView> findAccountEligibility(String accountId) {
         return repository.findAccount(accountId);
     }
@@ -90,6 +103,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
     @Transactional(readOnly = true)
     public List<VideoEligibilityView> findEligibleVideos(int limit) {
         return repository.findEligible(limit);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<VideoEligibilityView> findEligibleVideosWithEligibleCreators(int limit) {
+        return repository.findEligibleWithEligibleCreator(limit);
     }
 
     @Override

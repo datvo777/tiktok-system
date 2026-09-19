@@ -29,6 +29,10 @@
         </dependency>
         <dependency>
             <groupId>com.shortvideo</groupId>
+            <artifactId>eligibility</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortvideo</groupId>
             <artifactId>security</artifactId>
         </dependency>
         <dependency>
