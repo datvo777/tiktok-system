@@ -1,9 +1,7 @@
 package com.shortvideo.shared.security;
 
-import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 /**
@@ -44,11 +42,11 @@ public class LoginRateLimiter {
     private static final String IP_PREFIX = "login:ip:";
     private static final String ACCOUNT_PREFIX = "login:account:";
 
-    private final StringRedisTemplate redis;
+    private final IpRateLimiter counter;
     private final LoginRateLimitProperties properties;
 
-    public LoginRateLimiter(StringRedisTemplate redis, LoginRateLimitProperties properties) {
-        this.redis = redis;
+    public LoginRateLimiter(IpRateLimiter counter, LoginRateLimitProperties properties) {
+        this.counter = counter;
         this.properties = properties;
     }
 
@@ -62,12 +60,12 @@ public class LoginRateLimiter {
         if (!properties.isEnabled()) {
             return;
         }
-        long ipAttempts = increment(IP_PREFIX + clientIp, properties.getIpWindow());
+        long ipAttempts = counter.increment(IP_PREFIX + clientIp, properties.getIpWindow());
         if (ipAttempts > properties.getMaxAttemptsPerIp()) {
             log.warn("Throttled login attempts from {}", clientIp);
             throw new TooManyLoginAttemptsException(properties.getIpWindow());
         }
-        Long accountFailures = count(ACCOUNT_PREFIX + email);
+        Long accountFailures = counter.peek(ACCOUNT_PREFIX + email);
         if (accountFailures != null && accountFailures >= properties.getMaxFailuresPerAccount()) {
             throw new TooManyLoginAttemptsException(properties.getAccountWindow());
         }
@@ -76,7 +74,7 @@ public class LoginRateLimiter {
     /** Counts one failed verification against the account. */
     public void recordFailure(String email) {
         if (properties.isEnabled()) {
-            increment(ACCOUNT_PREFIX + email, properties.getAccountWindow());
+            counter.increment(ACCOUNT_PREFIX + email, properties.getAccountWindow());
         }
     }
 
@@ -86,41 +84,8 @@ public class LoginRateLimiter {
      * window.
      */
     public void recordSuccess(String email) {
-        if (!properties.isEnabled()) {
-            return;
-        }
-        try {
-            redis.delete(ACCOUNT_PREFIX + email);
-        } catch (RuntimeException e) {
-            log.debug("Could not clear login failure count for {}: {}", email, e.getMessage());
-        }
-    }
-
-    /** @return the count after incrementing, or 0 when Redis is unreachable (fail open). */
-    private long increment(String key, Duration window) {
-        try {
-            Long count = redis.opsForValue().increment(key);
-            if (count != null && count == 1L) {
-                // First hit in this window starts the clock. Setting the expiry on
-                // every hit would slide the window forward indefinitely under
-                // sustained load and the key would never expire.
-                redis.expire(key, window);
-            }
-            return count == null ? 0 : count;
-        } catch (RuntimeException e) {
-            log.warn("Login rate limiter unavailable; allowing attempt: {}", e.getMessage());
-            return 0;
-        }
-    }
-
-    private Long count(String key) {
-        try {
-            String value = redis.opsForValue().get(key);
-            return value == null ? null : Long.parseLong(value);
-        } catch (RuntimeException e) {
-            // Covers both an unreachable Redis and a non-numeric value; either way
-            // there is no usable count, and this limiter fails open.
-            return null;
+        if (properties.isEnabled()) {
+            counter.clear(ACCOUNT_PREFIX + email);
         }
     }
 }

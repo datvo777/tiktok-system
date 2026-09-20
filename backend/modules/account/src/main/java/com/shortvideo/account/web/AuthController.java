@@ -5,6 +5,7 @@ import com.shortvideo.account.domain.AccountEntity;
 import com.shortvideo.account.domain.AccountExceptions;
 import com.shortvideo.account.domain.AccountService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.ClientIpResolver;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.LoginRateLimiter;
 import com.shortvideo.shared.security.SessionCookies;
@@ -13,7 +14,6 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -33,7 +33,7 @@ public class AuthController {
     private final SessionCookies sessionCookies;
     private final SessionTokenDenyList denyList;
     private final LoginRateLimiter rateLimiter;
-    private final boolean trustForwardedFor;
+    private final ClientIpResolver clientIpResolver;
 
     public AuthController(
             AccountService accountService,
@@ -41,13 +41,13 @@ public class AuthController {
             SessionCookies sessionCookies,
             SessionTokenDenyList denyList,
             LoginRateLimiter rateLimiter,
-            @Value("${shortvideo.login-rate-limit.trust-forwarded-for:false}") boolean trustForwardedFor) {
+            ClientIpResolver clientIpResolver) {
         this.accountService = accountService;
         this.jwtService = jwtService;
         this.sessionCookies = sessionCookies;
         this.denyList = denyList;
         this.rateLimiter = rateLimiter;
-        this.trustForwardedFor = trustForwardedFor;
+        this.clientIpResolver = clientIpResolver;
     }
 
     /**
@@ -62,7 +62,7 @@ public class AuthController {
         String email = request.email();
         // Checked before authenticate(), so a throttled attempt never reaches the
         // ~100ms BCrypt comparison that makes this endpoint expensive to serve.
-        rateLimiter.checkAllowed(clientIp(httpRequest), email);
+        rateLimiter.checkAllowed(clientIpResolver.resolve(httpRequest), email);
 
         AccountEntity account;
         try {
@@ -80,24 +80,6 @@ public class AuthController {
                 .header(HttpHeaders.SET_COOKIE, sessionCookies.session(issued.token(), issued.expiresAt()).toString())
                 .body(new AccountDtos.LoginResponse(
                         account.getAccountId().toString(), issued.token(), issued.expiresAt()));
-    }
-
-    /**
-     * {@code X-Forwarded-For} is only consulted when a trusted proxy is configured,
-     * because the header is client-supplied: honouring it unconditionally would let
-     * anyone reset their own rate-limit bucket by varying one header, which is
-     * worse than having no limiter at all. With no proxy configured the socket
-     * address is the only thing a caller cannot forge.
-     */
-    private String clientIp(HttpServletRequest request) {
-        if (trustForwardedFor) {
-            String forwarded = request.getHeader("X-Forwarded-For");
-            if (forwarded != null && !forwarded.isBlank()) {
-                // Left-most entry is the original client; the rest are proxies.
-                return forwarded.split(",")[0].trim();
-            }
-        }
-        return request.getRemoteAddr();
     }
 
     /**

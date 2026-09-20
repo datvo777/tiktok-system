@@ -4,8 +4,11 @@ import com.shortvideo.account.api.AccountView;
 import com.shortvideo.account.domain.AccountExceptions;
 import com.shortvideo.account.domain.AccountService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.ClientIpResolver;
+import com.shortvideo.shared.security.RegisterRateLimiter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.URI;
 import java.util.UUID;
@@ -28,15 +31,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class AccountController {
 
     private final AccountService accountService;
+    private final RegisterRateLimiter rateLimiter;
+    private final ClientIpResolver clientIpResolver;
 
-    public AccountController(AccountService accountService) {
+    public AccountController(
+            AccountService accountService, RegisterRateLimiter rateLimiter, ClientIpResolver clientIpResolver) {
         this.accountService = accountService;
+        this.rateLimiter = rateLimiter;
+        this.clientIpResolver = clientIpResolver;
     }
 
     @PostMapping
     @Operation(summary = "Register an account")
     public ResponseEntity<AccountDtos.AccountResponse> register(
-            @Valid @RequestBody AccountDtos.RegisterRequest request) {
+            @Valid @RequestBody AccountDtos.RegisterRequest request, HttpServletRequest httpRequest) {
+        // Checked before accountService.register(), so a throttled attempt never
+        // reaches the ~100ms BCrypt hash that makes this endpoint expensive to
+        // serve and — since existsByEmail runs after the hash — cheap to enumerate.
+        rateLimiter.checkAllowed(clientIpResolver.resolve(httpRequest));
         AccountView view = accountService.register(request.email(), request.password(), request.displayName());
         return ResponseEntity.created(URI.create("/api/v1/accounts/" + view.accountId()))
                 .body(AccountDtos.AccountResponse.from(view));

@@ -13,6 +13,7 @@ import com.shortvideo.publication.domain.PublicationExceptions;
 import com.shortvideo.report.domain.ReportExceptions;
 import com.shortvideo.search.domain.SearchUnavailableException;
 import com.shortvideo.shared.security.TooManyLoginAttemptsException;
+import com.shortvideo.shared.security.TooManyRegistrationAttemptsException;
 import com.shortvideo.social.domain.SocialExceptions;
 import com.shortvideo.upload.domain.UploadExceptions;
 import com.shortvideo.video.domain.VideoExceptions;
@@ -94,6 +95,20 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                         HttpStatus.TOO_MANY_REQUESTS,
                         "Too many attempts",
                         "Too many sign-in attempts. Wait a moment and try again."));
+    }
+
+    /**
+     * Raised before the password is hashed, so a throttled caller costs the
+     * server nothing. Retry-After tells a well-behaved client when to come back.
+     */
+    @ExceptionHandler(TooManyRegistrationAttemptsException.class)
+    public ResponseEntity<ProblemDetail> tooManyRegistrationAttempts(TooManyRegistrationAttemptsException e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Too many attempts",
+                        "Too many registration attempts. Wait a moment and try again."));
     }
 
     @ExceptionHandler(SearchUnavailableException.class)
