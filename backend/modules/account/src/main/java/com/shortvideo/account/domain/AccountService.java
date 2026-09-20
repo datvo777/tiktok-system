@@ -118,13 +118,25 @@ public class AccountService implements AccountDirectory {
                 appendStateEvent(saved, EventTypes.ACCOUNT_REGISTERED, "registration");
                 return toView(saved);
             } catch (DataIntegrityViolationException raceLost) {
-                // existsByEmail is check-then-act with no lock, so two concurrent
-                // registrations for one address both reach the insert.
-                // account_email_key correctly rejects the loser; without this it
-                // surfaces as a 500 while the identical sequential case answers 409.
+                // Both existsByEmail above and allocateHandle's own check are
+                // check-then-act with no lock, so two concurrent registrations can
+                // collide on either account_email_key or account_handle_key; without
+                // translating the constraint here, either race surfaces as a 500
+                // instead of the sequential case's 409/422.
+                if ("account_handle_key".equals(rootConstraintName(raceLost))) {
+                    throw new AccountExceptions.InvalidHandle("That username is taken");
+                }
                 throw new AccountExceptions.EmailAlreadyRegistered("Email is already registered");
             }
         });
+    }
+
+    private static String rootConstraintName(DataIntegrityViolationException ex) {
+        Throwable cause = ex.getMostSpecificCause();
+        if (cause instanceof org.hibernate.exception.ConstraintViolationException hibernateCause) {
+            return hibernateCause.getConstraintName();
+        }
+        return null;
     }
 
     /**
