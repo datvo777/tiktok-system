@@ -82,6 +82,11 @@ public final class Handles {
         return stripped.length() > MAX_LENGTH ? stripped.substring(0, MAX_LENGTH) : stripped;
     }
 
+    /** Whether {@code lower} is one of the platform's own reserved words (see {@link #RESERVED}). */
+    static boolean isReserved(String lower) {
+        return RESERVED.contains(lower);
+    }
+
     /**
      * Appends a numeric suffix, keeping the result inside {@link #MAX_LENGTH} by
      * trimming the stem rather than the suffix — the suffix is what makes it

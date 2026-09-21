@@ -228,16 +228,27 @@ public class AccountService implements AccountDirectory {
      * from reaching the database as an error.
      */
     private String allocateHandle(String stem) {
-        if (!repository.existsByHandleLower(stem)) {
+        if (isAvailable(stem)) {
             return stem;
         }
         for (int suffix = 2; suffix < 1000; suffix++) {
             String candidate = Handles.withSuffix(stem, suffix);
-            if (!repository.existsByHandleLower(candidate)) {
+            if (isAvailable(candidate)) {
                 return candidate;
             }
         }
         return "user" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    /**
+     * A candidate must be both unclaimed and not one of the platform's own
+     * reserved words — {@code allocateHandle} used to check only the former, so
+     * a display name of "Admin" could be auto-assigned {@code @admin} the moment
+     * nobody else held it, the same identity {@link Handles#normalise} refuses
+     * a person who types it by hand.
+     */
+    private boolean isAvailable(String handle) {
+        return !Handles.isReserved(handle) && !repository.existsByHandleLower(handle);
     }
 
     /**

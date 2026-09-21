@@ -100,4 +100,16 @@ class HandlesTest {
 
         assertThat(result).hasSize(30).endsWith("42");
     }
+
+    /**
+     * {@code allocateHandle} checks this directly (it cannot call
+     * {@link #normalise}, which also enforces shape and length on a stem that is
+     * already known-legal) so an auto-suggested handle is refused the same
+     * identities a typed-in one is.
+     */
+    @Test
+    void exposesReservationSeparatelyFromFullValidation() {
+        assertThat(Handles.isReserved("admin")).isTrue();
+        assertThat(Handles.isReserved("datvo")).isFalse();
+    }
 }
