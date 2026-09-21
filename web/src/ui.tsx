@@ -55,6 +55,52 @@ export function formatHandle(handle: string | null | undefined, fallbackId?: str
   return fallbackId ? `@${fallbackId.replace(/-/g, '').slice(0, 10)}` : '';
 }
 
+/**
+ * Same shape the server matches in `Mentions.java`: 3-30 word characters
+ * after an `@`, not preceded by a word character, `.` or `@` (so an email
+ * address is never mistaken for a mention), bounded on the right by a word
+ * boundary.
+ */
+const MENTION_TOKEN = /(?<![\w.@])@([A-Za-z0-9_]{3,30})\b/g;
+
+/** One piece of a comment body: plain text, or a mention linking to an account. */
+export type BodySegment = { text: string; accountId?: string };
+
+/**
+ * Splits a comment body into plain-text and mention segments.
+ *
+ * <p>Only highlights a token when it appears in `mentions` — the pairs the
+ * server actually resolved at write time — never merely because it is
+ * `@`-shaped. That is also what keeps a mention pointing at the right person
+ * after they rename: this matches the *literal handle text recorded when the
+ * comment was posted* against the (immutable) body, not the account's handle
+ * today, so the lookup still finds the span even though the two may have
+ * since diverged.
+ */
+export function splitMentions(
+  body: string,
+  mentions: readonly { handle: string; accountId: string }[],
+): BodySegment[] {
+  if (mentions.length === 0) return [{ text: body }];
+  const byHandle = new Map(mentions.map((m) => [m.handle.toLowerCase(), m.accountId]));
+
+  const segments: BodySegment[] = [];
+  let lastEnd = 0;
+  for (const match of body.matchAll(MENTION_TOKEN)) {
+    const handle = match[1];
+    const whole = match[0];
+    if (handle === undefined || match.index === undefined) continue;
+    const accountId = byHandle.get(handle.toLowerCase());
+    if (!accountId) continue;
+    const start = match.index;
+    if (start > lastEnd) segments.push({ text: body.slice(lastEnd, start) });
+    segments.push({ text: whole, accountId });
+    lastEnd = start + whole.length;
+  }
+  if (lastEnd < body.length) segments.push({ text: body.slice(lastEnd) });
+  return segments;
+}
+
 /** 1200 -> "1.2K": count labels have room for four characters, not four digits. */
 export function formatCount(value: number): string {
   if (value < 1000) return String(value);

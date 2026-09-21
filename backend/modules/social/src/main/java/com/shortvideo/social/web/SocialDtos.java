@@ -39,7 +39,7 @@ public final class SocialDtos {
             Instant createdAt,
             String parentCommentId,
             long replyCount,
-            List<String> mentionedAccountIds) {
+            List<MentionResponse> mentions) {
         public static CommentResponse from(CommentView view) {
             return from(view, null, null);
         }
@@ -55,7 +55,19 @@ public final class SocialDtos {
                     view.createdAt(),
                     view.parentCommentId(),
                     view.replyCount(),
-                    view.mentionedAccountIds());
+                    view.mentions().stream().map(MentionResponse::from).toList());
+        }
+    }
+
+    /**
+     * @param handle the literal text matched in the comment body at write time
+     *     (not necessarily the account's current handle) — a client matches
+     *     this against the body to find the span to highlight, then links it
+     *     to {@code accountId}.
+     */
+    public record MentionResponse(String handle, String accountId) {
+        static MentionResponse from(com.shortvideo.social.domain.CommentMention mention) {
+            return new MentionResponse(mention.handle(), mention.accountId());
         }
     }
 

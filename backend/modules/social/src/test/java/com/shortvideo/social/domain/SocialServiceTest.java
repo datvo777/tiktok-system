@@ -116,7 +116,7 @@ class SocialServiceTest {
 
         CommentView comment = service.comment(videoId, commenterId, "cam on @dat nhe!");
 
-        assertThat(comment.mentionedAccountIds()).containsExactly(mentionedId);
+        assertThat(comment.mentions()).containsExactly(new CommentMention("dat", mentionedId));
     }
 
     /** A mention that resolves to nobody is dropped rather than failing the comment. */
@@ -148,6 +148,6 @@ class SocialServiceTest {
 
         CommentView comment = service.comment(videoId, commenterId, "hey @nobody");
 
-        assertThat(comment.mentionedAccountIds()).isEmpty();
+        assertThat(comment.mentions()).isEmpty();
     }
 }

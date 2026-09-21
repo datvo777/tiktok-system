@@ -11,5 +11,5 @@ public record CommentView(
         Instant createdAt,
         String parentCommentId,
         long replyCount,
-        /** Account ids resolved from @handle mentions in the body at write time. */
-        List<String> mentionedAccountIds) {}
+        /** @handle mentions resolved from the body at write time, in first-appearance order. */
+        List<CommentMention> mentions) {}

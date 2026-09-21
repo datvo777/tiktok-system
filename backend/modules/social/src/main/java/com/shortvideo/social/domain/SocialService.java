@@ -145,15 +145,22 @@ public class SocialService implements SocialDirectory {
      * owner changes or gives it up, so re-parsing the raw {@code @}-mention text
      * on every read would let an old mention silently start pointing at whoever
      * holds that handle now (see {@link AccountDirectory#findAllByHandle}).
+     *
+     * <p>Keeps the literal matched handle alongside the resolved account id
+     * (rather than just the id) so a reader can find the exact span in the
+     * body again later without re-checking anyone's current handle, and
+     * iterates {@code handles} — not {@code resolved.values()} — to preserve
+     * the order the mentions first appeared in.
      */
-    private List<String> resolveMentions(String body) {
+    private List<CommentMention> resolveMentions(String body) {
         Set<String> handles = Mentions.parse(body);
         if (handles.isEmpty()) {
             return List.of();
         }
-        return accountDirectory.findAllByHandle(handles).values().stream()
-                .map(AccountView::accountId)
-                .distinct()
+        Map<String, AccountView> resolved = accountDirectory.findAllByHandle(handles);
+        return handles.stream()
+                .filter(resolved::containsKey)
+                .map(handle -> new CommentMention(handle, resolved.get(handle).accountId()))
                 .toList();
     }
 

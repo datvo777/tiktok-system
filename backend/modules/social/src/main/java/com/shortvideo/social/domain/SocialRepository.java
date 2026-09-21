@@ -39,8 +39,9 @@ class SocialRepository {
 
     private static final String ADD_COMMENT = """
             INSERT INTO social.comment
-                (comment_id, video_id, account_id, body, created_at, parent_comment_id, mentioned_account_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (comment_id, video_id, account_id, body, created_at, parent_comment_id,
+                 mentioned_account_ids, mentioned_handles)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     /**
@@ -58,7 +59,8 @@ class SocialRepository {
      * no way to know the list had been truncated.
      */
     private static final String LIST_COMMENTS = """
-            SELECT c.comment_id, c.video_id, c.account_id, c.body, c.created_at, c.mentioned_account_ids,
+            SELECT c.comment_id, c.video_id, c.account_id, c.body, c.created_at,
+                   c.mentioned_account_ids, c.mentioned_handles,
                    (SELECT count(*) FROM social.comment r
                      WHERE r.parent_comment_id = c.comment_id AND r.deleted_at IS NULL) AS reply_count
             FROM social.comment c
@@ -69,7 +71,8 @@ class SocialRepository {
             """;
 
     private static final String LIST_REPLIES = """
-            SELECT comment_id, video_id, account_id, body, created_at, parent_comment_id, mentioned_account_ids
+            SELECT comment_id, video_id, account_id, body, created_at, parent_comment_id,
+                   mentioned_account_ids, mentioned_handles
             FROM social.comment
             WHERE parent_comment_id = ? AND deleted_at IS NULL
               AND (?::timestamptz IS NULL OR (created_at, comment_id) > (?::timestamptz, ?::uuid))
@@ -258,10 +261,11 @@ class SocialRepository {
     }
 
     CommentView addComment(
-            String videoId, String accountId, String body, String parentCommentId, Collection<String> mentionedAccountIds) {
+            String videoId, String accountId, String body, String parentCommentId, List<CommentMention> mentions) {
         UUID commentId = UUID.randomUUID();
         Instant now = Instant.now();
-        UUID[] mentions = mentionedAccountIds.stream().map(UUID::fromString).toArray(UUID[]::new);
+        UUID[] mentionedIds = mentions.stream().map(m -> UUID.fromString(m.accountId())).toArray(UUID[]::new);
+        String[] mentionedHandles = mentions.stream().map(CommentMention::handle).toArray(String[]::new);
         jdbc.update(
                 ADD_COMMENT,
                 commentId,
@@ -270,22 +274,29 @@ class SocialRepository {
                 body,
                 Timestamp.from(now),
                 parentCommentId == null ? null : UUID.fromString(parentCommentId),
-                mentions);
-        return new CommentView(
-                commentId.toString(), videoId, accountId, body, now, parentCommentId, 0, List.copyOf(mentionedAccountIds));
+                mentionedIds,
+                mentionedHandles);
+        return new CommentView(commentId.toString(), videoId, accountId, body, now, parentCommentId, 0, mentions);
     }
 
-    private static List<String> readMentions(ResultSet rs) throws SQLException {
-        Array array = rs.getArray("mentioned_account_ids");
-        if (array == null) {
+    /**
+     * Zips the two parallel columns back into pairs. Same order, same length --
+     * both arrays are written from the same {@code List<CommentMention>} in
+     * {@link #addComment} and a comment is never edited afterwards.
+     */
+    private static List<CommentMention> readMentions(ResultSet rs) throws SQLException {
+        Array idArray = rs.getArray("mentioned_account_ids");
+        Array handleArray = rs.getArray("mentioned_handles");
+        if (idArray == null || handleArray == null) {
             return List.of();
         }
-        Object[] raw = (Object[]) array.getArray();
-        List<String> ids = new ArrayList<>(raw.length);
-        for (Object id : raw) {
-            ids.add(id.toString());
+        Object[] ids = (Object[]) idArray.getArray();
+        Object[] handles = (Object[]) handleArray.getArray();
+        List<CommentMention> mentions = new ArrayList<>(ids.length);
+        for (int i = 0; i < ids.length; i++) {
+            mentions.add(new CommentMention(handles[i].toString(), ids[i].toString()));
         }
-        return ids;
+        return mentions;
     }
 
     /**

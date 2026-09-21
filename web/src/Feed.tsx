@@ -48,7 +48,7 @@ import {
   VolumeOffIcon,
   VolumeOnIcon,
 } from './icons';
-import { Avatar, formatCount, formatHandle, relativeTime } from './ui';
+import { Avatar, formatCount, formatHandle, relativeTime, splitMentions } from './ui';
 import { creatorPath, navigate, shareUrl } from './router';
 import { useRequireAccount, useViewer } from './viewer';
 import { attachHls, detachHls } from './Upload';
@@ -1215,7 +1215,23 @@ function CommentRow({
             {relativeTime(comment.createdAt)}
           </span>
         </span>
-        <span className="comment-row-text">{comment.body}</span>
+        <span className="comment-row-text">
+          {splitMentions(comment.body, comment.mentions).map((segment, i) => {
+            const { accountId } = segment;
+            return accountId ? (
+              <button
+                key={i}
+                type="button"
+                className="comment-mention"
+                onClick={() => navigate(creatorPath(accountId))}
+              >
+                {segment.text}
+              </button>
+            ) : (
+              <span key={i}>{segment.text}</span>
+            );
+          })}
+        </span>
         <div className="comment-row-actions">
           {actions}
           {canDelete &&

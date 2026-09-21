@@ -458,6 +458,16 @@ export async function getVideoCounts(videoId: string): Promise<VideoCounts> {
   return request(`/api/v1/videos/${videoId}/counts`, (payload) => videoCountsSchema.parse('counts', payload));
 }
 
+const commentMentionSchema = s.object({
+  /**
+   * The literal @handle text matched in `body` when the comment was posted —
+   * not necessarily the account's handle today. Match this against `body` to
+   * find the span to highlight; navigate the click to `accountId`.
+   */
+  handle: s.string,
+  accountId: s.string,
+});
+
 const commentSchema = s.object({
   commentId: s.string,
   videoId: s.string,
@@ -470,8 +480,10 @@ const commentSchema = s.object({
   createdAt: s.string,
   parentCommentId: s.nullable(s.string),
   replyCount: s.number,
+  mentions: s.array(commentMentionSchema),
 });
 export type CommentResponse = Infer<typeof commentSchema>;
+export type CommentMention = Infer<typeof commentMentionSchema>;
 
 function parseComment(context: string, payload: unknown): CommentResponse {
   return commentSchema.parse(context, payload);

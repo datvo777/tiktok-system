@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { avatarHue, formatCount, formatHandle, relativeTime } from '../ui';
+import { avatarHue, formatCount, formatHandle, relativeTime, splitMentions } from '../ui';
 
 describe('formatCount', () => {
   it('keeps counts under a thousand exact', () => {
@@ -60,5 +60,53 @@ describe('identity helpers', () => {
 
   it('renders nothing when it has neither', () => {
     expect(formatHandle(null)).toBe('');
+  });
+});
+
+describe('splitMentions', () => {
+  it('returns the whole body as one segment when there are no mentions', () => {
+    expect(splitMentions('just a comment', [])).toEqual([{ text: 'just a comment' }]);
+  });
+
+  it('splits out a resolved mention as its own linked segment', () => {
+    expect(splitMentions('thanks @dat!', [{ handle: 'dat', accountId: 'acc-1' }])).toEqual([
+      { text: 'thanks ' },
+      { text: '@dat', accountId: 'acc-1' },
+      { text: '!' },
+    ]);
+  });
+
+  // Mirrors the server: the literal text typed at post time is what is
+  // matched, not the account's handle today, so a rename does not break an
+  // old mention's link.
+  it('matches by the recorded handle text, not by re-checking anyone live', () => {
+    const segments = splitMentions('hi @old_handle', [{ handle: 'old_handle', accountId: 'acc-1' }]);
+    expect(segments).toEqual([{ text: 'hi ' }, { text: '@old_handle', accountId: 'acc-1' }]);
+  });
+
+  it('leaves an @-shaped token unhighlighted when it is not in mentions', () => {
+    expect(splitMentions('hi @nobody', [{ handle: 'dat', accountId: 'acc-1' }])).toEqual([
+      { text: 'hi @nobody' },
+    ]);
+  });
+
+  it('does not treat an email address as a mention', () => {
+    expect(splitMentions('reach me at dat@example.com', [{ handle: 'dat', accountId: 'acc-1' }])).toEqual([
+      { text: 'reach me at dat@example.com' },
+    ]);
+  });
+
+  it('highlights several distinct mentions in one body', () => {
+    expect(
+      splitMentions('cc @dat and @linh_99', [
+        { handle: 'dat', accountId: 'acc-1' },
+        { handle: 'linh_99', accountId: 'acc-2' },
+      ]),
+    ).toEqual([
+      { text: 'cc ' },
+      { text: '@dat', accountId: 'acc-1' },
+      { text: ' and ' },
+      { text: '@linh_99', accountId: 'acc-2' },
+    ]);
   });
 });
