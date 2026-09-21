@@ -27,4 +27,18 @@ public interface AccountDirectory {
      * @return display names keyed by account id.
      */
     Map<String, AccountView> findAll(Collection<String> accountIds);
+
+    /**
+     * Resolves several {@code @handle} mentions in one query, e.g. parsed out of a
+     * comment body. Callers should resolve at write time and store the resulting
+     * account ids rather than re-resolving the raw handle text on every read: a
+     * handle is not reserved once its owner changes or gives it up (see
+     * {@code AccountService.changeHandle}), so a mention resolved at read time
+     * would silently start pointing at whoever holds that handle now.
+     *
+     * @param handles case-insensitive, without a leading {@code @}. A handle that
+     *     does not resolve is simply absent from the result.
+     * @return accounts keyed by the lower-cased handle that matched them.
+     */
+    Map<String, AccountView> findAllByHandle(Collection<String> handles);
 }

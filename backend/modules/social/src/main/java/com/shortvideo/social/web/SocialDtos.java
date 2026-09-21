@@ -38,7 +38,8 @@ public final class SocialDtos {
             String body,
             Instant createdAt,
             String parentCommentId,
-            long replyCount) {
+            long replyCount,
+            List<String> mentionedAccountIds) {
         public static CommentResponse from(CommentView view) {
             return from(view, null, null);
         }
@@ -53,7 +54,8 @@ public final class SocialDtos {
                     view.body(),
                     view.createdAt(),
                     view.parentCommentId(),
-                    view.replyCount());
+                    view.replyCount(),
+                    view.mentionedAccountIds());
         }
     }
 

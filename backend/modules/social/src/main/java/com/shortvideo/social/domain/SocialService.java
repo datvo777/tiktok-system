@@ -110,7 +110,7 @@ public class SocialService implements SocialDirectory {
     @Transactional
     public CommentView comment(String videoId, String accountId, String body) {
         String videoOwnerId = requireEligible(videoId).creatorId();
-        CommentView comment = repository.addComment(videoId, accountId, body, null);
+        CommentView comment = repository.addComment(videoId, accountId, body, null, resolveMentions(body));
         append(
                 EventTypes.SOCIAL_VIDEO_COMMENTED,
                 new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, comment.commentId()));
@@ -131,12 +131,30 @@ public class SocialService implements SocialDirectory {
                 .topLevelCommentAuthor(parentCommentId, videoId)
                 .orElseThrow(() -> new SocialExceptions.CommentNotFound("No such comment on this video"));
 
-        CommentView reply = repository.addComment(videoId, accountId, body, parentCommentId);
+        CommentView reply =
+                repository.addComment(videoId, accountId, body, parentCommentId, resolveMentions(body));
         append(
                 EventTypes.SOCIAL_COMMENT_REPLIED,
                 new SocialEvents.CommentReplied(
                         videoId, accountId, parentAuthorId, videoOwnerId, parentCommentId, reply.commentId()));
         return reply;
+    }
+
+    /**
+     * Resolved at write time, not read time: a handle is not reserved once its
+     * owner changes or gives it up, so re-parsing the raw {@code @}-mention text
+     * on every read would let an old mention silently start pointing at whoever
+     * holds that handle now (see {@link AccountDirectory#findAllByHandle}).
+     */
+    private List<String> resolveMentions(String body) {
+        Set<String> handles = Mentions.parse(body);
+        if (handles.isEmpty()) {
+            return List.of();
+        }
+        return accountDirectory.findAllByHandle(handles).values().stream()
+                .map(AccountView::accountId)
+                .distinct()
+                .toList();
     }
 
     /** Default page size; the client may ask for less, never for more. */

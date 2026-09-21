@@ -382,6 +382,19 @@ public class AccountService implements AccountDirectory {
                 .collect(java.util.stream.Collectors.toMap(AccountView::accountId, view -> view));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, AccountView> findAllByHandle(Collection<String> handles) {
+        Set<String> lowered = handles.stream()
+                .map(h -> h.toLowerCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+        if (lowered.isEmpty()) {
+            return Map.of();
+        }
+        return repository.findAllByHandleLowerIn(lowered).stream()
+                .collect(Collectors.toMap(AccountEntity::getHandleLower, AccountService::toView));
+    }
+
     /**
      * {@code roles} is a free-text column, so it is parsed defensively.
      * {@code Set.of} threw {@code IllegalArgumentException} on a duplicate entry —

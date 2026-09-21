@@ -1,6 +1,7 @@
 package com.shortvideo.social.domain;
 
 import java.time.Instant;
+import java.util.List;
 
 public record CommentView(
         String commentId,
@@ -9,4 +10,6 @@ public record CommentView(
         String body,
         Instant createdAt,
         String parentCommentId,
-        long replyCount) {}
+        long replyCount,
+        /** Account ids resolved from @handle mentions in the body at write time. */
+        List<String> mentionedAccountIds) {}

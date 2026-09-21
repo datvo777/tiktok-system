@@ -1,5 +1,6 @@
 package com.shortvideo.account.domain;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -16,6 +17,9 @@ interface AccountJpaRepository extends JpaRepository<AccountEntity, UUID> {
     Optional<AccountEntity> findByHandleLower(String handleLower);
 
     boolean existsByHandleLower(String handleLower);
+
+    /** Batch form of {@link #findByHandleLower}, for resolving several @mentions in one comment. */
+    List<AccountEntity> findAllByHandleLowerIn(Collection<String> handleLowers);
 
     /** Admin search (brief section 18-adjacent admin surface): partial, case-insensitive email match. */
     List<AccountEntity> findByEmailContainingIgnoreCaseOrderByCreatedAtDesc(String emailFragment, Pageable pageable);

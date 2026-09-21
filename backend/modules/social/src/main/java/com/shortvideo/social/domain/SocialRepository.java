@@ -1,8 +1,12 @@
 package com.shortvideo.social.domain;
 
 import com.shortvideo.social.api.SocialCounts;
+import java.sql.Array;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -34,8 +38,9 @@ class SocialRepository {
             """;
 
     private static final String ADD_COMMENT = """
-            INSERT INTO social.comment (comment_id, video_id, account_id, body, created_at, parent_comment_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO social.comment
+                (comment_id, video_id, account_id, body, created_at, parent_comment_id, mentioned_account_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """;
 
     /**
@@ -53,7 +58,7 @@ class SocialRepository {
      * no way to know the list had been truncated.
      */
     private static final String LIST_COMMENTS = """
-            SELECT c.comment_id, c.video_id, c.account_id, c.body, c.created_at,
+            SELECT c.comment_id, c.video_id, c.account_id, c.body, c.created_at, c.mentioned_account_ids,
                    (SELECT count(*) FROM social.comment r
                      WHERE r.parent_comment_id = c.comment_id AND r.deleted_at IS NULL) AS reply_count
             FROM social.comment c
@@ -64,7 +69,7 @@ class SocialRepository {
             """;
 
     private static final String LIST_REPLIES = """
-            SELECT comment_id, video_id, account_id, body, created_at, parent_comment_id
+            SELECT comment_id, video_id, account_id, body, created_at, parent_comment_id, mentioned_account_ids
             FROM social.comment
             WHERE parent_comment_id = ? AND deleted_at IS NULL
               AND (?::timestamptz IS NULL OR (created_at, comment_id) > (?::timestamptz, ?::uuid))
@@ -252,9 +257,11 @@ class SocialRepository {
                 Timestamp.from(Instant.now()));
     }
 
-    CommentView addComment(String videoId, String accountId, String body, String parentCommentId) {
+    CommentView addComment(
+            String videoId, String accountId, String body, String parentCommentId, Collection<String> mentionedAccountIds) {
         UUID commentId = UUID.randomUUID();
         Instant now = Instant.now();
+        UUID[] mentions = mentionedAccountIds.stream().map(UUID::fromString).toArray(UUID[]::new);
         jdbc.update(
                 ADD_COMMENT,
                 commentId,
@@ -262,8 +269,23 @@ class SocialRepository {
                 UUID.fromString(accountId),
                 body,
                 Timestamp.from(now),
-                parentCommentId == null ? null : UUID.fromString(parentCommentId));
-        return new CommentView(commentId.toString(), videoId, accountId, body, now, parentCommentId, 0);
+                parentCommentId == null ? null : UUID.fromString(parentCommentId),
+                mentions);
+        return new CommentView(
+                commentId.toString(), videoId, accountId, body, now, parentCommentId, 0, List.copyOf(mentionedAccountIds));
+    }
+
+    private static List<String> readMentions(ResultSet rs) throws SQLException {
+        Array array = rs.getArray("mentioned_account_ids");
+        if (array == null) {
+            return List.of();
+        }
+        Object[] raw = (Object[]) array.getArray();
+        List<String> ids = new ArrayList<>(raw.length);
+        for (Object id : raw) {
+            ids.add(id.toString());
+        }
+        return ids;
     }
 
     /**
@@ -284,7 +306,8 @@ class SocialRepository {
                         rs.getString("body"),
                         rs.getTimestamp("created_at").toInstant(),
                         null,
-                        rs.getLong("reply_count")),
+                        rs.getLong("reply_count"),
+                        readMentions(rs)),
                 UUID.fromString(videoId),
                 createdAt,
                 createdAt,
@@ -339,7 +362,8 @@ class SocialRepository {
                         rs.getString("body"),
                         rs.getTimestamp("created_at").toInstant(),
                         rs.getString("parent_comment_id"),
-                        0),
+                        0,
+                        readMentions(rs)),
                 UUID.fromString(commentId),
                 createdAt,
                 createdAt,
