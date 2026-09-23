@@ -1,5 +1,8 @@
 package com.shortvideo.account.api;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -12,4 +15,44 @@ import java.util.Optional;
 public interface AccountDirectory {
 
     Optional<AccountView> find(String accountId);
+
+    /**
+     * As {@link #find}, for a whole set of ids in one query.
+     *
+     * <p>Exists for callers rendering a list of other people's content -- a page
+     * of comments, say -- where resolving names one at a time is a round trip per
+     * row. Ids that do not resolve are simply absent from the result rather than
+     * mapping to null, so a caller iterating the map sees only accounts that
+     * exist.
+     *
+     * @return display names keyed by account id.
+     */
+    Map<String, AccountView> findAll(Collection<String> accountIds);
+
+    /**
+     * Resolves several {@code @handle} mentions in one query, e.g. parsed out of a
+     * comment body. Callers should resolve at write time and store the resulting
+     * account ids rather than re-resolving the raw handle text on every read: a
+     * handle is not reserved once its owner changes or gives it up (see
+     * {@code AccountService.changeHandle}), so a mention resolved at read time
+     * would silently start pointing at whoever holds that handle now.
+     *
+     * @param handles case-insensitive, without a leading {@code @}. A handle that
+     *     does not resolve is simply absent from the result.
+     * @return accounts keyed by the lower-cased handle that matched them.
+     */
+    Map<String, AccountView> findAllByHandle(Collection<String> handles);
+
+    /**
+     * Every account id that exists, read from this module's own source of truth rather
+     * than any other module's projection — so, unlike a projection's own tracked-id
+     * list, this also surfaces an account whose very first outbound event was lost and
+     * therefore never reached that projection at all.
+     *
+     * <p>Paged with {@code afterAccountId} as a keyset cursor ({@code null} for the
+     * first page): a caller that keeps advancing the cursor, wrapping back to {@code
+     * null} once a page comes back shorter than {@code limit}, eventually visits every
+     * account instead of re-reading the same page forever.
+     */
+    List<String> allAccountIds(String afterAccountId, int limit);
 }

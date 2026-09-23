@@ -69,6 +69,7 @@ class ResilienceIT {
         // Fast enough to observe within a test timeout without weakening the
         // real production default anywhere outside this test.
         registry.add("shortvideo.inbox.cleanup-interval", () -> "500ms");
+        registry.add("shortvideo.outbox.cleanup-interval", () -> "500ms");
     }
 
     @Autowired
@@ -195,6 +196,61 @@ class ResilienceIT {
         Integer recentRemaining = jdbc.queryForObject(
                 "SELECT count(*) FROM platform.consumed_event WHERE event_id = ?", Integer.class, recentEventId);
         assertThat(recentRemaining).isEqualTo(1);
+    }
+
+    /**
+     * OutboxCleanupJob must prune only PUBLISHED rows past its retention window
+     * (30 days by default): a recent PUBLISHED row and an old DEAD row -- however
+     * old -- must both survive. DEAD rows are a producer-side terminal failure
+     * left for an operator to triage, not something a timer should erase.
+     */
+    @Test
+    void outboxCleanupPrunesOnlyOldPublishedRowsAndKeepsRecentAndDeadOnes() {
+        UUID oldPublishedId = UUID.randomUUID();
+        UUID recentPublishedId = UUID.randomUUID();
+        UUID oldDeadId = UUID.randomUUID();
+        insertOutboxRow(oldPublishedId, "PUBLISHED", Instant.now().minus(Duration.ofDays(40)));
+        insertOutboxRow(recentPublishedId, "PUBLISHED", Instant.now());
+        insertOutboxRow(oldDeadId, "DEAD", Instant.now().minus(Duration.ofDays(400)));
+
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            Integer oldRemaining = jdbc.queryForObject(
+                    "SELECT count(*) FROM platform.outbox_event WHERE event_id = ?", Integer.class, oldPublishedId);
+            assertThat(oldRemaining).isZero();
+        });
+
+        Integer recentRemaining = jdbc.queryForObject(
+                "SELECT count(*) FROM platform.outbox_event WHERE event_id = ?", Integer.class, recentPublishedId);
+        assertThat(recentRemaining).isEqualTo(1);
+        Integer deadRemaining = jdbc.queryForObject(
+                "SELECT count(*) FROM platform.outbox_event WHERE event_id = ?", Integer.class, oldDeadId);
+        assertThat(deadRemaining).isEqualTo(1);
+    }
+
+    /**
+     * {@code published_at} is what the sweep filters on, so a DEAD row -- which
+     * {@link com.shortvideo.shared.outbox.OutboxRepository#markFailed} never sets
+     * it for -- gets {@code occurred_at}/{@code last_attempt_at} back-dated
+     * instead, to prove the sweep ignores age entirely for a status it does not
+     * match, not merely because this particular DEAD row happens to look recent.
+     */
+    private void insertOutboxRow(UUID eventId, String status, Instant timestamp) {
+        Timestamp publishedAt = status.equals("PUBLISHED") ? Timestamp.from(timestamp) : null;
+        jdbc.update(
+                """
+                INSERT INTO platform.outbox_event (
+                    event_id, aggregate_type, aggregate_id, event_type, schema_version, aggregate_version,
+                    payload, occurred_at, available_at, status, published_at, last_attempt_at
+                ) VALUES (?, 'NOTIFICATION', ?, 'notification.created', 1, 1,
+                    '{}'::jsonb, ?, ?, ?, ?, ?)
+                """,
+                eventId,
+                eventId.toString(),
+                Timestamp.from(timestamp),
+                Timestamp.from(timestamp),
+                status,
+                publishedAt,
+                Timestamp.from(timestamp));
     }
 
     private Properties producerProps() {

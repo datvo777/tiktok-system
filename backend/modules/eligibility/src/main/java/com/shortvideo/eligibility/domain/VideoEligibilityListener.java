@@ -48,6 +48,7 @@ class VideoEligibilityListener {
                 return;
             }
             switch (envelope.eventType()) {
+                case EventTypes.VIDEO_METADATA_SET -> applyMetadata(envelope);
                 case EventTypes.VIDEO_PROCESSING_READY -> applyReady(envelope);
                 case EventTypes.VIDEO_PROCESSING_FAILED -> applyFailed(envelope);
                 case EventTypes.VIDEO_LIFECYCLE_CHANGED -> applyLifecycleChanged(envelope);
@@ -57,6 +58,12 @@ class VideoEligibilityListener {
             log.warn("Failed to project video eligibility event; will retry on redelivery", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private void applyMetadata(EventEnvelope<Map<String, Object>> envelope) {
+        Map<String, Object> p = envelope.payload();
+        projector.applyMetadata(
+                str(p, "videoId"), str(p, "ownerAccountId"), str(p, "title"), str(p, "description"), envelope.aggregateVersion());
     }
 
     private void applyReady(EventEnvelope<Map<String, Object>> envelope) {

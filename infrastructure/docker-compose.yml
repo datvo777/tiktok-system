@@ -32,7 +32,26 @@ services:
   redis:
     image: redis:7.4.2-alpine
     container_name: sv-redis
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # No persistence: several keys here (session deny-list, rate limiter, feed
+    # cache) are pure TTL caches and fine to lose on restart. Revocation entries
+    # (RevocationCache) are the one namespace that must never carry a TTL — a
+    # deny entry expiring on its own would silently re-permit a video/account
+    # nobody re-approved (brief section 16, Rule 12) — so they are rebuilt from
+    # Postgres on startup and reconciled periodically instead.
+    #
+    # maxmemory-policy=allkeys-lru, not noeviction (the server default): under
+    # memory pressure Redis should evict the least-recently-used key rather than
+    # start refusing writes. This is safe even for the un-TTL'd revocation keys,
+    # since RevocationCache.isDenied falls back to the durable Postgres check on
+    # any cache miss — eviction only costs a slower deny, never a wrong one.
+    command:
+      [
+        "redis-server",
+        "--save", "",
+        "--appendonly", "no",
+        "--maxmemory", "256mb",
+        "--maxmemory-policy", "allkeys-lru",
+      ]
     ports:
       - "6379:6379"
     healthcheck:
@@ -83,6 +102,13 @@ services:
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
             --create --if-not-exists --topic "$$t" --partitions 3 --replication-factor 1
         done
+        for t in video.events.v1 account.events.v1 social.events.v1 media.jobs.v1 media.results.v1 notification.events.v1; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --create --if-not-exists --topic "$${t}.DLT" \
+            --partitions 1 --replication-factor 1 \
+            --config retention.ms=1209600000 \
+            --config cleanup.policy=delete
+        done
         echo "topics ready"
     restart: "no"
 
@@ -130,9 +156,14 @@ services:
       minio:
         condition: service_healthy
     environment:
+      # Root, used only to create the bucket and mint the scoped service account
+      # below. The application never receives these.
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_BUCKET: ${MINIO_BUCKET}
+      # What the backend and worker actually authenticate with.
+      MINIO_APP_ACCESS_KEY: ${MINIO_APP_ACCESS_KEY}
+      MINIO_APP_SECRET_KEY: ${MINIO_APP_SECRET_KEY}
     entrypoint: ["/bin/sh", "/init.sh"]
     volumes:
       - ./minio/init.sh:/init.sh:ro

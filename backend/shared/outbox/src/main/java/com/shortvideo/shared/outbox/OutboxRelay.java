@@ -102,7 +102,14 @@ public class OutboxRelay {
     private void recordFailure(OutboxRecord record, String error) {
         boolean exhausted = record.attemptCount() >= properties.getMaxAttempts();
         Instant retryAt = Instant.now().plus(backoff(record.attemptCount()));
-        repository.markFailed(record.eventId(), record.claimToken(), error, retryAt, exhausted);
+        boolean applied = repository.markFailed(
+                record.eventId(), record.claimToken(), error, retryAt, exhausted);
+
+        if (!applied) {
+            log.warn("Lost claim on {} before recording failure; another relay owns it now", record.eventId());
+            return;
+        }
+
         if (exhausted) {
             dead.increment();
             log.error("Outbox event {} exhausted {} attempts and moved to DEAD: {}",
