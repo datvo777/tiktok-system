@@ -23,4 +23,10 @@ interface AccountJpaRepository extends JpaRepository<AccountEntity, UUID> {
 
     /** Admin search (brief section 18-adjacent admin surface): partial, case-insensitive email match. */
     List<AccountEntity> findByEmailContainingIgnoreCaseOrderByCreatedAtDesc(String emailFragment, Pageable pageable);
+
+    /** First page of a keyset-paginated full scan, for {@link AccountService#allAccountIds}. */
+    List<AccountEntity> findAllByOrderByAccountIdAsc(Pageable pageable);
+
+    /** Next page of that same scan, continuing after the previous page's last id. */
+    List<AccountEntity> findByAccountIdGreaterThanOrderByAccountIdAsc(UUID accountId, Pageable pageable);
 }

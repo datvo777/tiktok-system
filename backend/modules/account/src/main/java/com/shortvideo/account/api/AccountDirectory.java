@@ -1,6 +1,7 @@
 package com.shortvideo.account.api;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -41,4 +42,17 @@ public interface AccountDirectory {
      * @return accounts keyed by the lower-cased handle that matched them.
      */
     Map<String, AccountView> findAllByHandle(Collection<String> handles);
+
+    /**
+     * Every account id that exists, read from this module's own source of truth rather
+     * than any other module's projection — so, unlike a projection's own tracked-id
+     * list, this also surfaces an account whose very first outbound event was lost and
+     * therefore never reached that projection at all.
+     *
+     * <p>Paged with {@code afterAccountId} as a keyset cursor ({@code null} for the
+     * first page): a caller that keeps advancing the cursor, wrapping back to {@code
+     * null} once a page comes back shorter than {@code limit}, eventually visits every
+     * account instead of re-reading the same page forever.
+     */
+    List<String> allAccountIds(String afterAccountId, int limit);
 }

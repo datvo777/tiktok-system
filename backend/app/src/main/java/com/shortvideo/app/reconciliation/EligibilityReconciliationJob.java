@@ -8,6 +8,7 @@ import com.shortvideo.publication.api.PublicationDirectory;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -39,6 +40,17 @@ public class EligibilityReconciliationJob {
     private final AccountDirectory accountDirectory;
     private final Counter videosSwept;
     private final Counter accountsSwept;
+    private final Counter videosFailed;
+    private final Counter accountsFailed;
+
+    /**
+     * Keyset cursor into {@link AccountDirectory#allAccountIds}, advanced after each
+     * sweep and reset to {@code null} once a page comes back short — so repeated runs
+     * rotate through every account over time instead of resweeping the same
+     * {@link #SWEEP_LIMIT}-sized page forever. Touched only from {@link #reconcile()},
+     * which {@code @Scheduled(fixedDelay)} never runs concurrently with itself.
+     */
+    private String accountSweepCursor;
 
     public EligibilityReconciliationJob(
             EligibilityDirectory eligibilityDirectory,
@@ -56,6 +68,8 @@ public class EligibilityReconciliationJob {
         this.accountDirectory = accountDirectory;
         this.videosSwept = Counter.builder("eligibility.reconciliation.videos_swept").register(meters);
         this.accountsSwept = Counter.builder("eligibility.reconciliation.accounts_swept").register(meters);
+        this.videosFailed = Counter.builder("eligibility.reconciliation.videos_failed").register(meters);
+        this.accountsFailed = Counter.builder("eligibility.reconciliation.accounts_failed").register(meters);
     }
 
     @Scheduled(fixedDelayString = "${shortvideo.reconciliation.interval:5m}", initialDelayString = "30s")
@@ -90,19 +104,32 @@ public class EligibilityReconciliationJob {
                 videosSwept.increment();
             } catch (RuntimeException e) {
                 // One bad row must not abort the sweep; the next pass tries again.
+                videosFailed.increment();
                 log.warn("Reconciliation failed for video {}: {}", videoId, e.getMessage());
             }
         }
     }
 
+    /**
+     * Unlike {@link #reconcileVideos()}, this reads {@link AccountDirectory}'s own
+     * source of truth rather than a list of ids the eligibility projection already
+     * tracks — so it also catches an account whose very first projection event was
+     * lost and therefore never created a row here at all, not just one whose existing
+     * row has drifted.
+     */
     private void reconcileAccounts() {
-        for (String accountId : eligibilityDirectory.allTrackedAccountIds(SWEEP_LIMIT)) {
+        List<String> accountIds = accountDirectory.allAccountIds(accountSweepCursor, SWEEP_LIMIT);
+        accountSweepCursor = accountIds.size() < SWEEP_LIMIT ? null : accountIds.get(accountIds.size() - 1);
+
+        for (String accountId : accountIds) {
             try {
-                accountDirectory
-                        .find(accountId)
-                        .ifPresent(a -> corrector.correctAccount(a.accountId(), a.state().name(), a.aggregateVersion()));
-                accountsSwept.increment();
+                accountDirectory.find(accountId).ifPresent(a -> {
+                    corrector.correctAccount(a.accountId(), a.state().name(), a.aggregateVersion());
+                    accountsSwept.increment();
+                });
             } catch (RuntimeException e) {
+                // One bad row must not abort the sweep; the next pass tries again.
+                accountsFailed.increment();
                 log.warn("Reconciliation failed for account {}: {}", accountId, e.getMessage());
             }
         }

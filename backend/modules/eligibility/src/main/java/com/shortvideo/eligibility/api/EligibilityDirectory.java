@@ -49,7 +49,4 @@ public interface EligibilityDirectory {
 
     /** Every video this projection currently tracks, eligible or not (brief section 20, Milestone 5). */
     List<String> allTrackedVideoIds(int limit);
-
-    /** Every account this projection currently tracks (brief section 20, Milestone 5). */
-    List<String> allTrackedAccountIds(int limit);
 }

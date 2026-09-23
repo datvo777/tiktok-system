@@ -117,12 +117,6 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
         return repository.allVideoIds(limit);
     }
 
-    @Override
-    @Transactional(readOnly = true)
-    public List<String> allTrackedAccountIds(int limit) {
-        return repository.allAccountIds(limit);
-    }
-
     /**
      * Reconciliation entry points (brief section 20, Milestone 5). Reuse the same
      * version-guarded upserts normal projection uses: passing already-current

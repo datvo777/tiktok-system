@@ -96,7 +96,9 @@
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
       "targets": [
         { "expr": "sum(rate(eligibility_reconciliation_videos_swept_total[5m]))", "legendFormat": "videos corrected/s" },
-        { "expr": "sum(rate(eligibility_reconciliation_accounts_swept_total[5m]))", "legendFormat": "accounts corrected/s" }
+        { "expr": "sum(rate(eligibility_reconciliation_accounts_swept_total[5m]))", "legendFormat": "accounts corrected/s" },
+        { "expr": "sum(rate(eligibility_reconciliation_videos_failed_total[5m]))", "legendFormat": "videos failed/s" },
+        { "expr": "sum(rate(eligibility_reconciliation_accounts_failed_total[5m]))", "legendFormat": "accounts failed/s" }
       ]
     },
     {

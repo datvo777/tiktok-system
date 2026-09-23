@@ -171,9 +171,6 @@ class EligibilityRepository {
     private static final String ALL_VIDEO_IDS =
             "SELECT video_id FROM eligibility.video_eligibility ORDER BY updated_at LIMIT ?";
 
-    private static final String ALL_ACCOUNT_IDS =
-            "SELECT account_id FROM eligibility.account_eligibility ORDER BY updated_at LIMIT ?";
-
     private static final String FIND_ELIGIBLE = """
             SELECT video_id, creator_id, title, description, processing_state, processing_version, durability_state,
                    moderation_state, publication_state, publication_intent_requested, asset_lifecycle_state,
@@ -304,10 +301,6 @@ class EligibilityRepository {
 
     java.util.List<String> allVideoIds(int limit) {
         return jdbc.queryForList(ALL_VIDEO_IDS, String.class, limit);
-    }
-
-    java.util.List<String> allAccountIds(int limit) {
-        return jdbc.queryForList(ALL_ACCOUNT_IDS, String.class, limit);
     }
 
     private static VideoEligibilityView mapVideo(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {

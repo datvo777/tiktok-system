@@ -406,6 +406,16 @@ public class AccountService implements AccountDirectory {
                 .collect(Collectors.toMap(AccountEntity::getHandleLower, AccountService::toView));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> allAccountIds(String afterAccountId, int limit) {
+        PageRequest page = PageRequest.of(0, limit);
+        List<AccountEntity> rows = afterAccountId == null
+                ? repository.findAllByOrderByAccountIdAsc(page)
+                : repository.findByAccountIdGreaterThanOrderByAccountIdAsc(parseId(afterAccountId), page);
+        return rows.stream().map(a -> a.getAccountId().toString()).toList();
+    }
+
     /**
      * {@code roles} is a free-text column, so it is parsed defensively.
      * {@code Set.of} threw {@code IllegalArgumentException} on a duplicate entry —
