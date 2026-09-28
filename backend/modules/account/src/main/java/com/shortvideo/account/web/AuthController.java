@@ -4,6 +4,7 @@ import com.shortvideo.account.api.AccountView;
 import com.shortvideo.account.domain.AccountEntity;
 import com.shortvideo.account.domain.AccountExceptions;
 import com.shortvideo.account.domain.AccountService;
+import com.shortvideo.account.domain.Emails;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.ClientIpResolver;
 import com.shortvideo.shared.security.JwtService;
@@ -14,6 +15,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -27,6 +30,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/auth")
 @Tag(name = "Auth")
 public class AuthController {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
     private final AccountService accountService;
     private final JwtService jwtService;
@@ -59,7 +64,11 @@ public class AuthController {
     public ResponseEntity<AccountDtos.LoginResponse> login(
             @Valid @RequestBody AccountDtos.LoginRequest request, HttpServletRequest httpRequest) {
 
-        String email = request.email();
+        // Normalised here, the same way authenticate() normalises internally, so the
+        // rate limiter keys on the identity the account lookup actually matches —
+        // otherwise cycling letter case in the address gives each variant its own
+        // counter and the per-account limit never accumulates.
+        String email = Emails.normalise(request.email());
         // Checked before authenticate(), so a throttled attempt never reaches the
         // ~100ms BCrypt comparison that makes this endpoint expensive to serve.
         rateLimiter.checkAllowed(clientIpResolver.resolve(httpRequest), email);
@@ -147,8 +156,16 @@ public class AuthController {
     @PostMapping("/logout")
     @Operation(summary = "End the session and revoke the current token")
     public ResponseEntity<Void> logout(@AuthenticationPrincipal AuthenticatedAccount caller) {
+        // The cookie is cleared unconditionally: it needs no Redis, and a caller who
+        // pressed "Log out" must never be left holding a live cookie just because
+        // the deny-list write below failed.
         if (caller != null) {
-            denyList.revoke(caller.tokenId(), caller.expiresAt());
+            try {
+                denyList.revoke(caller.tokenId(), caller.expiresAt());
+            } catch (RuntimeException revokeFailed) {
+                log.warn("Failed to revoke token {} on logout; cookie is still cleared",
+                        caller.tokenId(), revokeFailed);
+            }
         }
         return ResponseEntity.noContent()
                 .header(HttpHeaders.SET_COOKIE, sessionCookies.clearSession().toString())

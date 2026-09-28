@@ -92,7 +92,7 @@ public class AccountService implements AccountDirectory {
      * commit atomically with the account row.
      */
     public AccountView register(String rawEmail, String rawPassword, String displayName) {
-        String email = normalise(rawEmail);
+        String email = Emails.normalise(rawEmail);
         String passwordHash = passwordEncoder.encode(rawPassword);
         String trimmedName = displayName.trim();
 
@@ -145,7 +145,7 @@ public class AccountService implements AccountDirectory {
      * repository reads in their own transaction, so none is needed here.
      */
     public AccountEntity authenticate(String rawEmail, String rawPassword) {
-        Optional<AccountEntity> candidate = repository.findByEmail(normalise(rawEmail));
+        Optional<AccountEntity> candidate = repository.findByEmail(Emails.normalise(rawEmail));
 
         if (candidate.isEmpty()) {
             // Same work either way, so a failed login does not leak which addresses
@@ -207,7 +207,7 @@ public class AccountService implements AccountDirectory {
     @Transactional(readOnly = true)
     public List<AdminAccountView> search(String emailFragment, int limit) {
         return repository
-                .findByEmailContainingIgnoreCaseOrderByCreatedAtDesc(normalise(emailFragment), PageRequest.of(0, limit))
+                .findByEmailContainingIgnoreCaseOrderByCreatedAtDesc(Emails.normalise(emailFragment), PageRequest.of(0, limit))
                 .stream()
                 .map(a -> new AdminAccountView(
                         a.getAccountId().toString(), a.getEmail(), a.getDisplayName(), a.getState(), rolesOf(a), a.getCreatedAt()))
@@ -482,9 +482,5 @@ public class AccountService implements AccountDirectory {
 
     private static UUID parseId(String accountId) {
         return UUID.fromString(accountId);
-    }
-
-    private static String normalise(String email) {
-        return email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
     }
 }

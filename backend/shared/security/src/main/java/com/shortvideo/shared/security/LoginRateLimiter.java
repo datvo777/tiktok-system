@@ -17,10 +17,19 @@ import org.springframework.stereotype.Component;
  *       consume regardless of which accounts they aim at, which is what makes
  *       credential stuffing across many usernames expensive.
  *   <li><b>Per account, counting only failures and cleared on success.</b>
- *       Bounds guessing against one account without letting someone lock a
- *       victim out by repeatedly submitting their address — a legitimate user's
- *       own successful logins never count against them.
+ *       Bounds guessing against one account — a legitimate user's own successful
+ *       logins never count against them, so they don't creep toward the
+ *       threshold on their own mistakes.
  * </ul>
+ *
+ * <p><b>The per-account counter is itself a lockout vector.</b> Email addresses
+ * are not secret — they leak through comments, invites, breached lists — so
+ * anyone who knows a victim's address can submit {@code maxFailuresPerAccount}
+ * wrong passwords on purpose and lock that victim out of their own account for
+ * {@code accountWindow}, without ever being close to a correct guess. There is
+ * no free fix for this; it is the standard trade-off of any per-account lockout.
+ * If it becomes a real problem, the usual mitigations are a CAPTCHA after a few
+ * failures or progressive per-account delay instead of a hard lock.
  *
  * <p>Fixed windows rather than a token bucket: the boundary burst a fixed window
  * allows (up to 2x the limit across a window edge) is irrelevant at these
