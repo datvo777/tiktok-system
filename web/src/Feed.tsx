@@ -343,6 +343,16 @@ const DOUBLE_TAP_MS = 220;
 const VIEW_THRESHOLD_MS = 3000;
 
 /**
+ * How far ahead of the playback session's actual expiry a resume tap renews
+ * it proactively, rather than letting the next segment request fail and
+ * relying on attachHls's own retry-on-401. The session cookie is short-lived
+ * (300s, brief section 8) with nothing else renewing it, so a video paused
+ * and resumed later than this margin before expiry would otherwise resume on
+ * a cookie that dies moments later.
+ */
+const RESUME_RENEWAL_MARGIN_MS = 10_000;
+
+/**
  * Stands in for a slide outside the render window: same outer box (so scroll
  * position stays a simple index * clientHeight) but no video element, no HLS
  * session, and none of `FeedSlide`'s per-item queries -- just a poster image,
@@ -460,6 +470,11 @@ function FeedSlide({
   const viewReported = useRef(false);
   const watchedMs = useRef(0);
 
+  // When the current playback session cookie expires, in epoch ms. Read by
+  // togglePlayback() to renew before a resume that would otherwise land on a
+  // dead cookie -- see RESUME_RENEWAL_MARGIN_MS.
+  const sessionExpiresAt = useRef<number | null>(null);
+
   const play = useMutation({
     mutationFn: () => createPublicSession(item.videoId),
     onSuccess: (result) => {
@@ -467,7 +482,13 @@ function FeedSlide({
       // request was in flight.
       if (!activeRef.current && !preloadRef.current) return;
       setError(null);
-      attachHls(videoRef.current, item.videoId, result.processingVersion, setError);
+      sessionExpiresAt.current = Date.parse(result.expiresAt);
+      attachHls(videoRef.current, item.videoId, result.processingVersion, setError, () =>
+        createPublicSession(item.videoId).then((renewed) => {
+          sessionExpiresAt.current = Date.parse(renewed.expiresAt);
+          return renewed;
+        }),
+      );
       // A preloading slide buffers but does not play; it starts when it becomes
       // the active one, by which point the stream is already attached.
       if (activeRef.current) {
@@ -669,8 +690,20 @@ function FeedSlide({
   function togglePlayback() {
     const video = videoRef.current;
     if (!video) return;
-    if (video.paused) void video.play().catch(() => {});
-    else video.pause();
+    if (!video.paused) {
+      video.pause();
+      return;
+    }
+    const expiresAt = sessionExpiresAt.current;
+    if (expiresAt !== null && Date.now() > expiresAt - RESUME_RENEWAL_MARGIN_MS && !play.isPending) {
+      // The pause may have outlasted the session cookie -- ask for a fresh one
+      // and play once it lands, rather than resume straight into a request
+      // that will fail with a stale cookie. Reuses the same mutation the
+      // initial attach used, which re-attaches HLS and calls play() itself.
+      play.mutate();
+      return;
+    }
+    void video.play().catch(() => {});
   }
 
   /**

@@ -394,7 +394,9 @@ function Preview({ videoId, onLog }: { videoId: string; onLog: (message: string)
     onMutate: () => onLog('Loading your preview\u2026'),
     onSuccess: (result) => {
       onLog('Playing your preview.');
-      attachHls(videoRef.current, videoId, result.processingVersion, onLog);
+      attachHls(videoRef.current, videoId, result.processingVersion, onLog, () =>
+        createPreviewSession(videoId),
+      );
     },
     onError: (error) => onLog(`Couldn't load the preview: ${(error as Error).message}`),
   });
@@ -535,16 +537,31 @@ function PublishButton({
 // (loadSource() again instead of destroy()+new Hls()) to sidestep the race
 // rather than try to win it.
 const activeHlsByElement = new WeakMap<HTMLVideoElement, Hls>();
+// Tracks whether a native-HLS (Safari) element already has its recovery
+// listeners attached, the same way activeHlsByElement tracks the hls.js
+// instance -- attachHls is called again on every renewed session, and a
+// fresh addEventListener each time would pile up duplicate listeners.
+const nativeHlsRecoveryByElement = new WeakSet<HTMLVideoElement>();
 
 /**
  * Shared by owner preview and public feed playback — both are just an HLS URL
  * once the right session cookie has been set (brief section 8).
+ *
+ * <p>The playback session cookie is short-lived (300s, brief section 8) and
+ * nothing renews it on its own -- a video watched past that point, or resumed
+ * after a long pause, fails with a stale cookie. `renewSession`, when given,
+ * is called to request a fresh session and retried once; without it (or once
+ * that one retry has also failed) the failure is reported as before. This is
+ * the reactive half of the fix -- the proactive half is checking the
+ * session's `expiresAt` before a deliberate resume, which the caller does
+ * itself since only it knows when that is.
  */
 export function attachHls(
   video: HTMLVideoElement | null,
   videoId: string,
   processingVersion: number,
   onLog: (message: string) => void,
+  renewSession?: () => Promise<unknown>,
 ) {
   const url = `/media/videos/${videoId}/${processingVersion}/master.m3u8`;
   if (!video) return;
@@ -555,7 +572,27 @@ export function attachHls(
       hls = new Hls();
       activeHlsByElement.set(video, hls);
       hls.attachMedia(video);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
+
+      // Cleared on every fragment that actually loads, so a *later* expiry
+      // still gets its own retry. Left set across a renew attempt that is
+      // immediately followed by another auth failure -- with no successful
+      // load in between -- so a session that is rejected for a reason other
+      // than expiry (the video lost eligibility, the account was banned)
+      // fails once instead of retrying forever.
+      let awaitingRecovery = false;
+      const instance = hls;
+      instance.on(Hls.Events.FRAG_LOADED, () => {
+        awaitingRecovery = false;
+      });
+      instance.on(Hls.Events.ERROR, (_event, data) => {
+        const authFailure = data.response?.code === 401 || data.response?.code === 403;
+        if (authFailure && renewSession && !awaitingRecovery) {
+          awaitingRecovery = true;
+          renewSession()
+            .then(() => instance.startLoad())
+            .catch(() => onLog("This video couldn't be played. Try reloading the page."));
+          return;
+        }
         if (data.fatal) {
           // hls.js error types and details are diagnostics; keep them in the
           // console for debugging and tell the viewer something actionable.
@@ -569,6 +606,31 @@ export function attachHls(
     // Safari's native HLS: no headers on this request either (Rule 17), the
     // cookies set moments ago are what authorize it.
     video.src = url;
+    if (renewSession && !nativeHlsRecoveryByElement.has(video)) {
+      nativeHlsRecoveryByElement.add(video);
+      // The native player exposes no HTTP status for a failed segment, only a
+      // MediaError code, so an auth failure cannot be distinguished from a
+      // genuine network error as precisely as hls.js's `response.code` allows
+      // -- MEDIA_ERR_NETWORK is the closest proxy and still excludes decode
+      // and unsupported-source errors, which a session renewal cannot fix.
+      let awaitingRecovery = false;
+      video.addEventListener('loadeddata', () => {
+        awaitingRecovery = false;
+      });
+      video.addEventListener('error', () => {
+        const isNetworkError = video.error?.code === MediaError.MEDIA_ERR_NETWORK;
+        if (isNetworkError && !awaitingRecovery) {
+          awaitingRecovery = true;
+          renewSession()
+            .then(() => {
+              video.src = url;
+            })
+            .catch(() => onLog("This video couldn't be played. Try reloading the page."));
+          return;
+        }
+        onLog("This video couldn't be played. Try reloading the page.");
+      });
+    }
   } else {
     onLog('This browser cannot play this video. Try a recent Chrome, Safari, Firefox or Edge.');
   }
