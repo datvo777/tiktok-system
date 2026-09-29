@@ -369,6 +369,19 @@ public class AccountService implements AccountDirectory {
         }
     }
 
+    /**
+     * Roles as stored now, not as baked into a token. {@code /refresh} re-derives from
+     * here so a changed role set stops propagating from token to token.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Set<String>> currentRoles(String accountId) {
+        try {
+            return repository.findById(parseId(accountId)).map(this::rolesOf);
+        } catch (IllegalArgumentException malformed) {
+            return Optional.empty();
+        }
+    }
+
     @Override
     @Transactional(readOnly = true)
     public Map<String, AccountView> findAll(Collection<String> accountIds) {

@@ -18,6 +18,7 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -134,10 +136,19 @@ public class AuthController {
                 .find(caller.accountId())
                 .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
 
-        JwtService.IssuedToken issued = jwtService.issue(caller.accountId(), caller.roles());
-        // Revoked after the new one is minted, so a failure part-way leaves the
-        // caller with a working session rather than none.
-        denyList.revoke(caller.tokenId(), caller.expiresAt());
+        // Roles come from the DB, not caller.roles(): copying them token-to-token would
+        // let a demoted admin keep ROLE_ADMIN indefinitely by refreshing before expiry.
+        var roles = accountService
+                .currentRoles(caller.accountId())
+                .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
+        // Claim the old token first, atomically: a concurrent refresh with the same
+        // token (double-submit, retry) loses here instead of minting a second live
+        // credential. Signing is local, so failing after the claim is far less likely
+        // than the race this closes.
+        if (!denyList.revokeIfActive(caller.tokenId(), caller.expiresAt())) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Session already refreshed");
+        }
+        JwtService.IssuedToken issued = jwtService.issue(caller.accountId(), roles);
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, sessionCookies.session(issued.token(), issued.expiresAt()).toString())

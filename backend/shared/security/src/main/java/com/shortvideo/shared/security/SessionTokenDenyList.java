@@ -52,6 +52,20 @@ public class SessionTokenDenyList {
         redis.opsForValue().set(KEY_PREFIX + tokenId, "1", remaining.plusSeconds(60));
     }
 
+    /**
+     * Atomically revokes the token only if nobody has yet, so of two concurrent
+     * holders of the same token exactly one gets {@code true}. Used by {@code /refresh}
+     * to keep rotation single-use: the loser must not mint a second live credential.
+     */
+    public boolean revokeIfActive(String tokenId, Instant expiresAt) {
+        Duration remaining = Duration.between(Instant.now(), expiresAt);
+        if (remaining.isNegative() || remaining.isZero()) {
+            return false;
+        }
+        return Boolean.TRUE.equals(
+                redis.opsForValue().setIfAbsent(KEY_PREFIX + tokenId, "1", remaining.plusSeconds(60)));
+    }
+
     public boolean isRevoked(String tokenId) {
         try {
             return Boolean.TRUE.equals(redis.hasKey(KEY_PREFIX + tokenId));
