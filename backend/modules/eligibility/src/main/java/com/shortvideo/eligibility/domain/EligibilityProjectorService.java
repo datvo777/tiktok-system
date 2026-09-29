@@ -3,6 +3,7 @@ package com.shortvideo.eligibility.domain;
 import com.shortvideo.eligibility.api.AccountEligibilityView;
 import com.shortvideo.eligibility.api.EligibilityCorrector;
 import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.ReconciliationFailureTracker;
 import com.shortvideo.eligibility.api.VideoEligibilityView;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -13,7 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class EligibilityProjectorService implements EligibilityDirectory, EligibilityCorrector {
+public class EligibilityProjectorService implements EligibilityDirectory, EligibilityCorrector, ReconciliationFailureTracker {
 
     private final EligibilityRepository repository;
 
@@ -151,5 +152,26 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
     @Override
     public void correctAccount(String accountId, String accountState, long sourceVersion) {
         applyAccountState(accountId, accountState, sourceVersion);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, Integer> streaks(String kind) {
+        return repository.reconciliationStreaks(kind);
+    }
+
+    @Override
+    @Transactional
+    public int recordFailure(String kind, String id, String error) {
+        String trimmed = error == null ? null : error.substring(0, Math.min(error.length(), 500));
+        return repository.recordReconciliationFailure(kind, id, trimmed, Timestamp.from(Instant.now()));
+    }
+
+    @Override
+    @Transactional
+    public void clear(String kind, Collection<String> ids) {
+        if (!ids.isEmpty()) {
+            repository.clearReconciliationFailures(kind, ids);
+        }
     }
 }

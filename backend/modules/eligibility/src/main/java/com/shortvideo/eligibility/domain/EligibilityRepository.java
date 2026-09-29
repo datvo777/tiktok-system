@@ -333,4 +333,43 @@ class EligibilityRepository {
                 rs.getLong("source_version"),
                 rs.getTimestamp("updated_at").toInstant());
     }
+
+    java.util.Map<String, Integer> reconciliationStreaks(String kind) {
+        java.util.Map<String, Integer> out = new java.util.HashMap<>();
+        jdbc.query(
+                "SELECT subject_id, streak FROM eligibility.reconciliation_failure WHERE kind = ?",
+                rs -> {
+                    out.put(rs.getString(1), rs.getInt(2));
+                },
+                kind);
+        return out;
+    }
+
+    int recordReconciliationFailure(String kind, String id, String error, Timestamp now) {
+        Integer streak = jdbc.queryForObject(
+                """
+                INSERT INTO eligibility.reconciliation_failure (kind, subject_id, streak, last_error, updated_at)
+                VALUES (?, ?, 1, ?, ?)
+                ON CONFLICT (kind, subject_id) DO UPDATE SET
+                    streak = eligibility.reconciliation_failure.streak + 1,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING streak
+                """,
+                Integer.class,
+                kind,
+                id,
+                error,
+                now);
+        return streak == null ? 1 : streak;
+    }
+
+    void clearReconciliationFailures(String kind, java.util.Collection<String> ids) {
+        jdbc.update(
+                "DELETE FROM eligibility.reconciliation_failure WHERE kind = ? AND subject_id = ANY (?)",
+                ps -> {
+                    ps.setString(1, kind);
+                    ps.setArray(2, ps.getConnection().createArrayOf("varchar", ids.toArray()));
+                });
+    }
 }
