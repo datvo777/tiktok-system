@@ -4,6 +4,8 @@ import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.security.CredentialFreshnessCache;
 import com.shortvideo.shared.security.CredentialFreshnessReader;
+import com.shortvideo.shared.security.RoleFreshnessCache;
+import com.shortvideo.shared.security.RoleFreshnessReader;
 import com.shortvideo.shared.security.JwtAuthenticationFilter;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.SessionCookies;
@@ -42,7 +44,9 @@ public class SecurityConfig {
             RevocationCache revocationCache,
             DurableRevocationReader revocationReader,
             CredentialFreshnessCache credentialFreshnessCache,
-            CredentialFreshnessReader credentialFreshnessReader) {
+            CredentialFreshnessReader credentialFreshnessReader,
+            RoleFreshnessCache roleFreshnessCache,
+            RoleFreshnessReader roleFreshnessReader) {
         return new JwtAuthenticationFilter(
                 jwtService,
                 sessionCookies,
@@ -50,7 +54,9 @@ public class SecurityConfig {
                 revocationCache,
                 revocationReader,
                 credentialFreshnessCache,
-                credentialFreshnessReader);
+                credentialFreshnessReader,
+                roleFreshnessCache,
+                roleFreshnessReader);
     }
 
     /**

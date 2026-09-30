@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -43,7 +44,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <li>the token must have been issued at or after the account's last password
  *       change, so changing a password actually ends every session minted with
  *       the old credential instead of leaving them valid for the rest of their
- *       TTL.
+ *       TTL;
+ *   <li>the caller's roles are re-derived from the account (cached, write-through)
+ *       rather than trusted from the token claim, so a promotion or demotion
+ *       applies on the next request instead of after a re-login.
  * </ul>
  *
  * <p>Rule 9 applies to the durable check: if PostgreSQL cannot answer, the request
@@ -62,6 +66,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final DurableRevocationReader revocationReader;
     private final CredentialFreshnessCache credentialFreshnessCache;
     private final CredentialFreshnessReader credentialFreshnessReader;
+    private final RoleFreshnessCache roleFreshnessCache;
+    private final RoleFreshnessReader roleFreshnessReader;
 
     public JwtAuthenticationFilter(
             JwtService jwtService,
@@ -70,7 +76,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             RevocationCache revocationCache,
             DurableRevocationReader revocationReader,
             CredentialFreshnessCache credentialFreshnessCache,
-            CredentialFreshnessReader credentialFreshnessReader) {
+            CredentialFreshnessReader credentialFreshnessReader,
+            RoleFreshnessCache roleFreshnessCache,
+            RoleFreshnessReader roleFreshnessReader) {
         this.jwtService = jwtService;
         this.sessionCookieName = sessionCookies.sessionCookieName();
         this.denyList = denyList;
@@ -78,6 +86,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         this.revocationReader = revocationReader;
         this.credentialFreshnessCache = credentialFreshnessCache;
         this.credentialFreshnessReader = credentialFreshnessReader;
+        this.roleFreshnessCache = roleFreshnessCache;
+        this.roleFreshnessReader = roleFreshnessReader;
     }
 
     @Override
@@ -89,8 +99,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String token = resolveToken(request);
             if (token != null) {
                 try {
-                    AuthenticatedAccount account = jwtService.parse(token);
-                    if (stillEntitled(account, request)) {
+                    AuthenticatedAccount parsed = jwtService.parse(token);
+                    AuthenticatedAccount account = stillEntitled(parsed, request);
+                    if (account != null) {
                         var authorities = account.roles().stream()
                                 .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
                                 .map(a -> (org.springframework.security.core.GrantedAuthority) a)
@@ -110,36 +121,60 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     /**
-     * @return false to leave the request unauthenticated — the configured entry
-     *     point then answers 401, which is the correct signal for "this credential
-     *     is no longer good" as opposed to "you may not do this".
+     * @return the caller with roles re-derived from the account, or null to leave the
+     *     request unauthenticated — the configured entry point then answers 401, which
+     *     is the correct signal for "this credential is no longer good" as opposed to
+     *     "you may not do this".
      */
-    private boolean stillEntitled(AuthenticatedAccount account, HttpServletRequest request) {
+    private AuthenticatedAccount stillEntitled(AuthenticatedAccount account, HttpServletRequest request) {
         if (denyList.isRevoked(account.tokenId())) {
             log.debug("Rejected signed-out token on {}", request.getRequestURI());
-            return false;
+            return null;
         }
         try {
             if (revocationCache.isDenied(RevocationSubjects.ACCOUNT, account.accountId())
                     || revocationReader.isActive(RevocationSubjects.ACCOUNT, account.accountId())) {
                 log.debug("Rejected token for revoked account on {}", request.getRequestURI());
-                return false;
+                return null;
             }
         } catch (DataAccessException e) {
             // Rule 9: unknown state denies. Failing open here would mean a database
             // blip silently reinstates every suspended account.
             log.warn("Revocation state unavailable; refusing to authenticate", e);
-            return false;
+            return null;
         }
         try {
             if (isStaleAgainstPasswordChange(account, request)) {
-                return false;
+                return null;
             }
         } catch (DataAccessException e) {
             log.warn("Credential-freshness state unavailable; refusing to authenticate", e);
-            return false;
+            return null;
         }
-        return true;
+        try {
+            Set<String> roles = currentRoles(account.accountId());
+            if (roles == null) {
+                log.debug("Rejected token for missing account on {}", request.getRequestURI());
+                return null;
+            }
+            // The token's own roles are only what was true at issue time.
+            return new AuthenticatedAccount(
+                    account.accountId(), roles, account.tokenId(), account.issuedAt(), account.expiresAt());
+        } catch (DataAccessException e) {
+            log.warn("Role state unavailable; refusing to authenticate", e);
+            return null;
+        }
+    }
+
+    /** @return the account's current roles, or null if the account no longer exists. */
+    private Set<String> currentRoles(String accountId) {
+        Optional<Set<String>> cached = roleFreshnessCache.get(accountId);
+        if (cached.isPresent()) {
+            return cached.get();
+        }
+        Optional<Set<String>> durable = roleFreshnessReader.rolesOf(accountId);
+        durable.ifPresent(roles -> roleFreshnessCache.put(accountId, roles));
+        return durable.orElse(null);
     }
 
     /** @return true when the token predates the account's last password change. */

@@ -16,6 +16,7 @@ import com.shortvideo.shared.revocation.RevocationClearCommand;
 import com.shortvideo.shared.revocation.RevocationCommand;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.CredentialFreshnessCache;
+import com.shortvideo.shared.security.RoleParser;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
@@ -438,15 +439,7 @@ public class AccountService implements AccountDirectory {
      * explain it.
      */
     public Set<String> rolesOf(AccountEntity account) {
-        String roles = account.getRoles();
-        if (roles == null || roles.isBlank()) {
-            return Set.of(DEFAULT_ROLES);
-        }
-        return Arrays.stream(roles.split(","))
-                .map(String::trim)
-                .filter(role -> !role.isEmpty())
-                .map(role -> role.toUpperCase(Locale.ROOT))
-                .collect(Collectors.toUnmodifiableSet());
+        return RoleParser.parse(account.getRoles());
     }
 
     /** Runs {@code action} once this transaction commits — never if it rolls back. */
