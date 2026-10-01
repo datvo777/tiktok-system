@@ -3,12 +3,14 @@ package com.shortvideo.upload.domain;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /** Package-private by convention: only the upload module uses it. */
 interface UploadJpaRepository extends JpaRepository<UploadSessionEntity, UUID> {
 
-    List<UploadSessionEntity> findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(UploadStatus status, Instant cutoff);
+    List<UploadSessionEntity> findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(
+            UploadStatus status, Instant cutoff, Pageable page);
 
     /**
      * Sessions this account has open and still writable. Expired ones are excluded

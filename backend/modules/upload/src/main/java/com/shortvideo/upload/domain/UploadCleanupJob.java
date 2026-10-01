@@ -8,6 +8,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -50,9 +51,10 @@ class UploadCleanupJob {
 
     @Scheduled(fixedDelayString = "${shortvideo.upload.cleanup-interval:15m}", initialDelayString = "30s")
     void sweep() {
-        List<UploadSessionEntity> due =
-                repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(UploadStatus.PENDING, Instant.now());
-        int limit = Math.min(due.size(), SWEEP_LIMIT);
+        // Bounded in the query, not after it: a backlog must never be loaded whole.
+        List<UploadSessionEntity> due = repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(
+                UploadStatus.PENDING, Instant.now(), PageRequest.of(0, SWEEP_LIMIT));
+        int limit = due.size();
         for (int i = 0; i < limit; i++) {
             UploadSessionEntity session = due.get(i);
             // Explicit template: a self-invoked @Transactional method bypasses the proxy,

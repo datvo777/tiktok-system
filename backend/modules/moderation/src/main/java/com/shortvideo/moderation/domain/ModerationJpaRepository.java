@@ -14,8 +14,7 @@ interface ModerationJpaRepository extends JpaRepository<ModerationEntity, UUID> 
     /**
      * Keyset pagination ordered by (createdAt, videoId) ascending: the admin
      * queue can grow into the thousands, so we page it instead of ever loading
-     * the whole thing (unlike {@code findByStateOrderByCreatedAtAsc}, kept only
-     * for existing tests that don't care about scale).
+     * the whole thing.
      *
      * <p>Native query: Postgres can only push the cursor condition into the
      * {@code (state, created_at, video_id)} index as a true seek when it's
@@ -35,8 +34,6 @@ interface ModerationJpaRepository extends JpaRepository<ModerationEntity, UUID> 
             @Param("afterCreatedAt") Instant afterCreatedAt,
             @Param("afterId") UUID afterId,
             Pageable pageable);
-
-    List<ModerationEntity> findByStateOrderByCreatedAtAsc(ModerationState state);
 
     /**
      * This creator's decision history, for the automated pre-screen. Counted

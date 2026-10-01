@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -125,10 +126,15 @@ public class AppealService {
                 .orElseGet(() -> new AppealView(videoId, callerAccountId, AppealState.NONE, null, null, null));
     }
 
+    /** Hard ceiling on one response, however large the queue or the requested limit. */
+    public static final int MAX_PENDING_PAGE = 200;
+
     @Transactional(readOnly = true)
-    public List<AppealView> listPending() {
+    public List<AppealView> listPending(int limit) {
+        int size = Math.min(Math.max(limit, 1), MAX_PENDING_PAGE);
         return repository
-                .findByStateInOrderByUpdatedAtAsc(List.of(AppealState.UNDER_APPEAL, AppealState.REVIEWING))
+                .findByStateInOrderByUpdatedAtAsc(
+                        List.of(AppealState.UNDER_APPEAL, AppealState.REVIEWING), PageRequest.of(0, size))
                 .stream()
                 .map(AppealService::toView)
                 .toList();

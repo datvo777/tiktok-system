@@ -184,14 +184,6 @@ public class ModerationService implements ModerationDirectory {
                         r.getVideoId().toString(), r.getCreatorId().toString(), r.getState().name(), r.getAggregateVersion()));
     }
 
-    @Transactional(readOnly = true)
-    public List<ModerationView> listPending() {
-        return repository.findByStateOrderByCreatedAtAsc(ModerationState.PENDING).stream()
-                .map(r -> new ModerationView(
-                        r.getVideoId().toString(), r.getCreatorId().toString(), r.getState(), r.getCreatedAt()))
-                .toList();
-    }
-
     /**
      * Keyset-paged pending queue for the admin UI (a queue of thousands should
      * never be fetched in one response). {@code cursor} is an opaque string

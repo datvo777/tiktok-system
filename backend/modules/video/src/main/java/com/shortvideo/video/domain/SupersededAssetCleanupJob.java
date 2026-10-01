@@ -1,9 +1,11 @@
 package com.shortvideo.video.domain;
 
 import com.shortvideo.video.api.AssetLifecycleState;
+import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,9 +33,15 @@ class SupersededAssetCleanupJob {
 
     @Scheduled(fixedDelayString = "${shortvideo.lifecycle.cleanup-interval:5m}", initialDelayString = "20s")
     void sweep() {
-        List<SupersededAssetEntity> due = repository.findByStateOrderByCreatedAtAsc(AssetLifecycleState.DELETE_SCHEDULED);
-        due.addAll(repository.findByStateOrderByCreatedAtAsc(AssetLifecycleState.DELETION_IN_PROGRESS));
-        int limit = Math.min(due.size(), SWEEP_LIMIT);
+        // Each query is bounded, so a backlog is never loaded whole; the second only
+        // fills what the first left of the sweep budget.
+        List<SupersededAssetEntity> due = new ArrayList<>(repository.findByStateOrderByCreatedAtAsc(
+                AssetLifecycleState.DELETE_SCHEDULED, PageRequest.of(0, SWEEP_LIMIT)));
+        if (due.size() < SWEEP_LIMIT) {
+            due.addAll(repository.findByStateOrderByCreatedAtAsc(
+                    AssetLifecycleState.DELETION_IN_PROGRESS, PageRequest.of(0, SWEEP_LIMIT - due.size())));
+        }
+        int limit = due.size();
         for (int i = 0; i < limit; i++) {
             purgeOne(due.get(i));
         }
