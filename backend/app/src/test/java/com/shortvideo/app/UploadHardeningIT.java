@@ -218,6 +218,36 @@ class UploadHardeningIT {
     }
 
     @Test
+    void anUploadThatFinishesAfterTheDeadlineCanStillBeCompletedWithinTheGrace() throws Exception {
+        Map<?, ?> created = create(null).getBody();
+        String uploadId = (String) created.get("uploadId");
+        assertThat(postFile(created, "a slow upload that finished late")).isBetween(200, 299);
+        // The policy deadline passed while the body was still arriving.
+        jdbc.update("UPDATE upload.upload_session SET expires_at = now() - interval '3 minutes' WHERE upload_id = ?::uuid", uploadId);
+
+        ResponseEntity<Map> completed = rest.exchange(
+                url("/api/v1/uploads/" + uploadId + "/complete"), HttpMethod.POST, new HttpEntity<>(auth), Map.class);
+
+        assertThat(completed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(completed.getBody().get("status")).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void completionIsRefusedOnceTheGraceWindowIsAlsoOver() throws Exception {
+        Map<?, ?> created = create(null).getBody();
+        String uploadId = (String) created.get("uploadId");
+        assertThat(postFile(created, "far too late")).isBetween(200, 299);
+        jdbc.update("UPDATE upload.upload_session SET expires_at = now() - interval '2 hours' WHERE upload_id = ?::uuid", uploadId);
+
+        ResponseEntity<Map> completed = rest.exchange(
+                url("/api/v1/uploads/" + uploadId + "/complete"), HttpMethod.POST, new HttpEntity<>(auth), Map.class);
+
+        assertThat(completed.getStatusCode().is4xxClientError()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM upload.upload_session WHERE upload_id = ?::uuid", String.class, uploadId))
+                .isEqualTo("PENDING");
+    }
+
+    @Test
     void anAccountThatIsNotActiveCannotOpenAnUpload() {
         jdbc.update("UPDATE account.account SET state = 'RESTRICTED' WHERE account_id = ?::uuid", accountId);
 

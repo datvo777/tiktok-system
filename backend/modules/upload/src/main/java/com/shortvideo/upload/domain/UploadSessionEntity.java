@@ -60,6 +60,16 @@ public class UploadSessionEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * The presigned policy's expiry is checked when the store starts receiving the form,
+     * not when the last byte arrives, so a large upload begun just before it can finish
+     * well after it. Completing, and reaping, therefore both wait this long past
+     * {@code expiresAt}; without it a slow client's finished upload was rejected as
+     * expired and its object deleted. Nothing can <em>start</em> a new upload in this
+     * window, since the policy itself is already dead.
+     */
+    public static final java.time.Duration COMPLETION_GRACE = java.time.Duration.ofMinutes(30);
+
     protected UploadSessionEntity() {}
 
     public UploadSessionEntity(
@@ -90,6 +100,10 @@ public class UploadSessionEntity {
         this.completedSizeBytes = size;
         this.idempotencyKey = idempotencyKey;
         this.updatedAt = Instant.now();
+    }
+
+    public boolean canStillComplete(Instant now) {
+        return now.isBefore(expiresAt.plus(COMPLETION_GRACE));
     }
 
     public boolean isSizeWithinRange(long size) {

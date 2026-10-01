@@ -208,7 +208,7 @@ public class UploadService {
         if (session.getStatus() == UploadStatus.COMPLETED) {
             return toView(session); // redelivery / duplicate completion — no-op
         }
-        if (session.getExpiresAt().isBefore(Instant.now())) {
+        if (!session.canStillComplete(Instant.now())) {
             throw new UploadExceptions.UploadExpired("Upload session has expired");
         }
 

@@ -51,9 +51,11 @@ class UploadCleanupJob {
 
     @Scheduled(fixedDelayString = "${shortvideo.upload.cleanup-interval:15m}", initialDelayString = "30s")
     void sweep() {
+        // Past expiry plus the completion grace, so a slow upload that started in time is
+        // not reaped while it is still arriving or about to be completed.
         // Bounded in the query, not after it: a backlog must never be loaded whole.
         List<UploadSessionEntity> due = repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(
-                UploadStatus.PENDING, Instant.now(), PageRequest.of(0, SWEEP_LIMIT));
+                UploadStatus.PENDING, Instant.now().minus(UploadSessionEntity.COMPLETION_GRACE), PageRequest.of(0, SWEEP_LIMIT));
         int limit = due.size();
         for (int i = 0; i < limit; i++) {
             UploadSessionEntity session = due.get(i);
