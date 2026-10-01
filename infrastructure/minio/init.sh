@@ -61,3 +61,18 @@ mc admin user svcacct add local "$MINIO_ACCESS_KEY" \
 
 rm -f /tmp/app-policy.json
 echo "minio-init complete"
+
+# ---------------------------------------------------------------------------
+# Safety net for abandoned uploads. The application's cleanup job removes expired
+# upload sessions and their objects, but it only runs while the app is up and only
+# sees sessions it knows about. A presigned POST can also leave an object behind after
+# the session is gone (a late re-post), so anything still under uploads/ after a day
+# is deleted by the store itself. Verified sources live under sources/ and processed
+# output under processed/, neither of which this touches.
+# ---------------------------------------------------------------------------
+# (case rather than grep: the mc image ships without grep.)
+RULES="$(mc ilm rule ls "local/$MINIO_BUCKET" 2>/dev/null || true)"
+case "$RULES" in
+  *uploads/*) echo "lifecycle rule for uploads/ already present" ;;
+  *) mc ilm rule add --prefix "uploads/" --expire-days "1" "local/$MINIO_BUCKET" ;;
+esac

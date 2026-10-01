@@ -53,6 +53,7 @@ class UploadHardeningIT {
 
     private static final String BUCKET = "short-video";
     private static final int QUOTA = 5;
+    private static final int RATE_LIMIT = 20;
 
     @Container
     @SuppressWarnings("resource")
@@ -79,6 +80,7 @@ class UploadHardeningIT {
         registry.add("shortvideo.minio.access-key", () -> "minioadmin");
         registry.add("shortvideo.minio.secret-key", () -> "minioadmin");
         registry.add("shortvideo.minio.bucket", () -> BUCKET);
+        registry.add("shortvideo.upload.create-rate-limit.max-per-window", () -> String.valueOf(RATE_LIMIT));
     }
 
     @BeforeAll
@@ -220,6 +222,32 @@ class UploadHardeningIT {
         jdbc.update("UPDATE account.account SET state = 'RESTRICTED' WHERE account_id = ?::uuid", accountId);
 
         assertThat(create(null).getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(openSessions()).isZero();
+    }
+
+    @Test
+    void startingTooManyUploadsInAWindowIsThrottledEvenWhenQuotaAllowsThem() {
+        // Replays of one key consume no quota, so only the rate limit can stop these.
+        String key = "create-" + UUID.randomUUID();
+        for (int i = 0; i < RATE_LIMIT; i++) {
+            assertThat(create(key).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        }
+
+        ResponseEntity<Map> throttled = create(key);
+
+        assertThat(throttled.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(throttled.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isNotNull();
+    }
+
+    @Test
+    void aTitleWithControlCharactersIsRejectedBeforeAnythingIsCreated() {
+        ResponseEntity<Map> response = rest.exchange(
+                url("/api/v1/uploads"),
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("title", "bad\u0000title"), auth),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(openSessions()).isZero();
     }
 

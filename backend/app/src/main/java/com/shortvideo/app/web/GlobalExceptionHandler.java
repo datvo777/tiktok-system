@@ -127,6 +127,21 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Idempotency key already used", e.getMessage());
     }
 
+    @ExceptionHandler(UploadExceptions.InvalidMetadata.class)
+    public ProblemDetail invalidUploadMetadata(UploadExceptions.InvalidMetadata e) {
+        return problem(HttpStatus.BAD_REQUEST, "Invalid upload details", e.getMessage());
+    }
+
+    @ExceptionHandler(UploadExceptions.UploadRateLimited.class)
+    public ResponseEntity<ProblemDetail> uploadRateLimited(UploadExceptions.UploadRateLimited e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Too many uploads",
+                        "You have started too many uploads recently. Try again later."));
+    }
+
     @ExceptionHandler(UploadExceptions.UploadBusy.class)
     public ProblemDetail uploadBusy(UploadExceptions.UploadBusy e) {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "Upload busy", "Please retry in a moment");

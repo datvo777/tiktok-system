@@ -47,5 +47,22 @@ public final class UploadExceptions {
         public AccountNotAllowedToUpload(String message) { super(message); }
     }
 
+    /** Title or description failed validation; permanent once saved, so rejected up front. */
+    public static class InvalidMetadata extends RuntimeException {
+        public InvalidMetadata(String message) { super(message); }
+    }
+
+    /** Too many uploads started in the window; answered 429 with Retry-After. */
+    public static class UploadRateLimited extends RuntimeException {
+        private final java.time.Duration retryAfter;
+
+        public UploadRateLimited(java.time.Duration retryAfter) {
+            super("Too many uploads started");
+            this.retryAfter = retryAfter;
+        }
+
+        public java.time.Duration retryAfter() { return retryAfter; }
+    }
+
     private UploadExceptions() {}
 }

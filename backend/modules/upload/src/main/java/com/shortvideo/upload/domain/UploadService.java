@@ -57,6 +57,7 @@ public class UploadService {
     private final String minioEndpoint;
     private final JdbcTemplate jdbc;
     private final AccountDirectory accountDirectory;
+    private final UploadCreateRateLimiter createRateLimiter;
 
     public UploadService(
             UploadJpaRepository repository,
@@ -66,7 +67,8 @@ public class UploadService {
             @Value("${shortvideo.minio.bucket}") String bucket,
             @Value("${shortvideo.minio.endpoint}") String minioEndpoint,
             JdbcTemplate jdbc,
-            AccountDirectory accountDirectory) {
+            AccountDirectory accountDirectory,
+            UploadCreateRateLimiter createRateLimiter) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDraftRegistrar = videoDraftRegistrar;
@@ -75,6 +77,7 @@ public class UploadService {
         this.minioEndpoint = minioEndpoint;
         this.jdbc = jdbc;
         this.accountDirectory = accountDirectory;
+        this.createRateLimiter = createRateLimiter;
     }
 
     /**
@@ -86,6 +89,12 @@ public class UploadService {
     public UploadSessionCreated createSession(
             String accountId, String title, String description, String idempotencyKey) {
         UUID owner = UUID.fromString(accountId);
+        title = UploadMetadata.title(title);
+        description = UploadMetadata.description(description);
+
+        // Before the lock: this is a Redis round trip, and nothing networked is done while
+        // the account lock is held.
+        createRateLimiter.checkAllowed(accountId);
 
         // The JWT proves who the caller was when it was issued, not that the account may
         // still start new work. Unknown or non-ACTIVE denies (Rule 9).
