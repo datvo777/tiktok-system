@@ -18,6 +18,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -57,6 +58,9 @@ class AuthorizationIT {
     JdbcTemplate jdbc;
 
     @Autowired
+    StringRedisTemplate redis;
+
+    @Autowired
     JwtService jwtService;
 
     @LocalServerPort
@@ -66,6 +70,10 @@ class AuthorizationIT {
 
     @BeforeEach
     void setUp() {
+        // The per-IP login/registration counters are shared by every test, since they all
+        // come from loopback, and would otherwise throttle later tests in the run.
+        redis.keys("login:*").forEach(redis::delete);
+        redis.keys("register:*").forEach(redis::delete);
         email = "creator-" + UUID.randomUUID() + "@example.com";
     }
 

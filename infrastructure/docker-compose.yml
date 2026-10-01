@@ -132,7 +132,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-      # Browser PUTs straight to MinIO with a presigned URL, so MinIO answers
+      # The browser POSTs a presigned multipart form straight to MinIO, so MinIO answers
       # the preflight, not the backend. Restricted to the web origin, never "*".
       # If the pinned release supports PutBucketCors, `mc cors set` is the
       # alternative; record whichever one this pin supports (brief section 19).

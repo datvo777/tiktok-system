@@ -83,7 +83,13 @@ shortvideo:
     # explicit opt-out, and one variable drives both cookies so they cannot drift.
     cookie-secure: ${COOKIE_SECURE:true}
   minio:
+    # What the backend itself connects to (inside Docker this is the service name).
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    # What the browser is told to POST uploads to. It must be reachable from the user's
+    # browser, which inside Docker is not the service name above. Left empty it falls back
+    # to `endpoint`, so a single-host setup needs no extra configuration.
+    public-endpoint: ${MINIO_PUBLIC_ENDPOINT:}
+    region: ${MINIO_REGION:us-east-1}
     # The scoped service account, not root: a compromise of this process should
     # not be able to touch anything outside this one bucket. minio-init mints it.
     access-key: ${MINIO_APP_ACCESS_KEY:short-video-app}

@@ -234,8 +234,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler({
         VideoExceptions.NotVideoOwner.class,
-        VideoExceptions.VideoNotReady.class,
-        UploadExceptions.NotUploadOwner.class
+        VideoExceptions.VideoNotReady.class
     })
     public ProblemDetail forbiddenGeneric(RuntimeException e) {
         return problem(HttpStatus.FORBIDDEN, "Forbidden", e.getMessage());

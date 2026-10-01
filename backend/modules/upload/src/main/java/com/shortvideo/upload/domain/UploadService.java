@@ -66,6 +66,7 @@ public class UploadService {
             MinioClient minioClient,
             @Value("${shortvideo.minio.bucket}") String bucket,
             @Value("${shortvideo.minio.endpoint}") String minioEndpoint,
+            @Value("${shortvideo.minio.public-endpoint:}") String minioPublicEndpoint,
             JdbcTemplate jdbc,
             AccountDirectory accountDirectory,
             UploadCreateRateLimiter createRateLimiter) {
@@ -74,7 +75,7 @@ public class UploadService {
         this.videoDraftRegistrar = videoDraftRegistrar;
         this.minioClient = minioClient;
         this.bucket = bucket;
-        this.minioEndpoint = minioEndpoint;
+        this.minioEndpoint = minioPublicEndpoint == null || minioPublicEndpoint.isBlank() ? minioEndpoint : minioPublicEndpoint;
         this.jdbc = jdbc;
         this.accountDirectory = accountDirectory;
         this.createRateLimiter = createRateLimiter;
@@ -203,7 +204,8 @@ public class UploadService {
                 .orElseThrow(() -> new UploadExceptions.UploadNotFound("No such upload"));
 
         if (!session.getAccountId().toString().equals(accountId)) {
-            throw new UploadExceptions.NotUploadOwner("Not the owner of this upload");
+            // Same answer as an unknown id, so ownership of an upload id is not disclosed.
+            throw new UploadExceptions.UploadNotFound("No such upload");
         }
         if (session.getStatus() == UploadStatus.COMPLETED) {
             return toView(session); // redelivery / duplicate completion — no-op
@@ -291,7 +293,10 @@ public class UploadService {
         }
     }
 
-    /** Where the presigned form is posted; the bucket is addressed path-style. */
+    /**
+     * Where the presigned form is posted: the browser-reachable address, which can differ
+     * from the one the backend connects to. The bucket is addressed path-style.
+     */
     private String uploadEndpoint() {
         return minioEndpoint.replaceAll("/+$", "") + "/" + bucket;
     }

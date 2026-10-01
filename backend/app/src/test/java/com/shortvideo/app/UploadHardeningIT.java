@@ -28,6 +28,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -94,6 +95,9 @@ class UploadHardeningIT {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Autowired
+    StringRedisTemplate redis;
+
     @LocalServerPort
     int port;
 
@@ -102,6 +106,10 @@ class UploadHardeningIT {
 
     @BeforeEach
     void setUp() {
+        // The per-IP login/registration counters are shared by every test, since they all
+        // come from loopback, and would otherwise throttle later tests in the run.
+        redis.keys("login:*").forEach(redis::delete);
+        redis.keys("register:*").forEach(redis::delete);
         String email = "creator-" + UUID.randomUUID() + "@example.com";
         HttpHeaders json = new HttpHeaders();
         json.setContentType(MediaType.APPLICATION_JSON);
@@ -245,6 +253,33 @@ class UploadHardeningIT {
         assertThat(completed.getStatusCode().is4xxClientError()).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM upload.upload_session WHERE upload_id = ?::uuid", String.class, uploadId))
                 .isEqualTo("PENDING");
+    }
+
+    @Test
+    void anotherAccountCompletingSomeonesUploadSeesNotFoundNotForbidden() {
+        String uploadId = (String) create(null).getBody().get("uploadId");
+        HttpHeaders json = new HttpHeaders();
+        json.setContentType(MediaType.APPLICATION_JSON);
+        String otherEmail = "other-" + UUID.randomUUID() + "@example.com";
+        rest.exchange(
+                url("/api/v1/accounts"),
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("email", otherEmail, "password", "correct-horse-battery", "displayName", "Other"), json),
+                Map.class);
+        Map<?, ?> login = rest.exchange(
+                        url("/api/v1/auth/login"),
+                        HttpMethod.POST,
+                        new HttpEntity<>(Map.of("email", otherEmail, "password", "correct-horse-battery"), json),
+                        Map.class)
+                .getBody();
+        HttpHeaders other = new HttpHeaders();
+        other.setBearerAuth((String) login.get("token"));
+
+        ResponseEntity<Map> response = rest.exchange(
+                url("/api/v1/uploads/" + uploadId + "/complete"), HttpMethod.POST, new HttpEntity<>(other), Map.class);
+
+        // Same answer as GET and as an unknown id: ownership of an upload id is not disclosed.
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     @Test

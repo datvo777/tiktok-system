@@ -6,10 +6,6 @@ public final class UploadExceptions {
         public UploadNotFound(String message) { super(message); }
     }
 
-    public static class NotUploadOwner extends RuntimeException {
-        public NotUploadOwner(String message) { super(message); }
-    }
-
     public static class UploadExpired extends RuntimeException {
         public UploadExpired(String message) { super(message); }
     }

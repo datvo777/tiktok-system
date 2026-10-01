@@ -18,18 +18,25 @@ public class MinioConfig {
     public MinioClient minioClient(MinioProperties properties) {
         return MinioClient.builder()
                 .endpoint(properties.getEndpoint())
+                // Without an explicit region the SDK asks the server for the bucket's region
+                // the first time it signs anything, and createSession signs inside a
+                // transaction. Fixing it here makes signing purely local.
+                .region(properties.getRegion())
                 .credentials(properties.getAccessKey(), properties.getSecretKey())
                 .build();
     }
 
     public static class MinioProperties {
         private String endpoint = "http://localhost:9000";
+        private String region = "us-east-1";
         private String accessKey;
         private String secretKey;
         private String bucket = "short-video";
 
         public String getEndpoint() { return endpoint; }
         public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
+        public String getRegion() { return region; }
+        public void setRegion(String region) { this.region = region; }
         public String getAccessKey() { return accessKey; }
         public void setAccessKey(String accessKey) { this.accessKey = accessKey; }
         public String getSecretKey() { return secretKey; }
