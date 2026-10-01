@@ -38,6 +38,11 @@ public final class UploadExceptions {
         public UploadBusy(String message, Throwable cause) { super(message, cause); }
     }
 
+    /** The object store did not answer or failed while verifying or securing an upload; retryable, answered 503. */
+    public static class StorageUnavailable extends RuntimeException {
+        public StorageUnavailable(String message, Throwable cause) { super(message, cause); }
+    }
+
     /** Only ACTIVE accounts may open an upload; anything else, or an unknown account, is refused (Rule 9). */
     public static class AccountNotAllowedToUpload extends RuntimeException {
         public AccountNotAllowedToUpload(String message) { super(message); }

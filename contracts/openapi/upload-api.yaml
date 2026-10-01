@@ -112,6 +112,11 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: Object storage did not answer while verifying the upload; retry (see Retry-After)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /api/v1/uploads/{uploadId}:
     get:

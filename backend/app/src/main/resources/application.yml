@@ -95,6 +95,11 @@ shortvideo:
     access-key: ${MINIO_APP_ACCESS_KEY:short-video-app}
     secret-key: ${MINIO_APP_SECRET_KEY:short-video-app-secret}
     bucket: ${MINIO_BUCKET:short-video}
+    # SDK default is 5 minutes each. Kept short so a hung MinIO fails fast (503) instead
+    # of holding request threads and DB connections; read must outlast a server-side copy.
+    connect-timeout: 3s
+    write-timeout: 30s
+    read-timeout: 30s
   upload:
     cleanup-interval: 15m
   outbox:

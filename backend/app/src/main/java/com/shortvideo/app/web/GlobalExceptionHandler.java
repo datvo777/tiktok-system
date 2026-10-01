@@ -147,6 +147,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "Upload busy", "Please retry in a moment");
     }
 
+    /** The object store being down is a dependency failure, not this service failing: retryable, and not an error-level log. */
+    @ExceptionHandler(UploadExceptions.StorageUnavailable.class)
+    public ResponseEntity<ProblemDetail> uploadStorageUnavailable(UploadExceptions.StorageUnavailable e) {
+        log.warn("Object store unavailable: {}", e.getMessage(), e.getCause());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "5")
+                .body(problem(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Storage unavailable",
+                        "Upload storage is temporarily unavailable; retry shortly"));
+    }
+
     @ExceptionHandler(UploadExceptions.AccountNotAllowedToUpload.class)
     public ProblemDetail uploadNotAllowed(UploadExceptions.AccountNotAllowedToUpload e) {
         return problem(HttpStatus.FORBIDDEN, "Upload not allowed", e.getMessage());

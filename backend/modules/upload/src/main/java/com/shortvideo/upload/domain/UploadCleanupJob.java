@@ -56,32 +56,46 @@ class UploadCleanupJob {
         // Bounded in the query, not after it: a backlog must never be loaded whole.
         List<UploadSessionEntity> due = repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(
                 UploadStatus.PENDING, Instant.now().minus(UploadSessionEntity.COMPLETION_GRACE), PageRequest.of(0, SWEEP_LIMIT));
-        int limit = due.size();
-        for (int i = 0; i < limit; i++) {
-            UploadSessionEntity session = due.get(i);
-            // Explicit template: a self-invoked @Transactional method bypasses the proxy,
-            // which would leave expireDraft and delete in separate transactions.
-            transaction.executeWithoutResult(status -> reapOne(session));
+        int reaped = 0;
+        for (UploadSessionEntity session : due) {
+            // One bad session must not abort the rest of the batch; it stays PENDING-and-expired
+            // and the next sweep retries it.
+            try {
+                if (reapOne(session)) {
+                    reaped++;
+                }
+            } catch (RuntimeException e) {
+                log.warn("Failed to reap expired upload session {}: {}", session.getUploadId(), e.getMessage());
+            }
         }
-        if (limit > 0) {
-            log.info("Upload cleanup reaped {} expired session{}", limit, limit == 1 ? "" : "s");
+        if (reaped > 0) {
+            log.info("Upload cleanup reaped {} expired session{}", reaped, reaped == 1 ? "" : "s");
         }
     }
 
     /**
      * Deletes the MinIO object first and only removes the row once that
      * succeeds, so a failed delete just leaves the row PENDING-and-expired
-     * for the next sweep to retry rather than orphaning the object.
+     * for the next sweep to retry rather than orphaning the object. The network
+     * call stays outside the DB transaction so it never holds a connection; the
+     * template (not a self-invoked {@code @Transactional}, which would bypass the
+     * proxy) keeps expireDraft and delete atomic. A rollback after the object is
+     * gone is safe: removing an absent object succeeds on the retry.
+     *
+     * @return whether the session was reaped
      */
-    void reapOne(UploadSessionEntity session) {
+    boolean reapOne(UploadSessionEntity session) {
         String objectKey = session.getObjectKey();
         try {
             minioClient.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(objectKey).build());
         } catch (Exception e) {
             log.warn("Failed to remove expired upload object {}: {}", objectKey, e.getMessage());
-            return;
+            return false;
         }
-        videoDraftRegistrar.expireDraft(session.getVideoId().toString());
-        repository.delete(session);
+        transaction.executeWithoutResult(status -> {
+            videoDraftRegistrar.expireDraft(session.getVideoId().toString());
+            repository.delete(session);
+        });
+        return true;
     }
 }

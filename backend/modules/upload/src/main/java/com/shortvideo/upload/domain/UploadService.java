@@ -307,7 +307,7 @@ public class UploadService {
         } catch (ErrorResponseException notFound) {
             throw new UploadExceptions.UploadObjectMissing("No object was uploaded to " + objectKey);
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to verify uploaded object", e);
+            throw new UploadExceptions.StorageUnavailable("Failed to verify uploaded object", e);
         }
     }
 
@@ -327,7 +327,7 @@ public class UploadService {
             throw new UploadExceptions.UploadObjectMissing(
                     "The uploaded object changed while it was being verified; upload it again");
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to secure the uploaded object", e);
+            throw new UploadExceptions.StorageUnavailable("Failed to secure the uploaded object", e);
         }
     }
 
