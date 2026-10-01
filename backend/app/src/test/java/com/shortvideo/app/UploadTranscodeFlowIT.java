@@ -127,6 +127,7 @@ class UploadTranscodeFlowIT {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void uploadTranscodePreviewFlowEndToEnd() throws Exception {
         register(email, "correct-horse-battery");
         Map<?, ?> login = login(email, "correct-horse-battery").getBody();
@@ -142,9 +143,9 @@ class UploadTranscodeFlowIT {
         String uploadUrl = (String) created.getBody().get("uploadUrl");
         assertThat(uploadUrl).doesNotContain("processed/"); // never a processed/ read URL (Rule 18)
 
-        // 2. The browser PUTs directly to MinIO.
+        // 2. The browser POSTs the presigned form directly to MinIO.
         byte[] payload = "not a real mp4, only size matters for this test".getBytes(StandardCharsets.UTF_8);
-        putToPresignedUrl(uploadUrl, payload);
+        postToPresignedForm(uploadUrl, (Map<String, String>) created.getBody().get("formFields"), payload);
 
         // 3. Complete the upload; verify it is owner-checked and idempotent.
         ResponseEntity<Map> completed = post("/api/v1/uploads/" + uploadId + "/complete", null, auth);
@@ -215,6 +216,7 @@ class UploadTranscodeFlowIT {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void aTerminalTranscodeFailureMarksTheVideoFailed() throws Exception {
         register(email, "correct-horse-battery");
         HttpHeaders auth = bearer((String) login(email, "correct-horse-battery").getBody().get("token"));
@@ -223,7 +225,7 @@ class UploadTranscodeFlowIT {
         String uploadId = (String) created.getBody().get("uploadId");
         String videoId = (String) created.getBody().get("videoId");
         String uploadUrl = (String) created.getBody().get("uploadUrl");
-        putToPresignedUrl(uploadUrl, "x".getBytes(StandardCharsets.UTF_8));
+        postToPresignedForm(uploadUrl, (Map<String, String>) created.getBody().get("formFields"), "x".getBytes(StandardCharsets.UTF_8));
         post("/api/v1/uploads/" + uploadId + "/complete", null, auth);
 
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
@@ -290,11 +292,20 @@ class UploadTranscodeFlowIT {
         }
     }
 
-    private void putToPresignedUrl(String url, byte[] body) {
+    private void postToPresignedForm(String url, Map<String, String> fields, byte[] body) {
+        org.springframework.util.LinkedMultiValueMap<String, Object> form = new org.springframework.util.LinkedMultiValueMap<>();
+        fields.forEach(form::add);
+        // The object store requires the file part to come last.
+        form.add("file", new org.springframework.core.io.ByteArrayResource(body) {
+            @Override
+            public String getFilename() {
+                return "video.mp4";
+            }
+        });
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentLength(body.length);
-        rest.getRestTemplate()
-                .exchange(url, HttpMethod.PUT, new HttpEntity<>(body, headers), Void.class);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        new org.springframework.web.client.RestTemplate(new org.springframework.http.client.SimpleClientHttpRequestFactory())
+                .exchange(url, HttpMethod.POST, new HttpEntity<>(form, headers), Void.class);
     }
 
     private ResponseEntity<Map> register(String address, String password) {

@@ -122,6 +122,21 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Too many open uploads", e.getMessage());
     }
 
+    @ExceptionHandler(UploadExceptions.IdempotencyKeyConflict.class)
+    public ProblemDetail uploadIdempotencyConflict(UploadExceptions.IdempotencyKeyConflict e) {
+        return problem(HttpStatus.CONFLICT, "Idempotency key already used", e.getMessage());
+    }
+
+    @ExceptionHandler(UploadExceptions.UploadBusy.class)
+    public ProblemDetail uploadBusy(UploadExceptions.UploadBusy e) {
+        return problem(HttpStatus.SERVICE_UNAVAILABLE, "Upload busy", "Please retry in a moment");
+    }
+
+    @ExceptionHandler(UploadExceptions.AccountNotAllowedToUpload.class)
+    public ProblemDetail uploadNotAllowed(UploadExceptions.AccountNotAllowedToUpload e) {
+        return problem(HttpStatus.FORBIDDEN, "Upload not allowed", e.getMessage());
+    }
+
     @ExceptionHandler(AccountExceptions.EmailAlreadyRegistered.class)
     public ProblemDetail conflict(AccountExceptions.EmailAlreadyRegistered e) {
         return problem(HttpStatus.CONFLICT, "Email already registered", e.getMessage());

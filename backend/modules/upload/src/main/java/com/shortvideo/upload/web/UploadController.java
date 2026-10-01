@@ -32,8 +32,10 @@ public class UploadController {
     @Operation(summary = "Create an upload session; also creates the video draft (brief section 7.1)")
     public ResponseEntity<UploadDtos.CreateUploadResponse> create(
             @Valid @RequestBody UploadDtos.CreateUploadRequest request,
-            @AuthenticationPrincipal AuthenticatedAccount caller) {
-        var created = uploadService.createSession(caller.accountId(), request.title(), request.description());
+            @AuthenticationPrincipal AuthenticatedAccount caller,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        var created = uploadService.createSession(
+                caller.accountId(), request.title(), request.description(), idempotencyKey);
         return ResponseEntity.created(URI.create("/api/v1/uploads/" + created.uploadId()))
                 .body(UploadDtos.CreateUploadResponse.from(created));
     }

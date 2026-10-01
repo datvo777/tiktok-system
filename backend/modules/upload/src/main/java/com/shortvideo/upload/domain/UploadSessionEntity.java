@@ -43,6 +43,9 @@ public class UploadSessionEntity {
     @Column(name = "idempotency_key", length = 200)
     private String idempotencyKey;
 
+    @Column(name = "create_idempotency_key", length = 200, updatable = false)
+    private String createIdempotencyKey;
+
     @Column(name = "expires_at", nullable = false, updatable = false)
     private Instant expiresAt;
 
@@ -66,7 +69,8 @@ public class UploadSessionEntity {
             String objectKey,
             long minSizeBytes,
             long maxSizeBytes,
-            Instant expiresAt) {
+            Instant expiresAt,
+            String createIdempotencyKey) {
         Instant now = Instant.now();
         this.uploadId = uploadId;
         this.videoId = videoId;
@@ -76,6 +80,7 @@ public class UploadSessionEntity {
         this.minSizeBytes = minSizeBytes;
         this.maxSizeBytes = maxSizeBytes;
         this.expiresAt = expiresAt;
+        this.createIdempotencyKey = createIdempotencyKey;
         this.createdAt = now;
         this.updatedAt = now;
     }

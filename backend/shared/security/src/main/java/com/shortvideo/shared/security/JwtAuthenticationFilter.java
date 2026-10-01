@@ -191,7 +191,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     .orElse(Instant.EPOCH);
             credentialFreshnessCache.put(account.accountId(), changedAt);
         }
-        if (account.issuedAt().isBefore(changedAt)) {
+        // A JWT's iat is whole seconds while password_changed_at is not, so comparing them
+        // raw rejects a token issued in the same second as the change it came after (e.g.
+        // logging in right after registering). Compare at the token's own precision; the
+        // price is that a token minted earlier in that same second is not revoked.
+        if (account.issuedAt().isBefore(changedAt.truncatedTo(java.time.temporal.ChronoUnit.SECONDS))) {
             log.debug("Rejected token issued before the last password change on {}", request.getRequestURI());
             return true;
         }

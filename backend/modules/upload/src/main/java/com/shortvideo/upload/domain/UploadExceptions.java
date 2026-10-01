@@ -32,5 +32,20 @@ public final class UploadExceptions {
         public TooManyOpenUploads(String message) { super(message); }
     }
 
+    /** The Idempotency-Key names a session that can no longer be handed back (completed or expired). */
+    public static class IdempotencyKeyConflict extends RuntimeException {
+        public IdempotencyKeyConflict(String message) { super(message); }
+    }
+
+    /** Could not take this account's upload lock in time; the caller should retry. */
+    public static class UploadBusy extends RuntimeException {
+        public UploadBusy(String message, Throwable cause) { super(message, cause); }
+    }
+
+    /** Only ACTIVE accounts may open an upload; anything else, or an unknown account, is refused (Rule 9). */
+    public static class AccountNotAllowedToUpload extends RuntimeException {
+        public AccountNotAllowedToUpload(String message) { super(message); }
+    }
+
     private UploadExceptions() {}
 }

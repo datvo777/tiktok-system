@@ -2,6 +2,7 @@ package com.shortvideo.upload.domain;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -19,4 +20,6 @@ interface UploadJpaRepository extends JpaRepository<UploadSessionEntity, UUID> {
      * account out until the next sweep.
      */
     long countByAccountIdAndStatusAndExpiresAtAfter(UUID accountId, UploadStatus status, Instant now);
+
+    Optional<UploadSessionEntity> findByAccountIdAndCreateIdempotencyKey(UUID accountId, String createIdempotencyKey);
 }

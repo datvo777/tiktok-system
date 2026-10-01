@@ -328,9 +328,28 @@ class AuthorizationIT {
 
     // ------------------------------------------------------------- helpers
 
-    /** Mints a token directly so a role can be chosen without seeding an admin row. */
+    /**
+     * A token for a real account holding {@code roles} in the database. The filter takes
+     * roles from the account, not from the token, so a token signed for an id with no row
+     * (or whose claim disagrees with the row) is rejected by design.
+     */
     private String tokenFor(Set<String> roles) {
-        return jwtService.issue(UUID.randomUUID().toString(), roles).token();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        Map<?, ?> created = rest.exchange(
+                        url("/api/v1/accounts"),
+                        HttpMethod.POST,
+                        new HttpEntity<>(
+                                Map.of(
+                                        "email", "role-" + UUID.randomUUID() + "@example.com",
+                                        "password", "correct-horse-battery",
+                                        "displayName", "Role Holder"),
+                                headers),
+                        Map.class)
+                .getBody();
+        String accountId = (String) created.get("accountId");
+        jdbc.update("UPDATE account.account SET roles = ? WHERE account_id = ?::uuid", String.join(",", roles), accountId);
+        return jwtService.issue(accountId, roles).token();
     }
 
     private String registerAndLogin() {

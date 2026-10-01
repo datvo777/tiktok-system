@@ -1,28 +1,40 @@
 package com.shortvideo.upload.domain;
 
+import com.shortvideo.account.api.AccountDirectory;
+import com.shortvideo.account.api.AccountView;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
 import com.shortvideo.video.api.VideoDraft;
 import com.shortvideo.video.api.VideoDraftRegistrar;
+import io.minio.CopyObjectArgs;
+import io.minio.CopySource;
 import io.minio.MinioClient;
 import io.minio.PostPolicy;
+import io.minio.RemoveObjectArgs;
 import io.minio.StatObjectArgs;
 import io.minio.StatObjectResponse;
 import io.minio.errors.ErrorResponseException;
 import java.time.Instant;
-import java.time.ZonedDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Service
 public class UploadService {
+
+    private static final Logger log = LoggerFactory.getLogger(UploadService.class);
 
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "upload";
@@ -43,6 +55,8 @@ public class UploadService {
     private final MinioClient minioClient;
     private final String bucket;
     private final String minioEndpoint;
+    private final JdbcTemplate jdbc;
+    private final AccountDirectory accountDirectory;
 
     public UploadService(
             UploadJpaRepository repository,
@@ -50,13 +64,17 @@ public class UploadService {
             VideoDraftRegistrar videoDraftRegistrar,
             MinioClient minioClient,
             @Value("${shortvideo.minio.bucket}") String bucket,
-            @Value("${shortvideo.minio.endpoint}") String minioEndpoint) {
+            @Value("${shortvideo.minio.endpoint}") String minioEndpoint,
+            JdbcTemplate jdbc,
+            AccountDirectory accountDirectory) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDraftRegistrar = videoDraftRegistrar;
         this.minioClient = minioClient;
         this.bucket = bucket;
         this.minioEndpoint = minioEndpoint;
+        this.jdbc = jdbc;
+        this.accountDirectory = accountDirectory;
     }
 
     /**
@@ -65,12 +83,35 @@ public class UploadService {
      * 7.1).
      */
     @Transactional
-    public UploadSessionCreated createSession(String accountId, String title, String description) {
+    public UploadSessionCreated createSession(
+            String accountId, String title, String description, String idempotencyKey) {
+        UUID owner = UUID.fromString(accountId);
+
+        // The JWT proves who the caller was when it was issued, not that the account may
+        // still start new work. Unknown or non-ACTIVE denies (Rule 9).
+        boolean active = accountDirectory.find(accountId).filter(AccountView::isEligible).isPresent();
+        if (!active) {
+            throw new UploadExceptions.AccountNotAllowedToUpload("This account cannot start uploads");
+        }
+
+        // Serialises this account's creates for the rest of the transaction, so the quota
+        // count below and the insert that follows cannot interleave with another request's:
+        // two parallel creates would otherwise both read 4 and both insert. Bounded wait,
+        // and the only thing done under the lock is local DB work and local signing.
+        lockAccount(accountId);
+
+        String key = normalizeKey(idempotencyKey);
+        if (key != null) {
+            var existing = repository.findByAccountIdAndCreateIdempotencyKey(owner, key);
+            if (existing.isPresent()) {
+                return replay(existing.get());
+            }
+        }
+
         // The per-object size cap in the presigned policy bounds one upload; it does
         // not bound how many an account may have in flight. Without this, opening
         // sessions in a loop is an unbounded write allowance against the bucket, and
         // each one also creates a video draft row.
-        UUID owner = UUID.fromString(accountId);
         long open = repository.countByAccountIdAndStatusAndExpiresAtAfter(
                 owner, UploadStatus.PENDING, Instant.now());
         if (open >= MAX_OPEN_SESSIONS_PER_ACCOUNT) {
@@ -91,16 +132,54 @@ public class UploadService {
                 objectKey,
                 DEFAULT_MIN_BYTES,
                 DEFAULT_MAX_BYTES,
-                expiresAt);
+                expiresAt,
+                key);
         repository.saveAndFlush(session);
 
         return new UploadSessionCreated(
                 uploadId.toString(),
                 draft.videoId(),
                 uploadEndpoint(),
-                presignPost(objectKey, DEFAULT_MAX_BYTES),
+                presignPost(objectKey, DEFAULT_MAX_BYTES, expiresAt),
                 DEFAULT_MAX_BYTES,
                 expiresAt);
+    }
+
+    private void lockAccount(String accountId) {
+        try {
+            jdbc.execute("SET LOCAL lock_timeout = '5s'");
+            jdbc.queryForList(
+                    "SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(?, 0))) l", accountId);
+        } catch (PessimisticLockingFailureException e) {
+            throw new UploadExceptions.UploadBusy("Another upload request for this account is in progress", e);
+        }
+    }
+
+    /**
+     * A retry of a create that already succeeded gets the same session back. The form is
+     * re-signed (a signature cannot be stored sensibly) but pins the same key and the
+     * original expiry, so it grants nothing the first response did not.
+     */
+    private UploadSessionCreated replay(UploadSessionEntity session) {
+        if (session.getStatus() != UploadStatus.PENDING || session.getExpiresAt().isBefore(Instant.now())) {
+            throw new UploadExceptions.IdempotencyKeyConflict(
+                    "This Idempotency-Key belongs to an upload that is no longer open; use a new key");
+        }
+        return new UploadSessionCreated(
+                session.getUploadId().toString(),
+                session.getVideoId().toString(),
+                uploadEndpoint(),
+                presignPost(session.getObjectKey(), session.getMaxSizeBytes(), session.getExpiresAt()),
+                session.getMaxSizeBytes(),
+                session.getExpiresAt());
+    }
+
+    private static String normalizeKey(String key) {
+        if (key == null || key.isBlank()) {
+            return null;
+        }
+        String trimmed = key.trim();
+        return trimmed.length() > 200 ? trimmed.substring(0, 200) : trimmed;
     }
 
     /**
@@ -124,11 +203,20 @@ public class UploadService {
             throw new UploadExceptions.UploadExpired("Upload session has expired");
         }
 
-        long size = statSize(session.getObjectKey());
+        StatObjectResponse stat = stat(session.getObjectKey());
+        long size = stat.size();
         if (!session.isSizeWithinRange(size)) {
             throw new UploadExceptions.UploadSizeOutOfRange(
                     "Uploaded object size " + size + " is outside the allowed range");
         }
+        // The presigned POST stays usable until it expires, so the client could overwrite
+        // uploads/... after this check and the transcoder would read different bytes than
+        // the ones just verified. Everything downstream reads a private copy instead, made
+        // only if the object is still the one we stat'ed (matchETag) and under a key no
+        // presigned policy covers.
+        String sourceKey = sourceKeyFor(session.getVideoId());
+        copyVerified(session.getObjectKey(), sourceKey, stat.etag());
+        removeAfterCommit(session.getObjectKey());
 
         session.markCompleted(size, idempotencyKey);
         UploadSessionEntity saved = repository.saveAndFlush(session);
@@ -137,7 +225,7 @@ public class UploadService {
                 saved.getUploadId().toString(),
                 saved.getVideoId().toString(),
                 saved.getAccountId().toString(),
-                saved.getObjectKey(),
+                sourceKey,
                 size);
 
         outboxWriter.append(new EventEnvelope<>(
@@ -181,9 +269,9 @@ public class UploadService {
      *     browser sends a multipart form to {@link #uploadEndpoint()} rather than
      *     PUTting the raw file.
      */
-    private Map<String, String> presignPost(String objectKey, long maxBytes) {
+    private Map<String, String> presignPost(String objectKey, long maxBytes, Instant expiresAt) {
         try {
-            PostPolicy policy = new PostPolicy(bucket, ZonedDateTime.now().plusSeconds(URL_EXPIRY_SECONDS));
+            PostPolicy policy = new PostPolicy(bucket, expiresAt.atZone(java.time.ZoneOffset.UTC));
             policy.addEqualsCondition("key", objectKey);
             policy.addContentLengthRangeCondition(DEFAULT_MIN_BYTES, maxBytes);
             Map<String, String> formData = new LinkedHashMap<>(minioClient.getPresignedPostFormData(policy));
@@ -199,16 +287,53 @@ public class UploadService {
         return minioEndpoint.replaceAll("/+$", "") + "/" + bucket;
     }
 
-    private long statSize(String objectKey) {
+    private StatObjectResponse stat(String objectKey) {
         try {
-            StatObjectResponse stat =
-                    minioClient.statObject(StatObjectArgs.builder().bucket(bucket).object(objectKey).build());
-            return stat.size();
+            return minioClient.statObject(StatObjectArgs.builder().bucket(bucket).object(objectKey).build());
         } catch (ErrorResponseException notFound) {
             throw new UploadExceptions.UploadObjectMissing("No object was uploaded to " + objectKey);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to verify uploaded object", e);
         }
+    }
+
+    static String sourceKeyFor(UUID videoId) {
+        return "sources/" + videoId + "/original";
+    }
+
+    /** Server-side copy, refused by the store if the object changed since {@code etag} was read. */
+    private void copyVerified(String fromKey, String toKey, String etag) {
+        try {
+            minioClient.copyObject(CopyObjectArgs.builder()
+                    .bucket(bucket)
+                    .object(toKey)
+                    .source(CopySource.builder().bucket(bucket).object(fromKey).matchETag(etag).build())
+                    .build());
+        } catch (ErrorResponseException changed) {
+            throw new UploadExceptions.UploadObjectMissing(
+                    "The uploaded object changed while it was being verified; upload it again");
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to secure the uploaded object", e);
+        }
+    }
+
+    /**
+     * Only once the completion has committed: if the transaction rolled back, the client's
+     * retry must still find the original to copy. A failed delete is harmless, since
+     * nothing reads uploads/ any more.
+     */
+    private void removeAfterCommit(String objectKey) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    minioClient.removeObject(
+                            RemoveObjectArgs.builder().bucket(bucket).object(objectKey).build());
+                } catch (Exception e) {
+                    log.warn("Could not remove upload staging object {}: {}", objectKey, e.getMessage());
+                }
+            }
+        });
     }
 
     private static UploadView toView(UploadSessionEntity session) {
