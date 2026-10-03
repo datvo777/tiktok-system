@@ -338,6 +338,13 @@ class HlsTranscoder {
             // accept and transcode a feature film -- three times over, now that
             // there is a ladder. Terminal: the same bytes will be the same
             // length on every retry.
+            // Terminal for the same reason: the same bytes declare the same frame size.
+            int maxEdge = properties.getMaxSourceEdge();
+            if (maxEdge > 0 && Math.max(width, height) > maxEdge) {
+                throw new TranscodeFailedException(
+                        "TERMINAL",
+                        "Source frame is " + width + "x" + height + "; the limit is " + maxEdge + " on the long edge");
+            }
             long maxSeconds = properties.getMaxDurationSeconds();
             if (maxSeconds > 0 && durationSeconds > maxSeconds) {
                 throw new TranscodeFailedException(
