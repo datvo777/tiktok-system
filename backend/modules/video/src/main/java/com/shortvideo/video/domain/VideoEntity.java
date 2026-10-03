@@ -133,7 +133,7 @@ public class VideoEntity {
      * object. A no-op once processing has actually started, so a completed
      * upload racing the reaper is never downgraded.
      */
-    public boolean expireDraft() {
+    public boolean expireIfCreated() {
         if (this.processingState != ProcessingState.CREATED) {
             return false;
         }

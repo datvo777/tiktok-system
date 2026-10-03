@@ -104,7 +104,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     @Transactional
     public void expireDraft(String videoId) {
         VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
-        if (video == null || !video.expireDraft()) {
+        if (video == null || !video.expireIfCreated()) {
             return;
         }
         repository.saveAndFlush(video);
