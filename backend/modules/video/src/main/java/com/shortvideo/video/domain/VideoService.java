@@ -159,6 +159,15 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         if (video == null) {
             return;
         }
+        if (video.isRemoved()) {
+            // Removed while the worker was transcoding. Marking it READY would announce a video
+            // that is gone, and whatever the worker wrote under this version may have landed after
+            // the removal's own purge ran, so schedule that prefix again. Idempotent: an empty or
+            // already-purged prefix is not an error.
+            supersededAssetRepository.saveAndFlush(
+                    new SupersededAssetEntity(video.getVideoId(), result.processingVersion(), null, List.of()));
+            return;
+        }
         if (video.getProcessingVersion() == null || video.getProcessingVersion() != result.processingVersion()) {
             return; // stale processingVersion — ignore
         }
@@ -331,6 +340,9 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             supersededAssetRepository.saveAndFlush(new SupersededAssetEntity(
                     saved.getVideoId(), saved.getProcessingVersion(), saved.getMasterPlaylistKey(), saved.getVariantPlaylists()));
         }
+        // The verified source is not under processed/, so removing the processed prefix leaves it
+        // behind. Reprocessing never reaches here and keeps the source it re-reads from.
+        supersededAssetRepository.saveAndFlush(SupersededAssetEntity.sourceOf(saved.getVideoId()));
     }
 
     /**
@@ -344,6 +356,10 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
+        if (video.isRemoved()) {
+            // Its source is purged on removal, and reprocessing would write assets nobody serves.
+            throw new VideoExceptions.VideoNotFound("No such video");
+        }
         if (video.getSourceObjectKey() == null) {
             throw new VideoExceptions.VideoNotReady("No source object to reprocess from");
         }

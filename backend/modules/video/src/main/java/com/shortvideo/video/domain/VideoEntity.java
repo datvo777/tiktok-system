@@ -184,6 +184,13 @@ public class VideoEntity {
         return true;
     }
 
+    /** True once an admin or the owner has removed the video; removal is terminal. */
+    public boolean isRemoved() {
+        return this.assetLifecycleState == AssetLifecycleState.DELETE_SCHEDULED
+                || this.assetLifecycleState == AssetLifecycleState.DELETION_IN_PROGRESS
+                || this.assetLifecycleState == AssetLifecycleState.DELETED;
+    }
+
     /** Any non-terminal state -> DELETE_SCHEDULED: an admin "remove video" action (brief section 18). */
     public boolean scheduleForDeletion() {
         if (this.assetLifecycleState == AssetLifecycleState.DELETE_SCHEDULED
