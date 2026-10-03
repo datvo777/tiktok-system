@@ -12,6 +12,7 @@ import com.shortvideo.video.api.VideoDraftRegistrar;
 import io.minio.MinioClient;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -46,7 +47,9 @@ class UploadCleanupJobTest {
     private static UploadSessionEntity session(String objectKey) {
         UploadSessionEntity session = mock(UploadSessionEntity.class);
         when(session.getObjectKey()).thenReturn(objectKey);
+        when(session.getUploadId()).thenReturn(UUID.randomUUID());
         when(session.getVideoId()).thenReturn(UUID.randomUUID());
+        when(session.getStatus()).thenReturn(UploadStatus.PENDING);
         return session;
     }
 
@@ -54,6 +57,7 @@ class UploadCleanupJobTest {
         UploadJpaRepository repository = mock(UploadJpaRepository.class);
         when(repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(any(), any(), any(Pageable.class)))
                 .thenReturn(due);
+        due.forEach(session -> when(repository.findById(session.getUploadId())).thenReturn(Optional.of(session)));
         return repository;
     }
 
@@ -92,5 +96,26 @@ class UploadCleanupJobTest {
 
         verify(registrar, never()).expireDraft(any());
         verify(repository, never()).delete(stuck);
+    }
+
+    @Test
+    void aSessionCompletedWhileItsObjectWasBeingRemovedIsLeftAlone() {
+        UploadSessionEntity listed = session("uploads/raced");
+        UploadJpaRepository repository = repositoryReturning(List.of(listed));
+        UploadSessionEntity completedMeanwhile = mock(UploadSessionEntity.class);
+        when(completedMeanwhile.getStatus()).thenReturn(UploadStatus.COMPLETED);
+        when(repository.findById(listed.getUploadId())).thenReturn(Optional.of(completedMeanwhile));
+        VideoDraftRegistrar registrar = mock(VideoDraftRegistrar.class);
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository,
+                mock(MinioClient.class),
+                registrar,
+                new TransactionTemplate(mock(PlatformTransactionManager.class)),
+                "bucket");
+
+        job.sweep();
+
+        verify(registrar, never()).expireDraft(any());
+        verify(repository, never()).delete(any());
     }
 }

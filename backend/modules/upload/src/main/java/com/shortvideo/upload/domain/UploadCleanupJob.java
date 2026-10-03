@@ -92,10 +92,17 @@ class UploadCleanupJob {
             log.warn("Failed to remove expired upload object {}: {}", objectKey, e.getMessage());
             return false;
         }
-        transaction.executeWithoutResult(status -> {
-            videoDraftRegistrar.expireDraft(session.getVideoId().toString());
-            repository.delete(session);
+        // The row was read before the MinIO call, so re-read it: a completion that landed in
+        // the meantime made it COMPLETED, and that upload must keep its draft and its row.
+        Boolean reaped = transaction.execute(status -> {
+            UploadSessionEntity current = repository.findById(session.getUploadId()).orElse(null);
+            if (current == null || current.getStatus() != UploadStatus.PENDING) {
+                return false;
+            }
+            videoDraftRegistrar.expireDraft(current.getVideoId().toString());
+            repository.delete(current);
+            return true;
         });
-        return true;
+        return Boolean.TRUE.equals(reaped);
     }
 }
