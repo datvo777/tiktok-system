@@ -15,6 +15,7 @@ class FavoriteRepository {
     private static final String INSERT_COLLECTION = """
             INSERT INTO social.favorite_collection (collection_id, account_id, name, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
             """;
 
     private static final String RENAME_COLLECTION = """
@@ -104,17 +105,18 @@ class FavoriteRepository {
     Optional<FavoriteViews.Collection> createCollection(String accountId, String name) {
         UUID collectionId = UUID.randomUUID();
         Instant now = Instant.now();
-        try {
-            jdbc.update(
-                    INSERT_COLLECTION,
-                    collectionId,
-                    UUID.fromString(accountId),
-                    name,
-                    Timestamp.from(now),
-                    Timestamp.from(now));
-        } catch (DuplicateKeyException e) {
-            // The unique index on (account_id, lower(name)) is the arbiter rather
-            // than a SELECT-then-INSERT, which two concurrent saves could both pass.
+        // The unique index on (account_id, lower(name)) is the arbiter rather than a
+        // SELECT-then-INSERT, which two concurrent saves could both pass. DO NOTHING rather
+        // than catching DuplicateKeyException: a failed statement aborts the PostgreSQL
+        // transaction, and the caller's recovery query would then be refused.
+        int inserted = jdbc.update(
+                INSERT_COLLECTION,
+                collectionId,
+                UUID.fromString(accountId),
+                name,
+                Timestamp.from(now),
+                Timestamp.from(now));
+        if (inserted == 0) {
             return Optional.empty();
         }
         return Optional.of(new FavoriteViews.Collection(collectionId.toString(), name, 0, false, now, now));

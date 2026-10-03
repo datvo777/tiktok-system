@@ -10,11 +10,11 @@ import com.shortvideo.report.api.ReportState;
 import com.shortvideo.report.api.ReportSubjectType;
 import com.shortvideo.shared.audit.AdminAction;
 import com.shortvideo.shared.audit.AdminActionRecorder;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -77,24 +77,19 @@ public class ReportService {
         UUID subject = UUID.fromString(subjectId);
         UUID reporter = UUID.fromString(reporterId);
 
-        ReportEntity entity =
-                new ReportEntity(UUID.randomUUID(), subjectType, subject, reporter, reason, blankToNull(detail));
-        try {
-            ReportEntity saved = repository.saveAndFlush(entity);
-            return ReportView.from(saved, countOpenFor(subjectType, subject));
-        } catch (DataIntegrityViolationException duplicate) {
-            // The partial unique index fired: this person already has an open
-            // report on this subject. That is the state they asked for.
-            return repository
-                    .findByStateOrderByCreatedAtAsc(ReportState.OPEN, PageRequest.of(0, MAX_QUEUE_SIZE))
-                    .stream()
-                    .filter(r -> r.getSubjectId().equals(subject)
-                            && r.getSubjectType() == subjectType
-                            && r.getReporterId().equals(reporter))
-                    .findFirst()
-                    .map(r -> ReportView.from(r, countOpenFor(subjectType, subject)))
-                    .orElseThrow(() -> duplicate);
-        }
+        UUID reportId = UUID.randomUUID();
+        int inserted = repository.insertOpenIfAbsent(
+                reportId, subjectType.name(), subject, reporter, reason.name(), blankToNull(detail), Instant.now());
+        // Zero rows: the partial unique index found this person's open report already
+        // there, which is the state they asked for. Hand that one back.
+        ReportEntity report = inserted == 1
+                ? repository.findById(reportId).orElseThrow()
+                : repository
+                        .findBySubjectTypeAndSubjectIdAndReporterIdAndState(
+                                subjectType, subject, reporter, ReportState.OPEN)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Open report vanished between conflict and read; retry"));
+        return ReportView.from(report, countOpenFor(subjectType, subject));
     }
 
     /**
