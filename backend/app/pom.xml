@@ -49,6 +49,10 @@
         </dependency>
         <dependency>
             <groupId>com.shortvideo</groupId>
+            <artifactId>audit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortvideo</groupId>
             <artifactId>upload</artifactId>
         </dependency>
         <dependency>
@@ -78,6 +82,10 @@
         <dependency>
             <groupId>com.shortvideo</groupId>
             <artifactId>appeal</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortvideo</groupId>
+            <artifactId>report</artifactId>
         </dependency>
         <dependency>
             <groupId>com.shortvideo</groupId>
@@ -196,6 +204,24 @@
     <build>
         <finalName>app</finalName>
         <plugins>
+            <!-- Runs this module's Testcontainers integration tests during
+                 `mvn verify`; they need a Docker daemon. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <!--
+                      Failsafe runs after `package`, and by default puts this
+                      module's built artifact on the test classpath. Here that
+                      artifact is Spring Boot's repackaged fat jar, where the
+                      application's own classes live under BOOT-INF/classes and
+                      are therefore invisible to a plain classpath scan, which
+                      surfaces as "Unable to find a @SpringBootConfiguration".
+                      Point it at the exploded classes instead.
+                    -->
+                    <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

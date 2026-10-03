@@ -19,16 +19,73 @@ paths:
       description: >
         One transaction creates the upload session and the video draft together
         (brief section 7.1), so an immutable persisted owner exists before any
-        byte is stored. Returns a presigned MinIO PUT URL; the browser uploads
-        directly to MinIO, cookie-free.
+        byte is stored. Returns a presigned multipart POST form (`uploadUrl` plus
+        `formFields`); the browser uploads directly to MinIO, cookie-free.
+
+        Only ACTIVE accounts may start an upload. Creation is serialised per
+        account, so the open-session quota holds under concurrent requests, and is
+        rate limited per account. `title` and `description` are immutable once
+        created: NFC-normalised, trimmed, and free of control and invisible
+        format characters (a description may keep line breaks and tabs).
       operationId: createUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, maxLength: 150 }
+                description: { type: string, maxLength: 2000 }
+                sizeBytes:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  maximum: 524288000
+                  description: >-
+                    Size of the file about to be uploaded. The presigned policy caps the
+                    body at exactly this, and it counts against the account's open-upload
+                    allowance (1 GiB reserved across open sessions). Omitted, the maximum
+                    (500 MiB) is reserved, so a client that does not declare a size can
+                    hold at most two sessions open. 400 if outside 1..524288000.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: >-
+            A retry with the same key returns the original session (same uploadId
+            and videoId, form re-signed with the original expiry) and consumes no
+            further quota. 409 if that session is already completed or expired.
+          schema: { type: string, maxLength: 200 }
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CreateUploadResponse' }
+        '400': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: The account is not ACTIVE
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: Too many open uploads, or the Idempotency-Key belongs to a session that is no longer open
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429':
+          description: Too many uploads started recently; see Retry-After
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: Another request for this account held the creation lock too long; retry
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /api/v1/uploads/{uploadId}/complete:
     post:
@@ -38,6 +95,12 @@ paths:
         completion for an already-completed session returns the same result
         without reapplying anything or emitting a second event. Verifies the
         stored object's size server-side; never trusts client-declared size.
+
+        The verified object is copied to a private `sources/` key before anything
+        reads it, so re-posting to the (still valid) presigned form afterwards
+        cannot change what is processed. A session can still be completed for a
+        grace period (30 minutes) after `expiresAt`, since the form's expiry is
+        checked when the upload starts, not when its last byte arrives.
       operationId: completeUpload
       parameters:
         - name: uploadId
@@ -55,19 +118,23 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/UploadResponse' }
         '401': { $ref: '#/components/responses/Problem' }
-        '403':
-          description: Not the owner of this upload
+        '404':
+          description: No such upload, including one owned by another account (ownership is not disclosed)
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
-        '404': { $ref: '#/components/responses/Problem' }
         '409':
-          description: Uploaded object is missing or its size is outside the allowed range
+          description: Uploaded object is missing, changed while being verified, or its size is outside the allowed range
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '410':
-          description: Upload session has expired
+          description: Upload session expired (past `expiresAt` plus the completion grace)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: Object storage did not answer while verifying the upload; retry (see Retry-After)
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -107,13 +174,30 @@ components:
   schemas:
     CreateUploadResponse:
       type: object
-      required: [uploadId, videoId, uploadUrl, expiresAt]
+      required: [uploadId, videoId, uploadUrl, formFields, maxBytes, expiresAt]
       properties:
         uploadId: { type: string, format: uuid }
         videoId: { type: string, format: uuid }
         uploadUrl:
           type: string
-          description: Presigned MinIO PUT URL, 15-minute expiry. Never a processed/ read URL (Rule 18).
+          description: >-
+            Endpoint for a presigned multipart POST, 15-minute expiry. Never a
+            processed/ read URL (Rule 18). A presigned POST rather than a PUT
+            because the policy carries a content-length-range condition the
+            object store enforces at write time; a PUT has no size ceiling, so an
+            oversized body was stored first and only rejected at completion — and
+            never rejected at all if the client simply skipped completion.
+        formFields:
+          type: object
+          additionalProperties: { type: string }
+          description: >-
+            Signed policy fields. Send all of them as form parts BEFORE the file
+            part; MinIO rejects the request ("the name of the uploaded key is
+            missing") if `key` arrives after the file.
+        maxBytes:
+          type: integer
+          format: int64
+          description: The cap the policy encodes, so a client can reject an oversized file up front.
         expiresAt: { type: string, format: date-time }
 
     UploadResponse:

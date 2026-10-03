@@ -1,0 +1,124 @@
+package com.shortvideo.video.domain;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import com.shortvideo.video.api.ProcessingState;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Existence non-disclosure (brief section 12.3): a non-owner polling a video
+ * that exists must see exactly what they would see for a video id that does
+ * not exist at all — otherwise the response itself reveals that the id is
+ * real, just not theirs.
+ */
+class VideoServiceTest {
+
+    @Test
+    void nonOwnerAndMissingVideoProduceTheIdenticalNotFoundResponse() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        VideoService service = new VideoService(repository, null, null, null, null, null, null, null);
+
+        UUID existingVideoId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        String otherCaller = UUID.randomUUID().toString();
+        when(repository.findById(existingVideoId))
+                .thenReturn(Optional.of(new VideoEntity(existingVideoId, ownerId, "title", "desc")));
+
+        UUID missingVideoId = UUID.randomUUID();
+        when(repository.findById(missingVideoId)).thenReturn(Optional.empty());
+
+        Throwable nonOwner =
+                catchThrowable(() -> service.findForPolling(existingVideoId.toString(), otherCaller));
+        Throwable notFound =
+                catchThrowable(() -> service.findForPolling(missingVideoId.toString(), otherCaller));
+
+        assertThat(nonOwner).isInstanceOf(VideoExceptions.VideoNotFound.class);
+        assertThat(notFound).isInstanceOf(VideoExceptions.VideoNotFound.class);
+        assertThat(nonOwner.getMessage()).isEqualTo(notFound.getMessage());
+    }
+
+    @Test
+    void removingAVideoAlsoSchedulesItsSourceForPurge() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = new VideoService(
+                repository,
+                superseded,
+                mock(com.shortvideo.shared.outbox.OutboxWriter.class),
+                null,
+                mock(com.shortvideo.shared.revocation.DurableRevocationWriter.class),
+                mock(com.shortvideo.shared.audit.AdminActionRecorder.class),
+                null,
+                mock(org.springframework.transaction.PlatformTransactionManager.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        service.remove(videoId.toString(), "spam", UUID.randomUUID().toString());
+
+        var rows = org.mockito.ArgumentCaptor.forClass(SupersededAssetEntity.class);
+        org.mockito.Mockito.verify(superseded, org.mockito.Mockito.atLeastOnce()).saveAndFlush(rows.capture());
+        assertThat(rows.getAllValues()).extracting(SupersededAssetEntity::prefix).contains("sources/" + videoId + "/");
+    }
+
+    private static VideoService serviceWith(VideoJpaRepository repository, SupersededAssetJpaRepository superseded) {
+        return new VideoService(
+                repository,
+                superseded,
+                mock(com.shortvideo.shared.outbox.OutboxWriter.class),
+                mock(MinioAssetVerifier.class),
+                mock(com.shortvideo.shared.revocation.DurableRevocationWriter.class),
+                mock(com.shortvideo.shared.audit.AdminActionRecorder.class),
+                null,
+                mock(org.springframework.transaction.PlatformTransactionManager.class));
+    }
+
+    @Test
+    void aTranscodeResultForARemovedVideoIsNotAppliedAndItsOutputIsScheduledForPurge() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWith(repository, superseded);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        video.scheduleForDeletion();
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        var result = new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
+                videoId + ":" + version,
+                videoId.toString(),
+                version,
+                "COMPLETED",
+                new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
+                null);
+
+        service.applyMediaResult(result);
+
+        // Still TRANSCODING: never marked READY, and no event announcing it.
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).saveAndFlush(video);
+        var rows = org.mockito.ArgumentCaptor.forClass(SupersededAssetEntity.class);
+        org.mockito.Mockito.verify(superseded).saveAndFlush(rows.capture());
+        assertThat(rows.getValue().prefix()).isEqualTo("processed/" + videoId + "/" + version + "/");
+    }
+
+    @Test
+    void aRemovedVideoCannotBeReprocessed() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        VideoService service = serviceWith(repository, mock(SupersededAssetJpaRepository.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        video.dispatchProcessing("sources/" + videoId + "/original");
+        video.scheduleForDeletion();
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+
+        assertThat(catchThrowable(() -> service.reprocess(videoId.toString(), UUID.randomUUID().toString())))
+                .isInstanceOf(VideoExceptions.VideoNotFound.class);
+    }
+}

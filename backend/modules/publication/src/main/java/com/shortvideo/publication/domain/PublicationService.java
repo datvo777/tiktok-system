@@ -78,13 +78,32 @@ public class PublicationService implements PublicationDirectory {
 
     @Transactional
     public PublicationView requestPublish(String videoId, String ownerAccountId) {
+        return applyAsOwner(videoId, ownerAccountId, PublicationEntity::requestPublish);
+    }
+
+    /**
+     * The owner taking their own video back out of the feed.
+     *
+     * <p>Publishing was previously one-way: nothing but an admin takedown could
+     * remove a video from the feed, so a creator who changed their mind had to
+     * ask an administrator. This is the reversible half of that — the video
+     * returns to PRIVATE and can be published again without a second review.
+     */
+    @Transactional
+    public PublicationView withdrawPublish(String videoId, String ownerAccountId) {
+        return applyAsOwner(videoId, ownerAccountId, PublicationEntity::withdrawPublish);
+    }
+
+    /** Shared owner check and event append for the two owner-driven transitions. */
+    private PublicationView applyAsOwner(
+            String videoId, String ownerAccountId, java.util.function.Predicate<PublicationEntity> mutation) {
         PublicationEntity entity = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new PublicationExceptions.PublicationNotFound("No such video"));
         if (!entity.getOwnerAccountId().toString().equals(ownerAccountId)) {
             throw new PublicationExceptions.NotVideoOwner("Not the owner of this video");
         }
-        boolean changed = entity.requestPublish();
+        boolean changed = mutation.test(entity);
         PublicationEntity saved = repository.saveAndFlush(entity);
         if (changed) {
             append(saved);

@@ -141,11 +141,35 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 ```bash
 mvn test        # unit tests, no Docker needed
-mvn install     # includes the Testcontainers integration test
+mvn install     # includes the Testcontainers integration tests
 ```
 
-`AccountFlowIT` needs the Docker daemon running (Testcontainers starts its own
-PostgreSQL; it does not use your Compose stack).
+The integration tests start their own PostgreSQL through Testcontainers; they do
+not touch your Compose stack.
+
+**If Testcontainers cannot reach Docker.** Testcontainers needs the Docker
+*API*, which is not always available even where the `docker` CLI works — a
+misbehaving Docker Desktop can answer the CLI while erroring on the daemon
+socket, and CI often supplies a database as a service container with no Docker
+socket inside the job. The PostgreSQL-only suites accept an existing database
+instead:
+
+```bash
+TEST_POSTGRES_URL=jdbc:postgresql://localhost:5432/short_video_test \
+TEST_POSTGRES_USER=short_video_app TEST_POSTGRES_PASSWORD=short_video_app \
+  mvn -pl backend/app test -Dtest='AccountFlowIT,AuthorizationIT,SessionLifecycleIT'
+```
+
+Point that at a scratch database, never a working one — Flyway migrates whatever
+it is given and the tests write freely:
+
+```bash
+docker exec sv-postgres psql -U postgres -c 'CREATE DATABASE short_video_test OWNER short_video_app;'
+```
+
+`ModerationPublicationFlowIT`, `ResilienceIT` and `UploadTranscodeFlowIT` also
+need Kafka and MinIO, and stay on Testcontainers — disposable infrastructure is
+the point for those.
 
 ---
 
@@ -231,3 +255,104 @@ Milestone 2.
 5. Eligibility projector rows for video and account.
 6. Owner-preview playback sessions and range-aware bounded streaming, replacing
    the 501.
+
+---
+
+## Signed-out viewing
+
+Public content is readable without an account: the feed, a shared video link, a
+creator page, search, and playback of published videos. Participating is not —
+liking, commenting, following, saving, reporting, viewing your inbox and
+uploading all require a session, and the client asks for one at the moment you
+try rather than at the door.
+
+The media gateway never became a bearer-token surface to make this work. A
+playback cookie is still not sufficient on its own: the caller must also prove
+they are the viewer it was minted for. For a signed-in viewer that proof is the
+session; for a signed-out one it is `sv_device`, an HttpOnly cookie holding a
+signed, opaque browser id. A device identity is accepted only for `PUBLIC`
+playback — the owner-preview and moderator-preview modes gate on who the viewer
+*is*, and a browser is not a person.
+
+`AuthorizationIT` pins both halves: `publicContentIsReadableWithoutASession`,
+and `writesStillRequireASessionWhenReadsDoNot` over six write endpoints plus
+`mediaStillRefusesARequestWithNoPlaybackCookie`.
+
+---
+
+## Usernames
+
+Accounts have a real unique handle (`@dat_vo`), unique case-insensitively,
+validated by `Handles` and searchable. The V29 migration backfills existing
+accounts with the same id-derived string the client used to fabricate, so nobody's
+apparent handle changed on the day it shipped.
+
+---
+
+## Automated moderation
+
+`ModerationScreener` runs before an upload reaches the human queue.
+`ReputationScreener` is the implementation that ships, and it is worth being
+precise about what it is: it never looks at a frame of video. It has the
+uploader's text and their record of human decisions, and it answers one narrow
+question — is this boring enough to let through without a person?
+
+Every signal can only push *towards* review. There is no `AUTO_REJECT` in
+`ScreeningVerdict` and no threshold that produces one, so the worst outcome is a
+moderator looking at something unnecessarily. Turn it off entirely with
+`shortvideo.moderation.auto-approve-enabled=false`, which restores exactly the
+previous behaviour.
+
+---
+
+## Deploying the web client
+
+The client now has real URLs (`/video/<id>`, `/creator/<id>`), so whatever serves
+`web/dist` **must fall back to `index.html` for unknown paths**. Vite's dev server
+and `vite preview` already do; a plain static host does not, and a shared video
+link will 404 without it. Nginx:
+
+```
+location / {
+  try_files $uri $uri/ /index.html;
+}
+```
+
+---
+
+## Tests
+
+```bash
+# Backend: unit tests, then Testcontainers integration tests
+mvn verify
+
+# Clients
+cd web && npm ci && npm run lint && npm run build && npm test
+cd admin-web && npm ci && npm run lint && npm run build
+```
+
+`mvn verify` runs both tiers. The `*IT` classes were previously run by **nothing**:
+surefire's default includes cover `*Test` but not `*IT`, and no failsafe plugin was
+declared, so `mvn test` and `mvn verify` both skipped them silently and they only
+ever ran when invoked by name. Failsafe is now bound in `backend/app/pom.xml`.
+
+### Known issue: Kafka containers on Docker Engine 29
+
+Three suites — `UploadTranscodeFlowIT`, `ModerationPublicationFlowIT` and
+`ResilienceIT` — start a `apache/kafka:3.9.0` container, and that container exits
+during startup under Testcontainers on Docker Desktop 4.57 / Engine 29.1.3. The
+image itself is fine (it boots normally when run by hand with an equivalent
+config), so this is a Testcontainers/Kafka-module incompatibility rather than a
+problem with the tests or the application. **Verified as pre-existing**: the same
+failure reproduces on an untouched checkout of the prior commit.
+
+The other three suites — `AccountFlowIT`, `AuthorizationIT`, `SessionLifecycleIT`,
+35 assertions between them — pass against real Postgres, Redis and MinIO.
+
+Testcontainers itself is pinned to 1.21.4 in the root `pom.xml`, above the 1.21.0
+that Spring Boot 3.5.0's BOM selects: Docker Engine 29 reports `MinAPIVersion`
+1.44 and the docker-java bundled with 1.21.0 negotiates below it, so *every*
+container test failed with "Could not find a valid Docker environment". Note that
+the override is an imported BOM, not a `<testcontainers.version>` property — a
+property only reaches a BOM that is the project's actual `<parent>`, never one
+that is imported.
