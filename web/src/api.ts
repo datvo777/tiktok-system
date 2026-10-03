@@ -174,11 +174,16 @@ const playbackSessionSchema = s.object({
 export type PlaybackSessionResponse = Infer<typeof playbackSessionSchema>;
 
 /** Creates the upload session; the video draft is created in the same transaction (brief section 7.1). */
-export async function createUpload(title: string, description: string): Promise<CreateUploadResponse> {
+export async function createUpload(
+  title: string,
+  description: string,
+  sizeBytes?: number,
+): Promise<CreateUploadResponse> {
   return request(
     '/api/v1/uploads',
     (payload) => createUploadSchema.parse('createUpload', payload),
-    jsonBody({ title, description: description || null }),
+    // Declared so the upload policy caps the body at the real file size, not the server maximum.
+    jsonBody({ title, description: description || null, sizeBytes: sizeBytes ?? null }),
   );
 }
 

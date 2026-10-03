@@ -28,6 +28,27 @@ paths:
         created: NFC-normalised, trimmed, and free of control and invisible
         format characters (a description may keep line breaks and tabs).
       operationId: createUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, maxLength: 150 }
+                description: { type: string, maxLength: 2000 }
+                sizeBytes:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  maximum: 524288000
+                  description: >-
+                    Size of the file about to be uploaded. The presigned policy caps the
+                    body at exactly this, and it counts against the account's open-upload
+                    allowance (1 GiB reserved across open sessions). Omitted, the maximum
+                    (500 MiB) is reserved, so a client that does not declare a size can
+                    hold at most two sessions open. 400 if outside 1..524288000.
       parameters:
         - name: Idempotency-Key
           in: header

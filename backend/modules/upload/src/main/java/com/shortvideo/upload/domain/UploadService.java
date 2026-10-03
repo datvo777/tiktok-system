@@ -49,6 +49,14 @@ public class UploadService {
      */
     private static final int MAX_OPEN_SESSIONS_PER_ACCOUNT = 5;
 
+    /**
+     * Total write allowance an account may hold open at once, counted from each session's
+     * declared size. The session count alone bounds it at five times the per-file maximum;
+     * this lets an honest client that declares small files keep several open while one that
+     * reserves the maximum is held to two.
+     */
+    private static final long MAX_OPEN_BYTES_PER_ACCOUNT = 1024L * 1024 * 1024;
+
     private final UploadJpaRepository repository;
     private final OutboxWriter outboxWriter;
     private final VideoDraftRegistrar videoDraftRegistrar;
@@ -88,10 +96,15 @@ public class UploadService {
      */
     @Transactional
     public UploadSessionCreated createSession(
-            String accountId, String title, String description, String idempotencyKey) {
+            String accountId, String title, String description, Long sizeBytes, String idempotencyKey) {
         UUID owner = UUID.fromString(accountId);
         title = UploadMetadata.title(title);
         description = UploadMetadata.description(description);
+        if (sizeBytes != null && (sizeBytes < DEFAULT_MIN_BYTES || sizeBytes > DEFAULT_MAX_BYTES)) {
+            throw new UploadExceptions.InvalidMetadata(
+                    "sizeBytes must be between " + DEFAULT_MIN_BYTES + " and " + DEFAULT_MAX_BYTES);
+        }
+        long maxBytes = sizeBytes == null ? DEFAULT_MAX_BYTES : sizeBytes;
 
         // Before the lock: this is a Redis round trip, and nothing networked is done while
         // the account lock is held.
@@ -129,6 +142,13 @@ public class UploadService {
                     "You already have " + open + " uploads in progress. Finish or abandon one before starting another.");
         }
 
+        long reservedBytes = repository.sumMaxSizeBytesOpen(owner, UploadStatus.PENDING, Instant.now());
+        if (reservedBytes + maxBytes > MAX_OPEN_BYTES_PER_ACCOUNT) {
+            throw new UploadExceptions.TooManyOpenUploads(
+                    "Your open uploads already reserve " + reservedBytes + " bytes of the "
+                            + MAX_OPEN_BYTES_PER_ACCOUNT + " allowed. Finish or abandon one, or declare a smaller sizeBytes.");
+        }
+
         VideoDraft draft = videoDraftRegistrar.createDraft(accountId, title, description);
 
         UUID uploadId = UUID.randomUUID();
@@ -141,7 +161,7 @@ public class UploadService {
                 owner,
                 objectKey,
                 DEFAULT_MIN_BYTES,
-                DEFAULT_MAX_BYTES,
+                maxBytes,
                 expiresAt,
                 key);
         repository.saveAndFlush(session);
@@ -150,8 +170,8 @@ public class UploadService {
                 uploadId.toString(),
                 draft.videoId(),
                 uploadEndpoint(),
-                presignPost(objectKey, DEFAULT_MAX_BYTES, expiresAt),
-                DEFAULT_MAX_BYTES,
+                presignPost(objectKey, maxBytes, expiresAt),
+                maxBytes,
                 expiresAt);
     }
 

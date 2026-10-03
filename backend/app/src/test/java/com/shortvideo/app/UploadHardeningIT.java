@@ -55,6 +55,8 @@ class UploadHardeningIT {
     private static final String BUCKET = "short-video";
     private static final int QUOTA = 5;
     private static final int RATE_LIMIT = 20;
+    /** Small enough that the open-session count, not the reserved-bytes cap, is what binds. */
+    private static final long SMALL_FILE = 1024 * 1024;
 
     @Container
     @SuppressWarnings("resource")
@@ -142,7 +144,7 @@ class UploadHardeningIT {
         for (int i = 0; i < callers; i++) {
             results.add(pool.submit(() -> {
                 start.await();
-                return HttpStatus.valueOf(create(null).getStatusCode().value());
+                return HttpStatus.valueOf(create(null, SMALL_FILE).getStatusCode().value());
             }));
         }
         start.countDown();
@@ -156,6 +158,34 @@ class UploadHardeningIT {
 
         assertThat(created).isEqualTo(QUOTA);
         assertThat(openSessions()).isEqualTo(QUOTA);
+    }
+
+    @Test
+    void theDeclaredSizeBecomesTheCapTheSessionIsIssuedWith() {
+        ResponseEntity<Map> created = create(null, SMALL_FILE);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(((Number) created.getBody().get("maxBytes")).longValue()).isEqualTo(SMALL_FILE);
+    }
+
+    @Test
+    void sessionsThatReserveTheDefaultMaximumAreHeldToTheOpenBytesCap() {
+        // Two default-size (500 MiB) sessions fit in the 1 GiB cap; a third does not.
+        assertThat(create(null).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(create(null).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        ResponseEntity<Map> third = create(null);
+
+        assertThat(third.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        // Declaring what is actually being uploaded still fits.
+        assertThat(create(null, SMALL_FILE).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
+    @Test
+    void aDeclaredSizeOutsideTheAllowedRangeIsRejectedBeforeAnythingIsCreated() {
+        assertThat(create(null, 0L).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(create(null, 500L * 1024 * 1024 + 1).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(openSessions()).isZero();
     }
 
     @Test
@@ -317,13 +347,21 @@ class UploadHardeningIT {
     }
 
     private ResponseEntity<Map> create(String idempotencyKey) {
+        return create(idempotencyKey, null);
+    }
+
+    private ResponseEntity<Map> create(String idempotencyKey, Long sizeBytes) {
         HttpHeaders headers = new HttpHeaders();
         headers.putAll(auth);
         if (idempotencyKey != null) {
             headers.set("Idempotency-Key", idempotencyKey);
         }
-        return rest.exchange(
-                url("/api/v1/uploads"), HttpMethod.POST, new HttpEntity<>(Map.of("title", "Video"), headers), Map.class);
+        Map<String, Object> body = new java.util.HashMap<>();
+        body.put("title", "Video");
+        if (sizeBytes != null) {
+            body.put("sizeBytes", sizeBytes);
+        }
+        return rest.exchange(url("/api/v1/uploads"), HttpMethod.POST, new HttpEntity<>(body, headers), Map.class);
     }
 
     /** Posts the presigned form the way a browser does: fields first, file part last. */

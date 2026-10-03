@@ -35,7 +35,7 @@ public class UploadController {
             @AuthenticationPrincipal AuthenticatedAccount caller,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         var created = uploadService.createSession(
-                caller.accountId(), request.title(), request.description(), idempotencyKey);
+                caller.accountId(), request.title(), request.description(), request.sizeBytes(), idempotencyKey);
         return ResponseEntity.created(URI.create("/api/v1/uploads/" + created.uploadId()))
                 .body(UploadDtos.CreateUploadResponse.from(created));
     }

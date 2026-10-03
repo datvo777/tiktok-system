@@ -4,6 +4,7 @@ import com.shortvideo.upload.domain.UploadSessionCreated;
 import com.shortvideo.upload.domain.UploadView;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.time.Instant;
 import java.util.Map;
@@ -19,7 +20,11 @@ public final class UploadDtos {
             @Schema(description = "Required. Max 150 characters; no control characters.", maxLength = 150)
                     @NotBlank @Size(max = 150) String title,
             @Schema(description = "Optional. Max 2000 characters; line breaks and tabs allowed.", maxLength = 2000)
-                    @Size(max = 2000) String description) {}
+                    @Size(max = 2000) String description,
+            @Schema(description = "Optional. Size in bytes of the file about to be uploaded; the upload policy "
+                            + "then caps the body at exactly this. Omitted, the server-wide maximum is reserved.",
+                    minimum = "1")
+                    @Positive Long sizeBytes) {}
 
     /**
      * {@code formFields} must be posted as form parts before the file part; they

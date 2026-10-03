@@ -82,7 +82,7 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const session = await createUpload(title, description);
+      const session = await createUpload(title, description, selected.size);
       // Checked before spending the upload: the policy caps the body server-side
       // too, but failing here explains why instead of surfacing EntityTooLarge.
       if (selected.size > session.maxBytes) {
