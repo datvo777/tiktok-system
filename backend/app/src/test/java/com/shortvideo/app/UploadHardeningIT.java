@@ -18,6 +18,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -35,6 +36,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.util.ReflectionUtils;
 import org.testcontainers.containers.MinIOContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -98,6 +100,9 @@ class UploadHardeningIT {
     JdbcTemplate jdbc;
 
     @Autowired
+    org.springframework.context.ApplicationContext context;
+
+    @Autowired
     StringRedisTemplate redis;
 
     @LocalServerPort
@@ -158,6 +163,22 @@ class UploadHardeningIT {
 
         assertThat(created).isEqualTo(QUOTA);
         assertThat(openSessions()).isEqualTo(QUOTA);
+    }
+
+    @Test
+    void theCleanupJobRunsUnderASchedulerLock() {
+        Object job = context.getBean("uploadCleanupJob");
+        assertThat(AopUtils.isAopProxy(job)).as("lock advice is applied to the bean").isTrue();
+        var sweep = ReflectionUtils.findMethod(job.getClass(), "sweep");
+        ReflectionUtils.makeAccessible(sweep);
+
+        ReflectionUtils.invokeMethod(sweep, job);
+
+        // lockAtLeastFor keeps the row locked after a fast sweep, so another instance's
+        // sweep right behind it is skipped.
+        Boolean heldIntoTheFuture = jdbc.queryForObject(
+                "SELECT lock_until > (now() AT TIME ZONE 'UTC') FROM upload.shedlock WHERE name = 'uploadCleanup'", Boolean.class);
+        assertThat(heldIntoTheFuture).isTrue();
     }
 
     @Test
