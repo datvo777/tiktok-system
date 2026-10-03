@@ -132,6 +132,9 @@ shortvideo:
     cleanup-interval: 5m
   opensearch:
     endpoint: ${OPENSEARCH_ENDPOINT:http://localhost:9200}
+    # The JDK client has no timeouts of its own; a hung OpenSearch must fail fast (503 / redelivery).
+    connect-timeout: 2s
+    read-timeout: 5s
 
 management:
   endpoints:
