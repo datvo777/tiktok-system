@@ -102,6 +102,12 @@ public class ModerationService implements ModerationDirectory {
      *
      * <p>A screener that throws is treated as a referral. An automated stage
      * failing must never be the reason something gets published.
+     *
+     * <p>That holds for failures in the screener itself. A database error from the
+     * lookups feeding it is different: it aborts the surrounding transaction, so the
+     * moderation record just created rolls back with it, and the event listener's
+     * redelivery redoes the whole step. Nothing is lost and nothing is auto-approved,
+     * but the outcome is a retry, not a referral.
      */
     private void autoApproveIfScreenerAllows(ModerationEntity record, String videoId, String creatorId) {
         if (!properties.isAutoApproveEnabled()) {
@@ -119,6 +125,7 @@ public class ModerationService implements ModerationDirectory {
                     repository.countByCreatorIdAndState(creator, ModerationState.APPROVED),
                     repository.countByCreatorIdAndState(creator, ModerationState.REJECTED)));
         } catch (RuntimeException e) {
+            // A database error here has already aborted the transaction (see the method comment).
             log.warn("Moderation screener failed for {}; leaving it for a human", videoId, e);
             return;
         }

@@ -1,0 +1,35 @@
+# Alert rules for failures that otherwise only show up as a log line. Nothing here pages anyone
+# yet (there is no Alertmanager in the local stack); they are visible at :9090/alerts.
+groups:
+  - name: short-video-backend
+    rules:
+      - alert: OutboxEventsDead
+        # Nothing replays or deletes a DEAD row, so every one is an event some consumer never saw.
+        expr: outbox_dead_rows > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} outbox event(s) are DEAD"
+          description: >-
+            The relay gave up publishing these. Consumers (search, eligibility, notifications) are
+            missing them until an operator republishes. See platform.outbox_event WHERE status = 'DEAD'.
+
+      - alert: UploadCleanupFailing
+        # Failed with nothing reaped in the same window: stuck, not just one bad session.
+        expr: increase(upload_cleanup_failed_total[30m]) > 0 and increase(upload_cleanup_reaped_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Expired upload sessions are not being cleaned up
+          description: The cleanup job is failing and reaping nothing; expired uploads keep their objects and drafts.
+
+      - alert: VideoAssetPurgeFailing
+        expr: increase(video_cleanup_failed_total[30m]) > 0 and increase(video_cleanup_purged_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Superseded and removed video assets are not being purged
+          description: Purges are failing in MinIO (permissions or availability); rows stay DELETION_IN_PROGRESS and storage is not reclaimed.

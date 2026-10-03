@@ -92,6 +92,12 @@ public class OutboxRepository {
         return jdbc.update(FINALISE, eventId, claimToken) == 1;
     }
 
+    /** Events the relay gave up on; served by the partial dead index. */
+    public long countDead() {
+        Long count = jdbc.queryForObject("SELECT count(*) FROM platform.outbox_event WHERE status = 'DEAD'", Long.class);
+        return count == null ? 0 : count;
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean markFailed(UUID eventId, UUID claimToken, String error, Instant retryAt, boolean dead) {
         String status = dead ? "DEAD" : "RETRY";
