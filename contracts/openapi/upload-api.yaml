@@ -82,7 +82,10 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '503':
-          description: Another request for this account held the creation lock too long; retry
+          description: >-
+            Another request for this account held the creation lock too long, or uploads are being
+            started across all accounts faster than the platform absorbs (global cap); retry after
+            the Retry-After seconds when present
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

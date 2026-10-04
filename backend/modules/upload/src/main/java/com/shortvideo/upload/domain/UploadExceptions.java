@@ -65,5 +65,20 @@ public final class UploadExceptions {
         public java.time.Duration retryAfter() { return retryAfter; }
     }
 
+    /**
+     * Too many uploads are being started across all accounts for the object store to absorb. Not
+     * this caller's doing, so 503 rather than 429, with Retry-After.
+     */
+    public static class UploadCapacityExceeded extends RuntimeException {
+        private final java.time.Duration retryAfter;
+
+        public UploadCapacityExceeded(java.time.Duration retryAfter) {
+            super("Upload capacity exceeded");
+            this.retryAfter = retryAfter;
+        }
+
+        public java.time.Duration retryAfter() { return retryAfter; }
+    }
+
     private UploadExceptions() {}
 }

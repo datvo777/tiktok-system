@@ -142,6 +142,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                         "You have started too many uploads recently. Try again later."));
     }
 
+    @ExceptionHandler(UploadExceptions.UploadCapacityExceeded.class)
+    public ResponseEntity<ProblemDetail> uploadCapacityExceeded(UploadExceptions.UploadCapacityExceeded e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Upload capacity exceeded",
+                        "Uploads are being started faster than the platform can absorb. Try again shortly."));
+    }
+
     @ExceptionHandler(UploadExceptions.UploadBusy.class)
     public ProblemDetail uploadBusy(UploadExceptions.UploadBusy e) {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "Upload busy", "Please retry in a moment");
@@ -257,9 +267,20 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.GONE, "Upload expired", e.getMessage());
     }
 
-    @ExceptionHandler({UploadExceptions.UploadObjectMissing.class, UploadExceptions.UploadSizeOutOfRange.class})
-    public ProblemDetail uploadInvalid(RuntimeException e) {
-        return problem(HttpStatus.CONFLICT, "Upload invalid", e.getMessage());
+    /** No object yet: the client may retry complete once its upload finishes. */
+    @ExceptionHandler(UploadExceptions.UploadObjectMissing.class)
+    public ProblemDetail uploadObjectMissing(UploadExceptions.UploadObjectMissing e) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT, "Upload invalid", e.getMessage());
+        problem.setProperty("code", "UPLOAD_OBJECT_MISSING");
+        return problem;
+    }
+
+    /** The object is there but its size is outside the allowed range: retrying cannot help, the client must upload again. */
+    @ExceptionHandler(UploadExceptions.UploadSizeOutOfRange.class)
+    public ProblemDetail uploadSizeOutOfRange(UploadExceptions.UploadSizeOutOfRange e) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT, "Upload invalid", e.getMessage());
+        problem.setProperty("code", "UPLOAD_SIZE_OUT_OF_RANGE");
+        return problem;
     }
 
     @ExceptionHandler({

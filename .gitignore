@@ -11,5 +11,6 @@ dist/
 *.log
 data/
 .claude/
+*.code-workspace
 *.tsbuildinfo
 *.tar.gz

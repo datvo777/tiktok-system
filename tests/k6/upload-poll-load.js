@@ -53,7 +53,7 @@ export default function () {
   check(login, { 'logged in': (r) => r.status === 200 });
   const cookie = `sv_session=${login.cookies['sv_session'][0].value}`;
 
-  const createUpload = http.post(`${BASE_URL}/api/v1/uploads`, JSON.stringify({}), {
+  const createUpload = http.post(`${BASE_URL}/api/v1/uploads`, JSON.stringify({ title: 'k6 upload', sizeBytes: VIDEO_FILE.byteLength }), {
     headers: { Cookie: cookie, 'Content-Type': 'application/json' },
   });
   check(createUpload, { 'upload session created': (r) => r.status === 200 || r.status === 201 });

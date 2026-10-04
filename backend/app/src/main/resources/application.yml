@@ -102,6 +102,11 @@ shortvideo:
     read-timeout: 30s
   upload:
     cleanup-interval: 15m
+    create-rate-limit:
+      # Across all accounts, per window. What the object store runs out of is bandwidth and
+      # disk, so this brakes how fast write access is handed out; zero turns it off.
+      global-max-per-window: 600
+      global-window: 1m
   outbox:
     enabled: true
     relay-id: relay-1
