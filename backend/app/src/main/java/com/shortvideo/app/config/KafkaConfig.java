@@ -41,7 +41,11 @@ public class KafkaConfig {
         props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
         props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
         props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 10_000);
+        // The relay now puts a whole round of events in flight at once, so batching pays off:
+        // linger gives the producer a moment to gather them, and the JSON payloads compress well.
         props.put(ProducerConfig.LINGER_MS_CONFIG, 5);
+        props.put(ProducerConfig.BATCH_SIZE_CONFIG, 64 * 1024);
+        props.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "lz4");
         return new DefaultKafkaProducerFactory<>(props);
     }
 
