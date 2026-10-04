@@ -19,6 +19,7 @@ import io.minio.errors.ErrorResponseException;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +31,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class UploadService {
@@ -66,6 +68,7 @@ public class UploadService {
     private final JdbcTemplate jdbc;
     private final AccountDirectory accountDirectory;
     private final UploadCreateRateLimiter createRateLimiter;
+    private final TransactionTemplate transaction;
 
     public UploadService(
             UploadJpaRepository repository,
@@ -77,7 +80,8 @@ public class UploadService {
             @Value("${shortvideo.minio.public-endpoint:}") String minioPublicEndpoint,
             JdbcTemplate jdbc,
             AccountDirectory accountDirectory,
-            UploadCreateRateLimiter createRateLimiter) {
+            UploadCreateRateLimiter createRateLimiter,
+            TransactionTemplate transaction) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDraftRegistrar = videoDraftRegistrar;
@@ -87,6 +91,7 @@ public class UploadService {
         this.jdbc = jdbc;
         this.accountDirectory = accountDirectory;
         this.createRateLimiter = createRateLimiter;
+        this.transaction = transaction;
     }
 
     /**
@@ -112,10 +117,7 @@ public class UploadService {
 
         // The JWT proves who the caller was when it was issued, not that the account may
         // still start new work. Unknown or non-ACTIVE denies (Rule 9).
-        boolean active = accountDirectory.find(accountId).filter(AccountView::isEligible).isPresent();
-        if (!active) {
-            throw new UploadExceptions.AccountNotAllowedToUpload("This account cannot start uploads");
-        }
+        requireActiveAccount(accountId, "start");
 
         // Serialises this account's creates for the rest of the transaction, so the quota
         // count below and the insert that follows cannot interleave with another request's:
@@ -217,10 +219,14 @@ public class UploadService {
      * for an already-completed session returns the same result without reapplying
      * anything or emitting a second event.
      */
-    @Transactional
     public UploadView complete(String uploadId, String accountId, String idempotencyKey) {
+        UUID id = UUID.fromString(uploadId);
+        // Deliberately not one transaction. The checks below and the copy are network calls to the
+        // object store that can take seconds for a large file, and a transaction would hold a
+        // database connection (the pool is small and shared with every other request) for all of
+        // it. Only the state change and the event need a transaction, and that is finishCompletion.
         UploadSessionEntity session = repository
-                .findById(UUID.fromString(uploadId))
+                .findById(id)
                 .orElseThrow(() -> new UploadExceptions.UploadNotFound("No such upload"));
 
         if (!session.getAccountId().toString().equals(accountId)) {
@@ -233,6 +239,9 @@ public class UploadService {
         if (!session.canStillComplete(Instant.now())) {
             throw new UploadExceptions.UploadExpired("Upload session has expired");
         }
+        // The same check as when the session was opened (Rule 9): an account suspended while its
+        // file was uploading must not start a transcode.
+        requireActiveAccount(accountId, "complete");
 
         StatObjectResponse stat = stat(session.getObjectKey());
         long size = stat.size();
@@ -244,9 +253,28 @@ public class UploadService {
         // uploads/... after this check and the transcoder would read different bytes than
         // the ones just verified. Everything downstream reads a private copy instead, made
         // only if the object is still the one we stat'ed (matchETag) and under a key no
-        // presigned policy covers.
-        String sourceKey = sourceKeyFor(session.getVideoId());
-        copyVerified(session.getObjectKey(), sourceKey, stat.etag());
+        // presigned policy covers. Idempotent: the same key and the same source, so a retry or a
+        // concurrent completion that gets here too simply writes the same copy again.
+        copyVerified(session.getObjectKey(), sourceKeyFor(session.getVideoId()), stat.etag());
+
+        return transaction.execute(status -> finishCompletion(id, idempotencyKey, size));
+    }
+
+    /**
+     * The only part of completion that touches the database in a transaction: marks the session
+     * completed and appends the event together, so there is never a COMPLETED session without its
+     * event. Takes the row lock, so of two concurrent completions the second waits, then sees the
+     * first's result and returns it rather than failing on a version conflict.
+     */
+    private UploadView finishCompletion(UUID id, String idempotencyKey, long size) {
+        UploadSessionEntity session = lockSession(id)
+                .orElseThrow(() -> new UploadExceptions.UploadExpired("Upload session is gone"));
+        if (session.getStatus() == UploadStatus.COMPLETED) {
+            return toView(session); // a concurrent completion won
+        }
+        if (session.getStatus() != UploadStatus.PENDING) {
+            throw new UploadExceptions.UploadExpired("Upload session has expired");
+        }
         removeAfterCommit(session.getObjectKey());
 
         session.markCompleted(size, idempotencyKey);
@@ -256,7 +284,7 @@ public class UploadService {
                 saved.getUploadId().toString(),
                 saved.getVideoId().toString(),
                 saved.getAccountId().toString(),
-                sourceKey,
+                sourceKeyFor(saved.getVideoId()),
                 size);
 
         outboxWriter.append(new EventEnvelope<>(
@@ -274,6 +302,27 @@ public class UploadService {
                 payload));
 
         return toView(saved);
+    }
+
+    /**
+     * Takes the session's row lock, waiting at most a few seconds. Nothing that holds this lock does
+     * anything slow, so a wait that long means something is wrong; failing fast with a retryable 503
+     * beats parking a request thread and a pooled connection behind it.
+     */
+    private Optional<UploadSessionEntity> lockSession(UUID id) {
+        try {
+            jdbc.execute("SET LOCAL lock_timeout = '5s'");
+            return repository.findForUpdate(id);
+        } catch (PessimisticLockingFailureException e) {
+            throw new UploadExceptions.UploadBusy("Another completion of this upload is in progress", e);
+        }
+    }
+
+    private void requireActiveAccount(String accountId, String action) {
+        boolean active = accountDirectory.find(accountId).filter(AccountView::isEligible).isPresent();
+        if (!active) {
+            throw new UploadExceptions.AccountNotAllowedToUpload("This account cannot " + action + " uploads");
+        }
     }
 
     @Transactional(readOnly = true)
@@ -344,8 +393,8 @@ public class UploadService {
                     .source(CopySource.builder().bucket(bucket).object(fromKey).matchETag(etag).build())
                     .build());
         } catch (ErrorResponseException changed) {
-            throw new UploadExceptions.UploadObjectMissing(
-                    "The uploaded object changed while it was being verified; upload it again");
+            throw new UploadExceptions.UploadChangedDuringVerification(
+                    "The uploaded object changed while it was being verified; complete the upload again");
         } catch (Exception e) {
             throw new UploadExceptions.StorageUnavailable("Failed to secure the uploaded object", e);
         }

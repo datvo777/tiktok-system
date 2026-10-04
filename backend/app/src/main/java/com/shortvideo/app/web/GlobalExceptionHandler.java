@@ -275,6 +275,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem;
     }
 
+    /** The object was replaced mid-verification: completing again re-reads it, so this can be retried at once. */
+    @ExceptionHandler(UploadExceptions.UploadChangedDuringVerification.class)
+    public ProblemDetail uploadChangedDuringVerification(UploadExceptions.UploadChangedDuringVerification e) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT, "Upload invalid", e.getMessage());
+        problem.setProperty("code", "UPLOAD_CHANGED_DURING_VERIFICATION");
+        return problem;
+    }
+
     /** The object is there but its size is outside the allowed range: retrying cannot help, the client must upload again. */
     @ExceptionHandler(UploadExceptions.UploadSizeOutOfRange.class)
     public ProblemDetail uploadSizeOutOfRange(UploadExceptions.UploadSizeOutOfRange e) {

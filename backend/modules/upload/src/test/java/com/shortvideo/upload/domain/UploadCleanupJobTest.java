@@ -41,8 +41,8 @@ class UploadCleanupJobTest {
         // A session that expired a minute ago is inside the grace and must not be selected.
         assertThat(cutoff.getValue())
                 .isBetween(
-                        before.minus(UploadSessionEntity.COMPLETION_GRACE),
-                        after.minus(UploadSessionEntity.COMPLETION_GRACE));
+                        before.minus(UploadCleanupJob.REAP_AFTER),
+                        after.minus(UploadCleanupJob.REAP_AFTER));
         assertThat(cutoff.getValue()).isBefore(after.minusSeconds(60));
     }
 

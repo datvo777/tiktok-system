@@ -1,11 +1,13 @@
 package com.shortvideo.upload.domain;
 
+import jakarta.persistence.LockModeType;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -33,6 +35,11 @@ interface UploadJpaRepository extends JpaRepository<UploadSessionEntity, UUID> {
             """)
     long sumMaxSizeBytesOpen(
             @Param("accountId") UUID accountId, @Param("status") UploadStatus status, @Param("now") Instant now);
+
+    /** Takes the row lock, so two completions of one session serialise instead of racing on its version. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM UploadSessionEntity s WHERE s.uploadId = :uploadId")
+    Optional<UploadSessionEntity> findForUpdate(@Param("uploadId") UUID uploadId);
 
     Optional<UploadSessionEntity> findByAccountIdAndCreateIdempotencyKey(UUID accountId, String createIdempotencyKey);
 }

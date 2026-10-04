@@ -14,6 +14,15 @@ public final class UploadExceptions {
         public UploadObjectMissing(String message) { super(message); }
     }
 
+    /**
+     * The object was replaced between the size check and the copy that pins it. Unlike a missing
+     * object, nothing is wrong with the upload itself: completing again re-reads the object and
+     * succeeds, so a client can retry straight away.
+     */
+    public static class UploadChangedDuringVerification extends RuntimeException {
+        public UploadChangedDuringVerification(String message) { super(message); }
+    }
+
     public static class UploadSizeOutOfRange extends RuntimeException {
         public UploadSizeOutOfRange(String message) { super(message); }
     }

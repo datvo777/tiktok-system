@@ -45,4 +45,13 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("60");
     }
+
+    @Test
+    void anObjectReplacedMidVerificationHasItsOwnCodeSoTheClientCanRetryAtOnce() {
+        var problem = new GlobalExceptionHandler()
+                .uploadChangedDuringVerification(new UploadExceptions.UploadChangedDuringVerification("changed"));
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+        assertThat(problem.getProperties()).containsEntry("code", "UPLOAD_CHANGED_DURING_VERIFICATION");
+    }
 }

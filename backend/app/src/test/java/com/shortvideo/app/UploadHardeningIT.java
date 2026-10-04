@@ -34,6 +34,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.util.ReflectionUtils;
@@ -98,6 +99,9 @@ class UploadHardeningIT {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @Autowired
     org.springframework.context.ApplicationContext context;
@@ -252,6 +256,114 @@ class UploadHardeningIT {
 
         assertThat(distinct).hasSize(1);
         assertThat(openSessions()).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentCompletionsOfOneSessionAllSucceedAndEmitOneEvent() throws Exception {
+        Map<?, ?> created = create(null).getBody();
+        String uploadId = (String) created.get("uploadId");
+        assertThat(postFile(created, "one upload, completed several times at once")).isBetween(200, 299);
+
+        int callers = 6;
+        ExecutorService pool = Executors.newFixedThreadPool(callers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<ResponseEntity<Map>>> results = new ArrayList<>();
+        for (int i = 0; i < callers; i++) {
+            results.add(pool.submit(() -> {
+                start.await();
+                return rest.exchange(
+                        url("/api/v1/uploads/" + uploadId + "/complete"),
+                        HttpMethod.POST,
+                        new HttpEntity<>(auth),
+                        Map.class);
+            }));
+        }
+        start.countDown();
+        for (Future<ResponseEntity<Map>> result : results) {
+            ResponseEntity<Map> response = result.get();
+            // Not a 500 from losing a version race: the loser is told the upload is complete.
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(response.getBody().get("status")).isEqualTo("COMPLETED");
+        }
+        pool.shutdown();
+
+        Integer events = jdbc.queryForObject(
+                "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = 'video.upload.completed'",
+                Integer.class,
+                uploadId);
+        assertThat(events).isEqualTo(1);
+    }
+
+    @Test
+    void aCompletionWaitingOnAHeldSessionLockGivesUpWithARetryableErrorInsteadOfHanging() throws Exception {
+        Map<?, ?> created = create(null).getBody();
+        String uploadId = (String) created.get("uploadId");
+        assertThat(postFile(created, "uploaded, then something holds the row")).isBetween(200, 299);
+
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService holder = Executors.newSingleThreadExecutor();
+        Future<?> held = holder.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            jdbc.queryForList("SELECT 1 FROM upload.upload_session WHERE upload_id = ?::uuid FOR UPDATE", uploadId);
+            locked.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        assertThat(locked.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        long started = System.nanoTime();
+        ResponseEntity<Map> completed = rest.exchange(
+                url("/api/v1/uploads/" + uploadId + "/complete"), HttpMethod.POST, new HttpEntity<>(auth), Map.class);
+        long waitedMillis = (System.nanoTime() - started) / 1_000_000;
+        release.countDown();
+        held.get();
+        holder.shutdown();
+
+        assertThat(completed.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(waitedMillis).isBetween(4_000L, 15_000L);
+        // Nothing was half-done: once the lock is free, completing works.
+        assertThat(rest.exchange(
+                                url("/api/v1/uploads/" + uploadId + "/complete"),
+                                HttpMethod.POST,
+                                new HttpEntity<>(auth),
+                                Map.class)
+                        .getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void completingBeforeAnythingWasUploadedReportsAMachineReadableReason() {
+        Map<?, ?> created = create(null).getBody();
+
+        ResponseEntity<Map> completed = rest.exchange(
+                url("/api/v1/uploads/" + created.get("uploadId") + "/complete"),
+                HttpMethod.POST,
+                new HttpEntity<>(auth),
+                Map.class);
+
+        assertThat(completed.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(completed.getBody().get("code")).isEqualTo("UPLOAD_OBJECT_MISSING");
+    }
+
+    @Test
+    void anAccountSuspendedWhileUploadingCannotCompleteIt() throws Exception {
+        Map<?, ?> created = create(null).getBody();
+        String uploadId = (String) created.get("uploadId");
+        assertThat(postFile(created, "uploaded before the account was restricted")).isBetween(200, 299);
+        jdbc.update("UPDATE account.account SET state = 'RESTRICTED' WHERE account_id = ?::uuid", accountId);
+
+        ResponseEntity<Map> completed = rest.exchange(
+                url("/api/v1/uploads/" + uploadId + "/complete"), HttpMethod.POST, new HttpEntity<>(auth), Map.class);
+
+        assertThat(completed.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        Integer events = jdbc.queryForObject(
+                "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = 'video.upload.completed'",
+                Integer.class,
+                uploadId);
+        assertThat(events).isZero();
     }
 
     @Test

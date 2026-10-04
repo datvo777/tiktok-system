@@ -33,6 +33,14 @@ class UploadCleanupJob {
     private static final Logger log = LoggerFactory.getLogger(UploadCleanupJob.class);
     private static final int SWEEP_LIMIT = 200;
 
+    /**
+     * How long past expiry plus the completion grace a session must be before it is reaped. A
+     * completion accepted just inside the grace can still be copying for a minute or so (the
+     * object-store timeouts are 30s per call), and the reaper must not delete the object out
+     * from under it.
+     */
+    static final java.time.Duration REAP_AFTER = UploadSessionEntity.COMPLETION_GRACE.plus(java.time.Duration.ofMinutes(2));
+
     private final UploadJpaRepository repository;
     private final MinioClient minioClient;
     private final VideoDraftRegistrar videoDraftRegistrar;
@@ -70,7 +78,7 @@ class UploadCleanupJob {
         // not reaped while it is still arriving or about to be completed.
         // Bounded in the query, not after it: a backlog must never be loaded whole.
         List<UploadSessionEntity> due = repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(
-                UploadStatus.PENDING, Instant.now().minus(UploadSessionEntity.COMPLETION_GRACE), PageRequest.of(0, SWEEP_LIMIT));
+                UploadStatus.PENDING, Instant.now().minus(REAP_AFTER), PageRequest.of(0, SWEEP_LIMIT));
         int reaped = 0;
         int failed = 0;
         for (UploadSessionEntity session : due) {

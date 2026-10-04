@@ -127,7 +127,12 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '409':
-          description: Uploaded object is missing, changed while being verified, or its size is outside the allowed range
+          description: >-
+            The upload cannot be completed as it stands. Read `code` to decide what to do:
+            `UPLOAD_OBJECT_MISSING` (nothing was uploaded yet: finish uploading, then complete again),
+            `UPLOAD_CHANGED_DURING_VERIFICATION` (the object was replaced while it was checked:
+            complete again at once), `UPLOAD_SIZE_OUT_OF_RANGE` (retrying cannot help: upload a
+            file within the allowed size).
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -221,6 +226,15 @@ components:
         title: { type: string }
         status: { type: integer }
         detail: { type: string }
+        code:
+          type: string
+          description: >-
+            Stable, machine-readable reason, present where the client's next step depends on it
+            (for example on completing an upload). Match on this, not on `detail`.
+          enum:
+            - UPLOAD_OBJECT_MISSING
+            - UPLOAD_CHANGED_DURING_VERIFICATION
+            - UPLOAD_SIZE_OUT_OF_RANGE
 
 security:
   - bearerAuth: []

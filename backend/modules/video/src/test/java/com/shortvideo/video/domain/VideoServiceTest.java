@@ -137,4 +137,36 @@ class VideoServiceTest {
         assertThat(catchThrowable(() -> service.reprocess(videoId.toString(), UUID.randomUUID().toString())))
                 .isInstanceOf(VideoExceptions.VideoNotReady.class);
     }
+
+    @Test
+    void anExpiredDraftHasItsSourceScheduledForPurge() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWith(repository, superseded);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity draft = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        when(repository.findById(videoId)).thenReturn(Optional.of(draft));
+
+        service.expireDraft(videoId.toString());
+
+        var rows = org.mockito.ArgumentCaptor.forClass(SupersededAssetEntity.class);
+        org.mockito.Mockito.verify(superseded).saveAndFlush(rows.capture());
+        assertThat(rows.getValue().prefix()).isEqualTo("sources/" + videoId + "/");
+    }
+
+    @Test
+    void aDraftThatAlreadyStartedProcessingKeepsItsSource() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWith(repository, superseded);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+
+        // The reaper racing a completion must never reach the source a completed upload is using.
+        service.expireDraft(videoId.toString());
+
+        org.mockito.Mockito.verify(superseded, org.mockito.Mockito.never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
+    }
 }

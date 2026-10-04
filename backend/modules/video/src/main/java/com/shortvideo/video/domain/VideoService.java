@@ -108,6 +108,10 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             return;
         }
         repository.saveAndFlush(video);
+        // A completion whose transaction failed after the verified copy was made leaves that copy
+        // behind, and this draft will never be processed. expireIfCreated only acts on a draft that
+        // never started processing, so this cannot reach the source of a completed upload.
+        supersededAssetRepository.saveAndFlush(SupersededAssetEntity.sourceOf(video.getVideoId()));
     }
 
     /**
