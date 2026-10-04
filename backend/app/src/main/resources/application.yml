@@ -54,8 +54,8 @@ spring:
       group-id: short-video-backend
       auto-offset-reset: earliest
       # Durable consumers commit their DB transaction before acknowledging the
-      # offset (Rule 5); the listener container factory below acks per record
-      # only after the listener method returns without exception.
+      # offset (Rule 5); the listener container factory acks once per poll, only
+      # after every record in it has been applied (see KafkaConfig).
       enable-auto-commit: false
 
 server:

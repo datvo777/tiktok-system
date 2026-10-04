@@ -34,7 +34,11 @@ class SocialNotificationListener {
         this.objectMapper = objectMapper;
     }
 
-    @KafkaListener(topics = Topics.SOCIAL_EVENTS, groupId = "notification-social-listener")
+    // The topic has three partitions and carries the platform's highest-volume events (likes,
+    // comments, follows), so this is the one listener given a thread per partition. Records
+    // with the same key share a partition, so per-key order is unchanged. Not applied to the
+    // others: each extra thread competes for the database connection pool.
+    @KafkaListener(topics = Topics.SOCIAL_EVENTS, groupId = "notification-social-listener", concurrency = "3")
     @Transactional
     public void onSocialEvent(String payload) {
         try {
