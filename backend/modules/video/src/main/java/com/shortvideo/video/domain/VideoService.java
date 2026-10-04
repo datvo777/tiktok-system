@@ -354,13 +354,15 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     @Transactional
     public void reprocess(String videoId, String actorAccountId) {
         VideoEntity video = repository
-                .findById(UUID.fromString(videoId))
+                .findForUpdate(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
         if (video.isRemoved()) {
             // Its source is purged on removal, and reprocessing would write assets nobody serves.
             throw new VideoExceptions.VideoNotFound("No such video");
         }
-        if (video.getSourceObjectKey() == null) {
+        if (video.getSourceObjectKey() == null
+                || supersededAssetRepository.existsByVideoIdAndPurgePrefixIsNotNull(video.getVideoId())) {
+            // Never uploaded, or the source was reclaimed after a terminal failure went unretried.
             throw new VideoExceptions.VideoNotReady("No source object to reprocess from");
         }
         if (video.getProcessingState() == ProcessingState.TRANSCODING) {

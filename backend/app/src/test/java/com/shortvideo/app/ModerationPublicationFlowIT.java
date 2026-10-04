@@ -70,7 +70,7 @@ class ModerationPublicationFlowIT {
 
     @Container
     @SuppressWarnings("resource")
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.9.0"));
+    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.8.0"));
 
     @Container
     @SuppressWarnings("resource")
@@ -131,7 +131,10 @@ class ModerationPublicationFlowIT {
         ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), creatorAuth);
         String videoId = (String) created.getBody().get("videoId");
         String uploadId = (String) created.getBody().get("uploadId");
-        putToPresignedUrl((String) created.getBody().get("uploadUrl"), "x".getBytes(StandardCharsets.UTF_8));
+        postToPresignedForm(
+                (String) created.getBody().get("uploadUrl"),
+                (Map<String, String>) created.getBody().get("formFields"),
+                "x".getBytes(StandardCharsets.UTF_8));
         post("/api/v1/uploads/" + uploadId + "/complete", null, creatorAuth);
 
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
@@ -263,10 +266,23 @@ class ModerationPublicationFlowIT {
         }
     }
 
-    private void putToPresignedUrl(String uploadUrl, byte[] body) {
+    /** The upload URL is a presigned POST policy: its signed fields go first, the file part last. */
+    private void postToPresignedForm(String url, Map<String, String> fields, byte[] body) {
+        org.springframework.util.LinkedMultiValueMap<String, Object> form = new org.springframework.util.LinkedMultiValueMap<>();
+        fields.forEach(form::add);
+        form.add("file", new org.springframework.core.io.ByteArrayResource(body) {
+            @Override
+            public String getFilename() {
+                return "video.mp4";
+            }
+        });
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentLength(body.length);
-        rest.getRestTemplate().exchange(uploadUrl, HttpMethod.PUT, new HttpEntity<>(body, headers), Void.class);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        // Buffered, so the request carries a Content-Length: the object store refuses a chunked POST
+        // as an empty body.
+        new org.springframework.web.client.RestTemplate(new org.springframework.http.client.BufferingClientHttpRequestFactory(
+                        new org.springframework.http.client.SimpleClientHttpRequestFactory()))
+                .exchange(url, HttpMethod.POST, new HttpEntity<>(form, headers), Void.class);
     }
 
     private HttpHeaders registerAndLogin(String email) {

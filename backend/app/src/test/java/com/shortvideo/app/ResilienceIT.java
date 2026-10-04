@@ -56,7 +56,7 @@ class ResilienceIT {
 
     @Container
     @SuppressWarnings("resource")
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.9.0"));
+    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.8.0"));
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -68,7 +68,9 @@ class ResilienceIT {
         registry.add("shortvideo.outbox.poll-interval", () -> "200ms");
         // Fast enough to observe within a test timeout without weakening the
         // real production default anywhere outside this test.
+        registry.add("shortvideo.inbox.cleanup-initial-delay", () -> "0s");
         registry.add("shortvideo.inbox.cleanup-interval", () -> "500ms");
+        registry.add("shortvideo.outbox.cleanup-initial-delay", () -> "0s");
         registry.add("shortvideo.outbox.cleanup-interval", () -> "500ms");
     }
 

@@ -9,4 +9,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 interface SupersededAssetJpaRepository extends JpaRepository<SupersededAssetEntity, UUID> {
 
     List<SupersededAssetEntity> findByStateOrderByCreatedAtAsc(AssetLifecycleState state, Pageable page);
+
+    /** Whether the video's source has been scheduled for purge (only source rows carry an explicit prefix). */
+    boolean existsByVideoIdAndPurgePrefixIsNotNull(UUID videoId);
 }

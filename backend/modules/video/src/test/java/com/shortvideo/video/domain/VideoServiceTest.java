@@ -116,9 +116,25 @@ class VideoServiceTest {
         VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
         video.dispatchProcessing("sources/" + videoId + "/original");
         video.scheduleForDeletion();
-        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        when(repository.findForUpdate(videoId)).thenReturn(Optional.of(video));
 
         assertThat(catchThrowable(() -> service.reprocess(videoId.toString(), UUID.randomUUID().toString())))
                 .isInstanceOf(VideoExceptions.VideoNotFound.class);
+    }
+
+    @Test
+    void aVideoWhoseSourceWasReclaimedCannotBeReprocessed() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWith(repository, superseded);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        video.dispatchProcessing("sources/" + videoId + "/original");
+        video.markFailed("TERMINAL");
+        when(repository.findForUpdate(videoId)).thenReturn(Optional.of(video));
+        when(superseded.existsByVideoIdAndPurgePrefixIsNotNull(videoId)).thenReturn(true);
+
+        assertThat(catchThrowable(() -> service.reprocess(videoId.toString(), UUID.randomUUID().toString())))
+                .isInstanceOf(VideoExceptions.VideoNotReady.class);
     }
 }

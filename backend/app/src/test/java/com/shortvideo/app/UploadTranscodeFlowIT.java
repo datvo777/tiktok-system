@@ -75,7 +75,7 @@ class UploadTranscodeFlowIT {
 
     @Container
     @SuppressWarnings("resource")
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.9.0"));
+    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.8.0"));
 
     @Container
     @SuppressWarnings("resource")
@@ -304,7 +304,10 @@ class UploadTranscodeFlowIT {
         });
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        new org.springframework.web.client.RestTemplate(new org.springframework.http.client.SimpleClientHttpRequestFactory())
+        // Buffered, so the request carries a Content-Length: the object store refuses a chunked POST
+        // as an empty body.
+        new org.springframework.web.client.RestTemplate(new org.springframework.http.client.BufferingClientHttpRequestFactory(
+                        new org.springframework.http.client.SimpleClientHttpRequestFactory()))
                 .exchange(url, HttpMethod.POST, new HttpEntity<>(form, headers), Void.class);
     }
 
