@@ -5,7 +5,7 @@
 //
 // Responses are validated at this boundary rather than cast — see ./http.
 
-import { jsonBody, request, requestNoContent, s, type Infer } from '@short/shared';
+import { ApiError, jsonBody, request, requestNoContent, s, type Infer } from '@short/shared';
 
 export { ApiError, ContractError } from '@short/shared';
 
@@ -271,6 +271,55 @@ export async function completeUpload(uploadId: string): Promise<UploadResponse> 
     (payload) => uploadSchema.parse('completeUpload', payload),
     { method: 'POST' },
   );
+}
+
+const COMPLETE_ATTEMPTS = 4;
+const COMPLETE_BACKOFF_MS = 1000;
+const COMPLETE_MAX_WAIT_MS = 15_000;
+
+/** True when calling `complete` again could change the outcome. */
+export function isRetryableCompleteError(error: unknown): boolean {
+  if (error instanceof UploadCancelled) return false;
+  if (error instanceof ApiError) return error.isTransient;
+  // fetch rejects with a TypeError when the request never got an answer.
+  return error instanceof TypeError;
+}
+
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new UploadCancelled());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new UploadCancelled());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * `complete` is idempotent server-side, so a transient failure (storage or the
+ * session lock briefly unavailable) is retried here instead of making the person
+ * upload the file again. Waits for the server's `Retry-After` when it sends one,
+ * otherwise backs off exponentially. Gives up after a few attempts and rethrows
+ * the last error so the caller can offer a manual retry of `complete` alone.
+ */
+export async function completeUploadWithRetry(uploadId: string, signal?: AbortSignal): Promise<UploadResponse> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await completeUpload(uploadId);
+    } catch (error) {
+      if (attempt >= COMPLETE_ATTEMPTS || !isRetryableCompleteError(error)) throw error;
+      const hinted = error instanceof ApiError ? error.retryAfterMs : undefined;
+      await wait(Math.min(hinted ?? COMPLETE_BACKOFF_MS * 2 ** (attempt - 1), COMPLETE_MAX_WAIT_MS), signal);
+    }
+  }
 }
 
 export async function getVideo(videoId: string): Promise<VideoResponse> {

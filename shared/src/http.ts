@@ -20,6 +20,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** From the `Retry-After` header, when the server sent one in seconds. */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -32,6 +34,17 @@ export class ApiError extends Error {
   get isForbidden(): boolean {
     return this.status === 403;
   }
+
+  /** The server says the same request may succeed shortly: throttled, or a dependency is briefly down. */
+  get isTransient(): boolean {
+    return this.status === 429 || this.status === 502 || this.status === 503 || this.status === 504;
+  }
+}
+
+function parseRetryAfter(response: Response): number | undefined {
+  const seconds = Number(response.headers.get('Retry-After'));
+  // The HTTP-date form is not worth parsing here; callers fall back to their own backoff.
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
 }
 
 /** Thrown when the server's payload does not match what this client expects. */
@@ -70,7 +83,7 @@ export async function request<T>(
 ): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
-    throw new ApiError(response.status, await readProblemDetail(response));
+    throw new ApiError(response.status, await readProblemDetail(response), parseRetryAfter(response));
   }
   if (response.status === 204) {
     return parse(undefined);
@@ -88,7 +101,7 @@ export async function request<T>(
 export async function requestNoContent(path: string, init?: RequestInit): Promise<void> {
   const response = await fetch(path, init);
   if (!response.ok) {
-    throw new ApiError(response.status, await readProblemDetail(response));
+    throw new ApiError(response.status, await readProblemDetail(response), parseRetryAfter(response));
   }
 }
 

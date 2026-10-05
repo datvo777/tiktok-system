@@ -3,7 +3,8 @@ import Hls from 'hls.js';
 import { useEffect, useRef, useState } from 'react';
 import { CheckIcon, FlagIcon, PlayIcon, UploadCloudIcon } from './icons';
 import {
-  completeUpload,
+  completeUploadWithRetry,
+  isRetryableCompleteError,
   createPreviewSession,
   createUpload,
   getVideo,
@@ -65,6 +66,13 @@ const STATE_BADGE: Record<string, { variant: string; label: string }> = {
   EXPIRED: { variant: 'badge-danger', label: 'Expired' },
 };
 
+/** `complete` kept failing transiently after the file was stored; carries the last error. */
+class FinishFailed extends Error {
+  constructor(readonly lastError: Error) {
+    super(lastError.message);
+  }
+}
+
 export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
@@ -75,6 +83,12 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
   /** 0..1 while bytes are moving; null before and after. */
   const [progress, setProgress] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Set once the bytes are in storage and cleared when `complete` succeeds. While
+   * it is set, a retry must only call `complete` again: the file is already there,
+   * and starting over would create another session and draft and re-send the file.
+   */
+  const [stored, setStored] = useState<{ uploadId: string; videoId: string } | null>(null);
   const queryClient = useQueryClient();
 
   const upload = useMutation({
@@ -82,25 +96,45 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const session = await createUpload(title, description, selected.size);
-      // Checked before spending the upload: the policy caps the body server-side
-      // too, but failing here explains why instead of surfacing EntityTooLarge.
-      if (selected.size > session.maxBytes) {
-        throw new Error(
-          `That file is ${(selected.size / 1_048_576).toFixed(0)} MB; the limit is ` +
-            `${(session.maxBytes / 1_048_576).toFixed(0)} MB.`,
-        );
+      let session = stored;
+      if (!session) {
+        const created = await createUpload(title, description, selected.size);
+        // Checked before spending the upload: the policy caps the body server-side
+        // too, but failing here explains why instead of surfacing EntityTooLarge.
+        if (selected.size > created.maxBytes) {
+          throw new Error(
+            `That file is ${(selected.size / 1_048_576).toFixed(0)} MB; the limit is ` +
+              `${(created.maxBytes / 1_048_576).toFixed(0)} MB.`,
+          );
+        }
+        await postToPresignedUrl(created, selected, {
+          onProgress: setProgress,
+          signal: controller.signal,
+        });
+        session = { uploadId: created.uploadId, videoId: created.videoId };
+        setStored(session);
       }
-      await postToPresignedUrl(session, selected, {
-        onProgress: setProgress,
-        signal: controller.signal,
-      });
-      await completeUpload(session.uploadId);
+      setProgress(null);
+      try {
+        await completeUploadWithRetry(session.uploadId, controller.signal);
+      } catch (error) {
+        // The session is gone (expired, object missing, not allowed): resuming it
+        // cannot work, so fall back to a fresh upload on the next attempt.
+        const resumable = isRetryableCompleteError(error) || error instanceof UploadCancelled;
+        if (!resumable) setStored(null);
+        throw resumable && !(error instanceof UploadCancelled) ? new FinishFailed(error as Error) : error;
+      }
+      setStored(null);
       return session.videoId;
     },
     onMutate: () => {
-      setProgress(0);
-      setLog('Getting your upload ready…');
+      if (stored) {
+        setProgress(null);
+        setLog('Finishing your upload…');
+      } else {
+        setProgress(0);
+        setLog('Getting your upload ready…');
+      }
     },
     onSuccess: (newVideoId) => {
       setVideoId(newVideoId);
@@ -113,11 +147,14 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
     },
     onError: (error) => {
       setProgress(null);
-      setLog(
-        error instanceof UploadCancelled
-          ? 'Upload cancelled.'
-          : `Upload failed: ${(error as Error).message}`,
-      );
+      if (error instanceof UploadCancelled) {
+        setLog('Upload cancelled.');
+      } else if (error instanceof FinishFailed) {
+        // The file is stored; the button now resumes from `complete`.
+        setLog(`Your file is uploaded, but we couldn't finish processing it (${error.lastError.message}). Try again.`);
+      } else {
+        setLog(`Upload failed: ${(error as Error).message}`);
+      }
     },
     onSettled: () => {
       abortRef.current = null;
@@ -232,7 +269,7 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
             if (file) upload.mutate({ selected: file, title: title.trim(), description: description.trim() });
           }}
         >
-          Upload
+          {stored ? 'Finish upload' : 'Upload'}
         </button>
       )}
 
@@ -263,6 +300,7 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
         onClick={() => {
           setVideoId(null);
           setStartedAt(null);
+          setStored(null);
           setFile(null);
           setTitle('');
           setDescription('');
