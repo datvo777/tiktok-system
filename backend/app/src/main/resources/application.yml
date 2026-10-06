@@ -100,6 +100,10 @@ shortvideo:
     connect-timeout: 3s
     write-timeout: 30s
     read-timeout: 30s
+    # OkHttp's default is 5 per host, which the SDK's async-backed calls queue behind
+    # invisibly. See MinioConfig.httpClient.
+    max-concurrent-requests: ${MINIO_MAX_CONCURRENT_REQUESTS:64}
+    max-idle-connections: ${MINIO_MAX_IDLE_CONNECTIONS:32}
   upload:
     cleanup-interval: 15m
     create-rate-limit:
