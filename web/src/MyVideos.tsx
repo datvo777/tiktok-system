@@ -13,6 +13,7 @@ import {
   type VideoSummary,
 } from './api';
 import { navigate, videoPath } from './router';
+import { LIST_POLL_MS, hasVideoInFlight, statusBadge } from './videoStatus';
 import { VideoThumb } from './SearchPanel';
 import { formatCount, relativeTime } from './ui';
 
@@ -21,39 +22,16 @@ import { formatCount, relativeTime } from './ui';
  * video that is still open in the upload sheet. This is the history a creator
  * needs to find and appeal a rejection after they've navigated away.
  */
-function statusBadge(video: VideoSummary): { variant: string; label: string } {
-  switch (video.assetLifecycleState) {
-    case 'REJECTED_RETAINED':
-      return { variant: 'badge-danger', label: 'Rejected' };
-    case 'QUARANTINED':
-      return { variant: 'badge-warning', label: 'Under review' };
-    case 'DELETE_SCHEDULED':
-    case 'DELETION_IN_PROGRESS':
-    case 'DELETED':
-      return { variant: 'badge-danger', label: 'Removed' };
-    case 'RESTORING':
-      return { variant: 'badge-info', label: 'Restoring' };
-    default:
-      break;
-  }
-  switch (video.processingState) {
-    case 'READY':
-      return { variant: 'badge-success', label: 'Ready' };
-    case 'FAILED':
-      return { variant: 'badge-danger', label: 'Processing failed' };
-    case 'EXPIRED':
-      return { variant: 'badge-danger', label: 'Expired' };
-    case 'TRANSCODING':
-      return { variant: 'badge-warning', label: 'Transcoding' };
-    default:
-      return { variant: 'badge-info', label: 'Uploading' };
-  }
-}
-
 export function MyVideos() {
   const [page, setPage] = useState(0);
 
-  const list = useQuery({ queryKey: ['myVideos', page], queryFn: () => getMyVideos(page) });
+  const list = useQuery({
+    queryKey: ['myVideos', page],
+    queryFn: () => getMyVideos(page),
+    // Someone who closed the upload sheet mid-transcode lands here, and a snapshot taken at load
+    // would show "Transcoding" until they happened to refocus the tab.
+    refetchInterval: (query) => (query.state.data && hasVideoInFlight(query.state.data.items) ? LIST_POLL_MS : false),
+  });
 
   if (list.isPending) {
     return (
