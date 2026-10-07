@@ -68,6 +68,17 @@ class ModerationNotificationListener {
                 case EventTypes.VIDEO_PUBLICATION_SUSPENDED -> notificationService.create(
                         (String) p.get("ownerAccountId"), "VIDEO_SUSPENDED",
                         "Your video was suspended and is no longer visible in the feed.", videoId);
+                // The uploader may have left the page long before processing ends; their only
+                // other signal is polling on a screen that is no longer open.
+                case EventTypes.VIDEO_PROCESSING_READY -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "PROCESSING_READY",
+                        "Your video is ready. Preview it and publish when you\u2019re happy with it.", videoId);
+                case EventTypes.VIDEO_PROCESSING_FAILED -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "PROCESSING_FAILED",
+                        "TRANSIENT".equals(p.get("failureClass"))
+                                ? "We couldn't process your video. Try uploading it again."
+                                : "We couldn't process your video. Check that it plays locally, then try a different file.",
+                        videoId);
                 default -> { /* not relevant to notifications */ }
             }
         } catch (Exception e) {
