@@ -41,5 +41,18 @@ interface UploadJpaRepository extends JpaRepository<UploadSessionEntity, UUID> {
     @Query("SELECT s FROM UploadSessionEntity s WHERE s.uploadId = :uploadId")
     Optional<UploadSessionEntity> findForUpdate(@Param("uploadId") UUID uploadId);
 
+    /** Reconciliation scan: completed sessions in a time window, paged by id. */
+    @Query("""
+            SELECT s FROM UploadSessionEntity s
+            WHERE s.status = :status AND s.updatedAt BETWEEN :from AND :to AND s.uploadId > :after
+            ORDER BY s.uploadId
+            """)
+    List<UploadSessionEntity> findInWindowAfter(
+            @Param("status") UploadStatus status,
+            @Param("from") Instant from,
+            @Param("to") Instant to,
+            @Param("after") UUID after,
+            Pageable page);
+
     Optional<UploadSessionEntity> findByAccountIdAndCreateIdempotencyKey(UUID accountId, String createIdempotencyKey);
 }

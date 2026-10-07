@@ -16,7 +16,9 @@ import io.minio.RemoveObjectArgs;
 import io.minio.StatObjectArgs;
 import io.minio.StatObjectResponse;
 import io.minio.errors.ErrorResponseException;
+import com.shortvideo.upload.api.UploadDirectory;
 import java.time.Instant;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -27,6 +29,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -34,7 +37,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
-public class UploadService {
+public class UploadService implements UploadDirectory {
 
     private static final Logger log = LoggerFactory.getLogger(UploadService.class);
 
@@ -323,6 +326,23 @@ public class UploadService {
         if (!active) {
             throw new UploadExceptions.AccountNotAllowedToUpload("This account cannot " + action + " uploads");
         }
+    }
+
+    /** A completed session's last write is its completion, so {@code updatedAt} is when it completed. */
+    @Override
+    @Transactional(readOnly = true)
+    public List<CompletedUploadView> completedBetween(Instant from, Instant to, String afterUploadId, int limit) {
+        return repository
+                .findInWindowAfter(
+                        UploadStatus.COMPLETED, from, to, UUID.fromString(afterUploadId), PageRequest.of(0, limit))
+                .stream()
+                .map(s -> new CompletedUploadView(
+                        s.getUploadId().toString(),
+                        s.getVideoId().toString(),
+                        s.getAccountId().toString(),
+                        sourceKeyFor(s.getVideoId()),
+                        s.getUpdatedAt()))
+                .toList();
     }
 
     @Transactional(readOnly = true)

@@ -3,6 +3,7 @@ package com.shortvideo.moderation.domain;
 import com.shortvideo.moderation.api.ModerationDecisionView;
 import com.shortvideo.eligibility.api.EligibilityDirectory;
 import com.shortvideo.eligibility.api.VideoEligibilityView;
+import com.shortvideo.moderation.api.ModerationBackfill;
 import com.shortvideo.moderation.api.ModerationDirectory;
 import com.shortvideo.moderation.api.PolicyCategory;
 import com.shortvideo.shared.audit.AdminAction;
@@ -27,7 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class ModerationService implements ModerationDirectory {
+public class ModerationService implements ModerationDirectory, ModerationBackfill {
 
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "moderation";
@@ -76,16 +77,18 @@ public class ModerationService implements ModerationDirectory {
      * a redelivered command finds the row already present and does nothing.
      */
     @Transactional
-    public void createPending(String videoId, String creatorId) {
+    @Override
+    public boolean createPending(String videoId, String creatorId) {
         UUID id = UUID.fromString(videoId);
         if (repository.existsById(id)) {
-            return;
+            return false;
         }
         ModerationEntity record = repository.saveAndFlush(new ModerationEntity(id, UUID.fromString(creatorId)));
         // No outbox event for "pending": nothing needs to react to it — a missing
         // or pending moderation record already denies public eligibility (Rule 9).
 
         autoApproveIfScreenerAllows(record, videoId, creatorId);
+        return true;
     }
 
     /**

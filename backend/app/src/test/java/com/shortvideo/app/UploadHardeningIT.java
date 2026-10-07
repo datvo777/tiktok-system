@@ -258,6 +258,54 @@ class UploadHardeningIT {
         assertThat(openSessions()).isEqualTo(1);
     }
 
+    /**
+     * No consumer runs in this IT, which is exactly what a dead-lettered {@code video.upload.completed}
+     * looks like from the database: a COMPLETED session with the video still in CREATED and no
+     * moderation record or publication draft.
+     */
+    @Test
+    void reconciliationRepairsACompletedUploadWhoseFanOutWasLost() throws Exception {
+        Map<?, ?> created = create(null).getBody();
+        String uploadId = (String) created.get("uploadId");
+        String videoId = (String) created.get("videoId");
+        assertThat(postFile(created, "completed, but nothing downstream ever heard about it")).isBetween(200, 299);
+        rest.exchange(url("/api/v1/uploads/" + uploadId + "/complete"), HttpMethod.POST, new HttpEntity<>(auth), Map.class);
+        var job = context.getBean(com.shortvideo.app.reconciliation.UploadCompletionReconciliationJob.class);
+
+        // Inside the grace period the normal path may still be about to deliver it: left alone.
+        job.reconcile();
+        assertThat(videoState(videoId)).isEqualTo("CREATED");
+        assertThat(downstreamRows(videoId)).isZero();
+
+        jdbc.update("UPDATE upload.upload_session SET updated_at = now() - interval '10 minutes' WHERE upload_id = ?::uuid", uploadId);
+        job.reconcile();
+
+        assertThat(videoState(videoId)).isEqualTo("TRANSCODING");
+        assertThat(downstreamRows(videoId)).isEqualTo(2);
+
+        // A second pass finds nothing to do: one transcode job, not two.
+        job.reconcile();
+        Integer dispatched = jdbc.queryForObject(
+                "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = 'media.job.dispatched'",
+                Integer.class,
+                videoId);
+        assertThat(dispatched).isEqualTo(1);
+    }
+
+    private String videoState(String videoId) {
+        return jdbc.queryForObject("SELECT processing_state FROM video.video WHERE video_id = ?::uuid", String.class, videoId);
+    }
+
+    /** Moderation record plus publication draft. */
+    private int downstreamRows(String videoId) {
+        return jdbc.queryForObject(
+                "SELECT (SELECT count(*) FROM moderation.moderation_record WHERE video_id = ?::uuid)"
+                        + " + (SELECT count(*) FROM publication.publication WHERE video_id = ?::uuid)",
+                Integer.class,
+                videoId,
+                videoId);
+    }
+
     @Test
     void concurrentCompletionsOfOneSessionAllSucceedAndEmitOneEvent() throws Exception {
         Map<?, ?> created = create(null).getBody();

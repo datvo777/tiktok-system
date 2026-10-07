@@ -33,3 +33,25 @@ groups:
         annotations:
           summary: Superseded and removed video assets are not being purged
           description: Purges are failing in MinIO (permissions or availability); rows stay DELETION_IN_PROGRESS and storage is not reclaimed.
+
+      - alert: KafkaRecordDeadLettered
+        # A record reaches a DLT only after its retries are exhausted, and nothing replays it, so the
+        # consumer never applied it. The upload-completion fan-out is repaired by the reconciliation job;
+        # anything else needs an operator to look at the *.DLT topic (Kafka UI at :8080).
+        expr: increase(kafka_consumer_dead_lettered_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} record(s) moved to a dead-letter topic"
+          description: >-
+            A consumer gave up on a record. See the dlq-alert-sink error log for topic and key, then inspect
+            the matching *.DLT topic.
+
+      - alert: UploadCompletionRepaired
+        # The listeners lost an upload.completed event and the reconciler had to repair it.
+        expr: increase(upload_completion_repaired_total[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Reconciliation repaired a completed upload that a consumer had missed
+          description: Look for a DLT record or a consumer outage around the time of the repair log lines.

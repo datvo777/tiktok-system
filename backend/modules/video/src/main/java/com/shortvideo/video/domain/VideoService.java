@@ -20,6 +20,7 @@ import com.shortvideo.video.api.ProcessingState;
 import com.shortvideo.video.api.VideoDraft;
 import com.shortvideo.video.api.VideoDraftRegistrar;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
+import com.shortvideo.video.api.VideoProcessingDispatcher;
 import com.shortvideo.video.api.VideoPlaybackView;
 import com.shortvideo.video.api.VideoSummaryPage;
 import com.shortvideo.video.api.VideoSummaryView;
@@ -41,7 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
-public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory {
+public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory, VideoProcessingDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(VideoService.class);
     private static final String PRODUCER = "short-video-backend";
@@ -119,14 +120,15 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * dispatches the transcode command in the same transaction/version bump (brief
      * section 13). Idempotent: a video already past CREATED is left untouched.
      */
+    @Override
     @Transactional
-    void dispatchProcessing(String videoId, String sourceObjectKey) {
+    public boolean dispatchProcessing(String videoId, String sourceObjectKey) {
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video: " + videoId));
 
         if (video.getProcessingState() != ProcessingState.CREATED) {
-            return; // already dispatched — redelivery no-op
+            return false; // already dispatched — redelivery no-op
         }
 
         int version = video.dispatchProcessing(sourceObjectKey);
@@ -149,6 +151,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 MDC.get("correlationId"),
                 null,
                 payload));
+        return true;
     }
 
     /**
