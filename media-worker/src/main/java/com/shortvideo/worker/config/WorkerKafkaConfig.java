@@ -51,7 +51,13 @@ public class WorkerKafkaConfig {
      */
     @Bean
     public DefaultErrorHandler kafkaErrorHandler(KafkaTemplate<String, String> kafkaTemplate) {
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
+        // The default destination keeps the source partition number, but the DLT topics have one
+        // partition while media.jobs.v1 has three: a record from partition 1 or 2 would be published
+        // to a partition that does not exist, the failure only logged, and the record lost. A
+        // negative partition leaves the choice to the producer (as in the backend's KafkaConfig).
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
+                kafkaTemplate,
+                (record, exception) -> new org.apache.kafka.common.TopicPartition(record.topic() + ".DLT", -1));
         ExponentialBackOffWithMaxRetries backoff = new ExponentialBackOffWithMaxRetries(5);
         backoff.setInitialInterval(1_000L);
         backoff.setMultiplier(2.0);

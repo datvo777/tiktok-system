@@ -55,3 +55,12 @@ groups:
         annotations:
           summary: Reconciliation repaired a completed upload that a consumer had missed
           description: Look for a DLT record or a consumer outage around the time of the repair log lines.
+
+      - alert: VideoTranscodeTimedOut
+        # The transcode command or its result was lost, or a worker died without reporting.
+        expr: increase(video_transcode_timed_out_total[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Videos were failed after producing no transcode result
+          description: Check the media-worker and the media.jobs.v1 / media.results.v1 topics and their DLTs.

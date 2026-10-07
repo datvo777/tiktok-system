@@ -199,6 +199,28 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         }
     }
 
+    /**
+     * Ends a transcode that has produced no result in time. Re-reads the video under its row lock:
+     * it was selected a moment ago, and the worker's result may have landed since, in which case
+     * the video is no longer TRANSCODING (or has been touched since the cutoff) and is left alone.
+     * Marked TRANSIENT, so the uploader is told to try again and an admin can reprocess it.
+     *
+     * <p>A result that arrives after this is ignored like any result for a video already terminal
+     * for that version; the assets it wrote are not served and are replaced by a reprocess.
+     */
+    @Transactional
+    boolean failIfStillTranscoding(String videoId, Instant cutoff) {
+        VideoEntity video = repository.findForUpdate(UUID.fromString(videoId)).orElse(null);
+        if (video == null
+                || video.getProcessingState() != ProcessingState.TRANSCODING
+                || !video.getUpdatedAt().isBefore(cutoff)) {
+            return false;
+        }
+        video.markFailed("TRANSIENT");
+        appendFailedEvent(repository.saveAndFlush(video));
+        return true;
+    }
+
     /** Reacts to {@code video.moderation.rejected} (brief section 18, Milestone 6). */
     @Transactional
     void retainAsRejected(String videoId) {

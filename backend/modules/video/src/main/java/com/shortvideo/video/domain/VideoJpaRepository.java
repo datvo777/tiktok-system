@@ -40,4 +40,21 @@ interface VideoJpaRepository extends JpaRepository<VideoEntity, UUID> {
             @Param("failureClass") String failureClass,
             @Param("cutoff") Instant cutoff,
             Pageable pageable);
+
+    /**
+     * Videos that have been transcoding for longer than any job can run: the command or its result
+     * was lost, so nothing is going to move them. Removed videos are left out, since their results
+     * are discarded anyway and they would otherwise be found again on every sweep.
+     */
+    @Query("""
+            SELECT v FROM VideoEntity v
+            WHERE v.processingState = :state AND v.updatedAt < :cutoff
+              AND v.assetLifecycleState NOT IN :removed
+            ORDER BY v.updatedAt ASC
+            """)
+    List<VideoEntity> findStuckInState(
+            @Param("state") ProcessingState state,
+            @Param("cutoff") Instant cutoff,
+            @Param("removed") java.util.Collection<com.shortvideo.video.api.AssetLifecycleState> removed,
+            Pageable pageable);
 }

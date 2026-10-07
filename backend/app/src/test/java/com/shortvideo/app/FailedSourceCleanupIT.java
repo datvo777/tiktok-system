@@ -61,6 +61,57 @@ class FailedSourceCleanupIT {
         assertThat(sourceRows(oldTransient)).isEmpty();
     }
 
+    @Test
+    void aTranscodeWithNoResultIsFailedOnceAndOnlyWhenItIsOverdue() {
+        String overdue = draftVideo();
+        String recent = draftVideo();
+        String removed = draftVideo();
+        String alreadyDone = draftVideo();
+        transcoding(overdue, "ACTIVE", "TRANSCODING", "2 hours");
+        transcoding(recent, "ACTIVE", "TRANSCODING", "5 minutes");
+        transcoding(removed, "DELETED", "TRANSCODING", "2 hours");
+        transcoding(alreadyDone, "ACTIVE", "READY", "2 hours");
+
+        watchdogSweep();
+        watchdogSweep();
+
+        assertThat(processing(overdue)).containsExactly("FAILED", "TRANSIENT");
+        assertThat(processing(recent)).containsExactly("TRANSCODING", null);
+        assertThat(processing(removed)).containsExactly("TRANSCODING", null);
+        assertThat(processing(alreadyDone)).containsExactly("READY", null);
+        // One failure event, not one per sweep: the second pass found nothing to do.
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = 'video.processing.failed'",
+                        Integer.class,
+                        overdue))
+                .isEqualTo(1);
+    }
+
+    private void watchdogSweep() {
+        Object job = context.getBean("transcodeWatchdog");
+        var method = ReflectionUtils.findMethod(job.getClass(), "sweep");
+        ReflectionUtils.makeAccessible(method);
+        ReflectionUtils.invokeMethod(method, job);
+    }
+
+    private void transcoding(String videoId, String lifecycle, String state, String age) {
+        jdbc.update(
+                "UPDATE video.video SET processing_state = ?, asset_lifecycle_state = ?, processing_version = 1,"
+                        + " updated_at = now() - ?::interval WHERE video_id = ?::uuid",
+                state,
+                lifecycle,
+                age,
+                videoId);
+    }
+
+    private List<String> processing(String videoId) {
+        return jdbc.query(
+                "SELECT processing_state, failure_class FROM video.video WHERE video_id = ?::uuid",
+                (rs, i) -> java.util.Arrays.asList(rs.getString(1), rs.getString(2)),
+                videoId)
+                .get(0);
+    }
+
     private void sweep() {
         Object job = context.getBean("failedSourceCleanupJob");
         var method = ReflectionUtils.findMethod(job.getClass(), "sweep");

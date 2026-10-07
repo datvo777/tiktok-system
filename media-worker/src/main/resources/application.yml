@@ -12,6 +12,11 @@ spring:
       # The Video module owns idempotence via its inbox; the worker still commits
       # only after a job completes.
       enable-auto-commit: false
+      properties:
+        # The listener runs the whole transcode before returning to poll(). The default of 5
+        # minutes is shorter than worker.job-timeout (15), so a long job got the consumer evicted
+        # from the group, never committed, and was redelivered and run again.
+        max.poll.interval.ms: ${WORKER_MAX_POLL_INTERVAL_MS:1800000}
 
 server:
   port: 8090
