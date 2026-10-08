@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Hls from 'hls.js';
 import { useEffect, useRef, useState } from 'react';
+import { pollDelayMs } from './videoStatus';
 import { CheckIcon, FlagIcon, PlayIcon, UploadCloudIcon } from './icons';
 import {
   completeUploadWithRetry,
@@ -17,10 +18,8 @@ import {
   type VideoResponse,
 } from './api';
 
-// Brief section 12.3: back off from 1s to a 10s ceiling if the server gives no
-// hint, and give up after 10 minutes rather than polling forever.
-const DEFAULT_POLL_MS = 2000;
-const MAX_POLL_MS = 10_000;
+// Brief section 12.3: back off toward a 10s ceiling (see pollDelayMs), and give up
+// after 10 minutes rather than polling forever.
 const GIVE_UP_AFTER_MS = 10 * 60 * 1000;
 // Once processing reaches READY, a moderation decision can still land moments
 // later (or minutes later, on appeal review) and change assetLifecycleState —
@@ -174,7 +173,7 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
       const data = query.state.data;
       if (!data || data.processingState === 'FAILED') return false;
       if (data.processingState === 'READY') return POST_READY_POLL_MS;
-      return Math.min(data.pollAfterMs ?? DEFAULT_POLL_MS, MAX_POLL_MS);
+      return pollDelayMs(data.pollAfterMs, Date.now() - startedAt);
     },
   });
 

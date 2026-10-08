@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VideoSummary } from '../api';
-import { hasVideoInFlight, statusBadge } from '../videoStatus';
+import { hasVideoInFlight, pollDelayMs, statusBadge } from '../videoStatus';
 
 const NOW = Date.parse('2026-10-08T12:00:00Z');
 
@@ -52,5 +52,19 @@ describe('statusBadge', () => {
 
   it('lets a lifecycle state override the processing state', () => {
     expect(statusBadge(video({ assetLifecycleState: 'REJECTED_RETAINED' })).label).toBe('Rejected');
+  });
+});
+
+describe('pollDelayMs', () => {
+  it('follows the server hint at first, and falls back to 2s without one', () => {
+    expect(pollDelayMs(2000, 5_000)).toBe(2000);
+    expect(pollDelayMs(null, 5_000)).toBe(2000);
+    expect(pollDelayMs(undefined, 5_000)).toBe(2000);
+  });
+
+  it('slows down the longer the wait lasts, up to a ceiling', () => {
+    expect(pollDelayMs(2000, 90_000)).toBe(4000);
+    expect(pollDelayMs(2000, 5 * 60_000)).toBe(10_000);
+    expect(pollDelayMs(8000, 5 * 60_000)).toBe(10_000);
   });
 });

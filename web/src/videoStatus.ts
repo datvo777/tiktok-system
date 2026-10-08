@@ -60,3 +60,18 @@ export function statusBadge(video: VideoSummary): { variant: string; label: stri
       return { variant: 'badge-info', label: 'Uploading' };
   }
 }
+
+const DEFAULT_POLL_MS = 2000;
+const MAX_POLL_MS = 10_000;
+
+/**
+ * How long to wait before asking again about one video. The server's hint is a constant 2s for
+ * every in-flight state, so on its own the poll never slows down however long a transcode takes.
+ * Backing off with elapsed time (brief section 12.3: up to a 10s ceiling) keeps a long wait from
+ * costing a request every two seconds, while the first minute, when most videos finish, stays quick.
+ */
+export function pollDelayMs(hintMs: number | null | undefined, elapsedMs: number): number {
+  const base = hintMs ?? DEFAULT_POLL_MS;
+  const factor = elapsedMs > 3 * 60_000 ? 5 : elapsedMs > 60_000 ? 2 : 1;
+  return Math.min(base * factor, MAX_POLL_MS);
+}
