@@ -92,6 +92,21 @@ Kafka advertises two listeners: containers use `kafka:9092`, host processes use
 `localhost:29092`. If this is DOWN while Kafka UI works, you are pointing the
 backend at the internal listener.
 
+**Kafka requires a login (optional).** The default stack is plaintext, bound to loopback.
+An authenticated variant (SASL/SCRAM over TLS, one principal per process, deny by default) is
+an override file; the default stack and CI are unaffected:
+
+```bash
+infrastructure/kafka/secure/gen-secrets.sh        # once: throwaway CA, broker cert, random passwords
+docker compose --env-file .env --env-file infrastructure/kafka/secure/generated/secrets.env \
+  -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.secure.yml up -d
+infrastructure/kafka/secure/verify.sh             # 18 checks: who may do what, and who may not
+set -a; . infrastructure/kafka/secure/generated/client-backend.env; set +a   # then start the backend
+```
+
+The worker takes `client-worker.env` instead. Design, ACL matrix and what changes for
+production: [docs/adr/0001-kafka-authentication-and-acls.md](docs/adr/0001-kafka-authentication-and-acls.md).
+
 **The bucket is private.** This is the one to actually run, because a public
 bucket silently voids the whole authorization model (Rule 18):
 

@@ -1,0 +1,18 @@
+# Consumer groups the backend joins, one per line. Each needs a Read ACL, or its listener sits
+# idle with a GroupAuthorizationException. Kept in step with the @KafkaListener(groupId = ...)
+# strings by check-acl-groups.sh. `realtime-` is a prefix: RealtimeListener appends a random
+# UUID so every instance gets its own group.
+video-media-result-listener
+video-lifecycle-reaction-listener
+video-upload-completed-listener
+publication-coordinator
+notification-social-listener
+notification-moderation-listener
+eligibility-publication-projector
+eligibility-account-projector
+eligibility-moderation-projector
+eligibility-video-projector
+search-video-indexer
+moderation-appeal-decision-listener
+moderation-upload-completed-listener
+dlq-alert-sink

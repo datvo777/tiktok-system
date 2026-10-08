@@ -80,7 +80,10 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     ports:
-      - "29092:29092"
+      # Loopback only: the HOST listener is PLAINTEXT with no ACLs, so publishing it on every
+      # interface would hand the whole bus to anyone on the same network. For the
+      # authenticated variant see docker-compose.secure.yml.
+      - "127.0.0.1:29092:29092"
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 10s
@@ -121,9 +124,11 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      DYNAMIC_CONFIG_ENABLED: "true"
+      # Off: with it on, anyone who can reach the UI can add a cluster or change its
+      # connection settings at runtime. The one cluster above is all this stack needs.
+      DYNAMIC_CONFIG_ENABLED: "false"
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z

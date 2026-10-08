@@ -35,7 +35,11 @@ case "${1:-}" in
     # The seeder creates ~800 upload drafts in a minute; the global brake (600/min) would refuse them.
     export SHORTVIDEO_UPLOAD_CREATE_RATE_LIMIT_GLOBAL_MAX_PER_WINDOW=0
     # Same flags for every run. Deliberately no -XX:TieredStopAtLevel=1.
-    nohup java -Xms2g -Xmx4g -XX:+UseG1GC -jar backend/app/target/app.jar > "$OUT/backend-$mode.log" 2>&1 &
+    # Run from a private copy. A jar replaced underneath a running JVM (an IDE build, another `mvn package`)
+    # makes it fail on the next class it loads lazily, with NoClassDefFoundError from unrelated places;
+    # that corrupted one measurement run before this was added.
+    [ -f "$OUT/app.jar" ] || cp backend/app/target/app.jar "$OUT/app.jar"
+    nohup java -Xms2g -Xmx4g -XX:+UseG1GC -jar "$OUT/app.jar" > "$OUT/backend-$mode.log" 2>&1 &
     echo $! > "$OUT/backend.pid"
     for _ in $(seq 1 90); do
       [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/liveness)" = 200 ] && { echo "backend up ($mode), pid $(cat "$OUT/backend.pid")"; exit 0; }

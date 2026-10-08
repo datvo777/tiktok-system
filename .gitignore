@@ -14,3 +14,6 @@ data/
 *.code-workspace
 *.tsbuildinfo
 *.tar.gz
+
+# Local Kafka CA, broker key and per-principal passwords (infrastructure/kafka/secure/gen-secrets.sh)
+infrastructure/kafka/secure/generated/

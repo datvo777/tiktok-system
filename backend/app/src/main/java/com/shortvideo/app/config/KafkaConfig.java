@@ -1,11 +1,12 @@
 package com.shortvideo.app.config;
 
-import java.util.HashMap;
 import java.util.Map;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.ssl.SslBundles;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -25,15 +26,19 @@ import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
  * max.in.flight<=5, delivery.timeout >= request.timeout + linger.
  * retries=MAX_VALUE is not infinite retry — delivery.timeout.ms is the real
  * deadline, after which the relay does an ownership-checked outbox retry.
+ *
+ * <p>The factory is built by hand, which switches off Spring Boot's auto-configured one, so
+ * connection and security settings ({@code security.protocol}, {@code sasl.*}, {@code ssl.*})
+ * are taken from {@link KafkaProperties} here. Without that, enabling SASL_SSL in the
+ * environment would secure the consumers but leave this producer talking plaintext.
  */
 @Configuration
 public class KafkaConfig {
 
     @Bean
     public ProducerFactory<String, String> producerFactory(
-            @Value("${spring.kafka.bootstrap-servers}") String bootstrapServers) {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+            KafkaProperties kafkaProperties, ObjectProvider<SslBundles> sslBundles) {
+        Map<String, Object> props = kafkaProperties.buildProducerProperties(sslBundles.getIfAvailable());
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);

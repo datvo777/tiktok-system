@@ -11,7 +11,8 @@ R="$BENCH_OUT/results"; mkdir -p "$R"
 LOG="$BENCH_OUT/progress.log"
 WARMUP=30; WINDOW=90; REPS=3
 say() { echo "$(date +%H:%M:%S) $*" | tee -a "$LOG"; }
-bench() { local out="$1"; shift; say "run $out"; node tests/load/bench.mjs "$@" --out "$R/$out.json" > "$R/$out.log" 2>&1 || say "FAILED $out"; sleep 25; }
+# A run whose JSON already exists is skipped, so an interrupted matrix can be resumed.
+bench() { local out="$1"; shift; [ -s "$R/$out.json" ] && { say "skip $out (done)"; return; }; say "run $out"; node tests/load/bench.mjs "$@" --out "$R/$out.json" > "$R/$out.log" 2>&1 || say "FAILED $out"; sleep 25; }
 
 for MODE in polling sse; do
   say "== session $MODE"

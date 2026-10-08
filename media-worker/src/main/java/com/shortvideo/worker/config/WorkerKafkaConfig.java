@@ -1,10 +1,11 @@
 package com.shortvideo.worker.config;
 
-import java.util.HashMap;
 import java.util.Map;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.ssl.SslBundles;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -22,15 +23,17 @@ import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
  * cannot own an outbox (Rule 16). Idempotence still avoids duplicate broker-side
  * writes on a producer retry, even though the Video module's inbox is the real
  * safety net against duplicate results.
+ *
+ * <p>Built by hand, so connection and security settings come from {@link KafkaProperties}
+ * rather than from {@code spring.kafka.bootstrap-servers} alone (see the backend's KafkaConfig).
  */
 @Configuration
 public class WorkerKafkaConfig {
 
     @Bean
     public ProducerFactory<String, String> producerFactory(
-            @Value("${spring.kafka.bootstrap-servers}") String bootstrapServers) {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+            KafkaProperties kafkaProperties, ObjectProvider<SslBundles> sslBundles) {
+        Map<String, Object> props = kafkaProperties.buildProducerProperties(sslBundles.getIfAvailable());
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
