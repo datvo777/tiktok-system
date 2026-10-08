@@ -29,6 +29,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @EnableMethodSecurity
 public class SecurityConfig {
 
+    private static final int MIN_SCRAPE_TOKEN_LENGTH = 32;
+
     @Bean
     public PasswordEncoder passwordEncoder() {
         // BCrypt for the local MVP (brief section 12.1). Argon2id is the other
@@ -73,8 +75,14 @@ public class SecurityConfig {
     public SecurityFilterChain filterChain(
             HttpSecurity http,
             JwtAuthenticationFilter jwtFilter,
-            @Value("${shortvideo.security.public-api-docs:false}") boolean publicApiDocs)
+            @Value("${shortvideo.security.public-api-docs:false}") boolean publicApiDocs,
+            @Value("${shortvideo.metrics.scrape-token:}") String metricsScrapeToken)
             throws Exception {
+        if (!metricsScrapeToken.isEmpty() && metricsScrapeToken.length() < MIN_SCRAPE_TOKEN_LENGTH) {
+            // A short token would be a guessable credential on a route that lists internal metrics.
+            throw new IllegalStateException("shortvideo.metrics.scrape-token must be at least "
+                    + MIN_SCRAPE_TOKEN_LENGTH + " characters, or empty to disable scraping with a token");
+        }
         http
                 // Stateless bearer/cookie auth. Cross-site POSTs cannot carry the
                 // SameSite=Lax session cookie, which is what stands in for CSRF
@@ -98,6 +106,11 @@ public class SecurityConfig {
                                         || (authentication.get() != null
                                                 && authentication.get().getAuthorities().stream()
                                                         .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority())))))
+                        // Prometheus has no session, so it presents a shared token (see
+                        // MetricsScrapeFilter) that yields a role valid for this one route.
+                        // Admins keep access; nothing else under /actuator is opened.
+                        .requestMatchers(HttpMethod.GET, "/actuator/prometheus")
+                        .hasAnyRole("ADMIN", MetricsScrapeFilter.ROLE)
                         // Everything else actuator exposes — the aggregate health
                         // report, prometheus, metrics, info — enumerates internal
                         // topology and is admin-only.
@@ -155,6 +168,11 @@ public class SecurityConfig {
                                 writeProblem(response, HttpServletResponse.SC_FORBIDDEN,
                                         "Forbidden", "You may not access this resource")))
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
+
+        if (!metricsScrapeToken.isEmpty()) {
+            // Ahead of the JWT filter, which leaves an already-authenticated request alone.
+            http.addFilterBefore(new MetricsScrapeFilter(metricsScrapeToken), JwtAuthenticationFilter.class);
+        }
 
         return http.build();
     }

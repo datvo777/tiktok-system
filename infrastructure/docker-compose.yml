@@ -214,6 +214,13 @@ services:
     container_name: sv-prometheus
     ports:
       - "9090:9090"
+    environment:
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
+    # Prometheus does not expand environment variables in its config, so the token is written
+    # to the file prometheus.yml points at before starting. Flags are the image's defaults.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'printf %s "$$METRICS_SCRAPE_TOKEN" > /tmp/scrape_token && exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus'
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro

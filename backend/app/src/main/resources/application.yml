@@ -82,6 +82,11 @@ shortvideo:
     # Secure by default: serving a session cookie over plain HTTP should be an
     # explicit opt-out, and one variable drives both cookies so they cannot drift.
     cookie-secure: ${COOKIE_SECURE:true}
+  metrics:
+    # Shared secret Prometheus presents as `Authorization: Bearer <token>` to read
+    # /actuator/prometheus (and nothing else). Empty leaves that route admin-only, which
+    # a scraper cannot satisfy. At least 32 characters; see MetricsScrapeFilter.
+    scrape-token: ${METRICS_SCRAPE_TOKEN:}
   minio:
     # What the backend itself connects to (inside Docker this is the service name).
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}

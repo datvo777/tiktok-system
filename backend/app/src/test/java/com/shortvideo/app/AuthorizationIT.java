@@ -49,7 +49,13 @@ class AuthorizationIT {
         // The rate limiter would otherwise throttle the repeated logins these
         // tests perform. Its own behaviour is covered by LoginRateLimiterIT.
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
+        registry.add("shortvideo.metrics.scrape-token", () -> SCRAPE_TOKEN);
+        // Spring Boot turns metric exporters off under @SpringBootTest; without this the
+        // endpoint exists but answers 404, which would hide whether authorization let us in.
+        registry.add("management.prometheus.metrics.export.enabled", () -> "true");
     }
+
+    private static final String SCRAPE_TOKEN = "it-metrics-scrape-token-0123456789abcdef";
 
     @Autowired
     TestRestTemplate rest;
@@ -84,6 +90,30 @@ class AuthorizationIT {
         assertThat(get("/api/v1/notifications", new HttpHeaders()).getStatusCode())
                 .isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(get("/api/v1/videos", new HttpHeaders()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
+     * Prometheus has no session. It gets one route and one credential; the rest of the actuator
+     * stays closed to it, and the token buys nothing anywhere else.
+     */
+    @Test
+    void scrapeTokenOpensOnlyThePrometheusEndpoint() {
+        HttpHeaders token = new HttpHeaders();
+        token.setBearerAuth(SCRAPE_TOKEN);
+        HttpHeaders wrong = new HttpHeaders();
+        wrong.setBearerAuth(SCRAPE_TOKEN + "x");
+
+        assertThat(get("/actuator/prometheus", new HttpHeaders()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(get("/actuator/prometheus", wrong).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        ResponseEntity<String> scraped = get("/actuator/prometheus", token);
+        assertThat(scraped.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(scraped.getBody()).contains("jvm_memory_used_bytes");
+
+        // Not a general credential: other actuator routes and the API still refuse it.
+        assertThat(get("/actuator/metrics", token).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(get("/actuator/health", token).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(get("/api/v1/notifications", token).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(get("/internal/anything", token).getStatusCode()).isIn(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN);
     }
 
     /**
