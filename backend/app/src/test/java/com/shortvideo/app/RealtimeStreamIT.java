@@ -184,6 +184,25 @@ class RealtimeStreamIT {
         }
     }
 
+    @Test
+    void anAccountThatKeepsOpeningStreamsIsAnswered429WithRetryAfter() throws Exception {
+        Account a = newAccount();
+        Account other = newAccount();
+        // The counter is the limiter's own state; seeding it stands in for thirty opens in the window.
+        redis.opsForValue().set("realtime:open:account:" + a.id(), "30", Duration.ofMinutes(1));
+
+        HttpResponse<Void> throttled = http.send(request(a).build(), HttpResponse.BodyHandlers.discarding());
+
+        assertThat(throttled.statusCode()).isEqualTo(429);
+        assertThat(throttled.headers().firstValue("Retry-After")).isPresent();
+        assertThat(registry.openForAccount(a.id())).isZero();
+
+        // Another account is unaffected.
+        try (Stream s = open(other)) {
+            s.awaitConnected();
+        }
+    }
+
     // ---------------------------------------------------------------- entitlement
 
     @Test

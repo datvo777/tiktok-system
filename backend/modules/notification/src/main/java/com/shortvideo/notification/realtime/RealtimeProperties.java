@@ -25,6 +25,12 @@ public class RealtimeProperties {
     /** How often each open stream is checked against the account's current standing. */
     private Duration revalidateInterval = Duration.ofSeconds(60);
     private Duration retryAfter = Duration.ofSeconds(30);
+    /**
+     * How many times one account may open a stream per {@code openWindow}; zero turns it off. The
+     * connection limits above bound what is open, not how fast a client cycles through opening.
+     */
+    private int maxOpensPerWindow = 30;
+    private Duration openWindow = Duration.ofMinutes(1);
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -42,4 +48,8 @@ public class RealtimeProperties {
     public void setRevalidateInterval(Duration v) { this.revalidateInterval = v; }
     public Duration getRetryAfter() { return retryAfter; }
     public void setRetryAfter(Duration v) { this.retryAfter = v; }
+    public int getMaxOpensPerWindow() { return maxOpensPerWindow; }
+    public void setMaxOpensPerWindow(int v) { this.maxOpensPerWindow = v; }
+    public Duration getOpenWindow() { return openWindow; }
+    public void setOpenWindow(Duration v) { this.openWindow = v; }
 }

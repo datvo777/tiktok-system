@@ -29,14 +29,24 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class RealtimeController {
 
     private final SseRegistry registry;
+    private final StreamOpenRateLimiter openLimiter;
 
-    public RealtimeController(SseRegistry registry) {
+    public RealtimeController(SseRegistry registry, StreamOpenRateLimiter openLimiter) {
         this.registry = registry;
+        this.openLimiter = openLimiter;
     }
 
     @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "Stream of change hints for the caller; the REST API stays the source of truth")
     public ResponseEntity<SseEmitter> stream(@AuthenticationPrincipal AuthenticatedAccount caller) {
+        // Before the registry, so a client cycling through opens never gets as far as evicting
+        // its own older streams and building a new emitter each time.
+        var wait = openLimiter.check(caller.accountId());
+        if (wait.isPresent()) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .header(HttpHeaders.RETRY_AFTER, String.valueOf(wait.get().toSeconds()))
+                    .build();
+        }
         return switch (registry.open(caller.accountId(), caller.issuedAt())) {
             case SseRegistry.Opened.Accepted accepted -> ResponseEntity.ok()
                     .cacheControl(CacheControl.noCache())
