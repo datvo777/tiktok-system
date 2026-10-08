@@ -91,6 +91,15 @@ public class SecurityConfig {
                 .cors(cors -> cors.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // A request that returned a SseEmitter (or any async result) is dispatched a
+                        // second time when it completes. That dispatch is the container finishing a
+                        // request that was already authorised, and it cannot be started from outside.
+                        // Authorising it again fails: the JWT filter does not run on async dispatch
+                        // (and could not succeed if it did, since /auth/refresh revokes the very token
+                        // the stream was opened with), so the response was cut off with "Unable to
+                        // handle the Spring Security Exception because the response is already
+                        // committed" instead of ending cleanly.
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/accounts").permitAll()
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/logout").permitAll()
                         // Container probes only. The aggregate /actuator/health

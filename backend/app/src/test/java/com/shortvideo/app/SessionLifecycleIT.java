@@ -150,12 +150,15 @@ class SessionLifecycleIT {
     void anAccountCannotHoldUnlimitedOpenUploadSessions() {
         String token = registerAndLogin();
 
+        // A declared size keeps each reservation small. Without one a session reserves the full
+        // per-file maximum, and the account's byte allowance runs out before its session count does.
+        Map<String, Object> small = Map.of("title", "Test video", "sizeBytes", 1024 * 1024);
         for (int i = 0; i < 5; i++) {
-            assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, Map.of("title", "Test video")).getStatusCode())
+            assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, small).getStatusCode())
                     .as("session %d should be allowed", i + 1)
                     .isEqualTo(HttpStatus.CREATED);
         }
-        assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, Map.of("title", "Test video")).getStatusCode())
+        assertThat(exchange("/api/v1/uploads", HttpMethod.POST, token, small).getStatusCode())
                 .isEqualTo(HttpStatus.CONFLICT);
     }
 

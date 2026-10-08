@@ -60,6 +60,12 @@ spring:
 
 server:
   port: 8080
+  tomcat:
+    # Spelled out rather than left to the defaults (the same numbers today): every open realtime
+    # stream holds one of these connections for up to 25 minutes, so this is a capacity limit
+    # that someone has to be able to find and change. accept-count is the queue behind it.
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:8192}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
   error:
     include-message: never
     include-stacktrace: never
@@ -82,6 +88,11 @@ shortvideo:
     # Secure by default: serving a session cookie over plain HTTP should be an
     # explicit opt-out, and one variable drives both cookies so they cannot drift.
     cookie-secure: ${COOKIE_SECURE:true}
+  realtime:
+    # Server-sent "something changed" hints next to polling, which stays the default and the
+    # fallback. Off until enabled; see RealtimeProperties for the limits.
+    enabled: ${REALTIME_ENABLED:false}
+    max-connections: ${REALTIME_MAX_CONNECTIONS:5000}
   metrics:
     # Shared secret Prometheus presents as `Authorization: Bearer <token>` to read
     # /actuator/prometheus (and nothing else). Empty leaves that route admin-only, which

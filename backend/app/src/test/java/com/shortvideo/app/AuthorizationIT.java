@@ -116,6 +116,15 @@ class AuthorizationIT {
         assertThat(get("/internal/anything", token).getStatusCode()).isIn(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN);
     }
 
+    /** Realtime is an opt-in experiment: with the flag off the route does not exist, so clients poll. */
+    @Test
+    void theRealtimeStreamDoesNotExistUnlessEnabled() {
+        String token = registerAndLogin();
+
+        assertThat(getStatus("/api/v1/events/stream", token)).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(get("/api/v1/events/stream", new HttpHeaders()).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
     /**
      * The anonymous read tier: public content is readable without a session, so a
      * shared link, a search result and a creator page all resolve for a stranger.

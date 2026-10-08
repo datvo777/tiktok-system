@@ -33,6 +33,7 @@ import {
 } from './icons';
 import { MyVideos } from './MyVideos';
 import { Notifications } from './Notifications';
+import { RealtimeStatusProvider, inboxPollMs, useRealtime } from './realtime';
 import { SearchPanel } from './SearchPanel';
 import { dismiss, navigate, setSheet, type Sheet as SheetName } from './router';
 import { ViewerProvider } from './viewer';
@@ -62,6 +63,9 @@ export function App() {
   // in" right after a reload of an otherwise still-valid session.
   const me = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false });
   const signedIn = !!me.data;
+  // The stream is a hint that something changed, never the data itself; while it is up the
+  // polling below only has to be a safety net.
+  const streamConnected = useRealtime(signedIn, () => queryClient.setQueryData(['me'], null));
 
   // Just for the inbox badge; the Notifications panel itself shares this same
   // query key, so this is a second subscriber on one cache entry rather than a
@@ -75,7 +79,7 @@ export function App() {
     queryFn: ({ pageParam }: { pageParam: string | null }) => getNotifications(pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
-    refetchInterval: 10_000,
+    refetchInterval: inboxPollMs(streamConnected),
     enabled: signedIn,
   });
   const unreadCount = notifications.data?.pages[0]?.unreadCount ?? 0;
@@ -148,6 +152,7 @@ export function App() {
   const guarded = (sheet: SheetName) => () => setSheet(accountId ? sheet : 'signIn');
 
   return (
+    <RealtimeStatusProvider value={streamConnected}>
     <ViewerProvider value={viewerContext}>
     <div className="app">
       <nav className="sidebar" aria-label="Primary">
@@ -285,6 +290,7 @@ export function App() {
       )}
     </div>
     </ViewerProvider>
+    </RealtimeStatusProvider>
   );
 }
 

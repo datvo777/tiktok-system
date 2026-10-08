@@ -2,6 +2,7 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { getNotifications, markAllNotificationsRead, markNotificationRead, type NotificationItem } from './api';
 import { CheckIcon, CommentIcon, FlagIcon, HeartIcon, InboxIcon, UsersIcon } from './icons';
 import { navigate, videoPath } from './router';
+import { inboxPollMs, useRealtimeConnected } from './realtime';
 import { relativeTime } from './ui';
 
 /** Icon plus colour tone per notification kind, so the list scans at a glance. */
@@ -22,13 +23,14 @@ const TYPE_STYLE: Record<string, { tone: string; icon: React.ReactNode }> = {
 /** Basic in-app notifications (brief section 20, Milestone 7). */
 export function Notifications() {
   const queryClient = useQueryClient();
+  const streamConnected = useRealtimeConnected();
 
   const list = useInfiniteQuery({
     queryKey: ['notifications'],
     queryFn: ({ pageParam }: { pageParam: string | null }) => getNotifications(pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
-    refetchInterval: 10_000,
+    refetchInterval: inboxPollMs(streamConnected),
   });
 
   const markRead = useMutation({
