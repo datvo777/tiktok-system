@@ -49,8 +49,23 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
             WHERE subject_type = ? AND active = true AND subject_id = ANY(?)
             """;
 
-    private static final String FIND_ALL_ACTIVE =
-            "SELECT subject_type, subject_id, source_type, reason FROM platform.revocation WHERE active = true";
+    /**
+     * Keyset pages over the primary key, so the rebuild never holds more than one page: the order is
+     * the key's own, which also keeps every source of one subject adjacent.
+     */
+    private static final String FIRST_ACTIVE_PAGE = """
+            SELECT subject_type, subject_id, source_type, reason FROM platform.revocation
+            WHERE active = true
+            ORDER BY subject_type, subject_id, source_type
+            LIMIT ?
+            """;
+
+    private static final String NEXT_ACTIVE_PAGE = """
+            SELECT subject_type, subject_id, source_type, reason FROM platform.revocation
+            WHERE active = true AND (subject_type, subject_id, source_type) > (?, ?, ?)
+            ORDER BY subject_type, subject_id, source_type
+            LIMIT ?
+            """;
 
     private final JdbcTemplate jdbc;
     private final RevocationCache cache;
@@ -110,15 +125,21 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
         return new java.util.HashSet<>(jdbc.queryForList(ACTIVE_AMONG, String.class, subjectType, ids));
     }
 
-    /** Brief section 16: "After a Redis restart, rebuild hashes from active durable revocations." */
-    java.util.List<ActiveRevocation> findAllActive() {
+    /**
+     * Brief section 16: "After a Redis restart, rebuild hashes from active durable revocations."
+     * One page of them, in key order, strictly after {@code after} (the start when null).
+     */
+    java.util.List<ActiveRevocation> findActivePage(ActiveRevocation after, int limit) {
+        org.springframework.jdbc.core.RowMapper<ActiveRevocation> mapper = (rs, rowNum) -> new ActiveRevocation(
+                rs.getString("subject_type"),
+                rs.getString("subject_id"),
+                rs.getString("source_type"),
+                rs.getString("reason"));
+        if (after == null) {
+            return jdbc.query(FIRST_ACTIVE_PAGE, mapper, limit);
+        }
         return jdbc.query(
-                FIND_ALL_ACTIVE,
-                (rs, rowNum) -> new ActiveRevocation(
-                        rs.getString("subject_type"),
-                        rs.getString("subject_id"),
-                        rs.getString("source_type"),
-                        rs.getString("reason")));
+                NEXT_ACTIVE_PAGE, mapper, after.subjectType(), after.subjectId(), after.sourceType(), limit);
     }
 
     private void requireTransaction() {

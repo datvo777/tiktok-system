@@ -42,6 +42,7 @@ const { positionals, values: A } = parseArgs({
     cycles: { type: 'string', default: '100000' },
     concurrency: { type: 'string', default: '200' },
     ramp: { type: 'string', default: '150' },
+    offset: { type: 'string', default: '0' },
     accounts: { type: 'string' },
     out: { type: 'string' },
     host: { type: 'string', default: 'localhost' },
@@ -192,7 +193,7 @@ class User {
     const r = await this.req('inbox', '/api/v1/notifications', 'GET', this.watch !== null);
     if (r.status === 200) {
       this.lastInboxOk = now();
-      if (this.watch && r.body && r.body.unreadCount > 0) this.watch.onNoticed?.(now());
+      if (this.watch && r.body && r.body.unreadCount > this.watch.baseline) this.watch.onNoticed?.(now());
     }
     return r;
   }
@@ -373,10 +374,15 @@ async function latency() {
   const noticed = [];
   const failures = [];
   let notified = 0;
+  const followers = [];
   for (let i = 0; i < events; i++) {
     const target = users[i];
-    const follower = users[n - 1 - i];
-    target.watch = {};
+    // A follower that has never followed this target: following again is a no-op that raises no event,
+    // so a pair reused across runs (or modes) would measure nothing. --offset keeps runs apart.
+    const follower = new User(n + Number(A.offset) + i);
+    followers.push(follower);
+    const baseline = (await target.req('baseline', '/api/v1/notifications', 'GET', true)).body?.unreadCount ?? 0;
+    target.watch = { baseline };
     const sent = now();
     target.watch.onHint = (at) => { hint.push(at - sent); target.watch.onHint = null; };
     target.watch.onNoticed = (at) => { noticed.push(at - sent); notified++; target.watch = null; };
@@ -390,6 +396,7 @@ async function latency() {
     scenario: 'latency', mode: MODE, users: n, events, followFailures: failures.length,
     received: notified, hintMs: dist(hint), noticedMs: dist(noticed),
   };
+  followers.forEach((u) => u.stop());
   users.forEach((u) => u.stop());
   return result;
 }
@@ -420,14 +427,18 @@ async function burst() {
     }
   })();
   await sleep(5000); // quiet baseline
+  const followers = [];
+  const baselines = await Promise.all(Array.from({ length: events }, (_, i) =>
+    users[i].req('baseline', '/api/v1/notifications', 'GET', true).then((r) => r.body?.unreadCount ?? 0)));
   rec.on = true;
   const hint = []; const noticed = []; const failures = [];
   const t0 = now();
   const sends = [];
   for (let i = 0; i < events; i++) {
     const target = users[i];
-    const follower = users[n - 1 - i];
-    target.watch = {};
+    const follower = new User(n + Number(A.offset) + i); // see latency(): a pair must be new to raise an event
+    followers.push(follower);
+    target.watch = { baseline: baselines[i] };
     const delay = (i * 1000) / events;
     sends.push((async () => {
       await sleep(Math.max(0, t0 + delay - now()));
@@ -457,6 +468,7 @@ async function burst() {
     timeline: samples,
     client: Object.fromEntries(Object.keys(lat).map((k) => [k, { ...dist(lat[k]), codes: codes[k] }])),
   };
+  followers.forEach((u) => u.stop());
   users.forEach((u) => u.stop());
   return result;
 }
@@ -562,10 +574,11 @@ async function leak() {
       if (i >= cycles) return;
       const acct = ACCOUNTS[(w * 31 + i) % ACCOUNTS.length];
       await new Promise((resolve) => {
-        const r = http.get({ host: HOSTS[(w + i) % HOSTS.length], port: PORT, path: '/api/v1/events/stream', headers: { Cookie: acct.cookie, Accept: 'text/event-stream' }, agent: false }, (res) => {
+        const r = http.get({ host: HOSTS[(w + i) % HOSTS.length], port: PORT, path: '/api/v1/events/stream', headers: { Cookie: acct.cookie, Accept: 'text/event-stream' }, agent: false, timeout: 15_000 }, (res) => {
           if (res.statusCode !== 200) { failed++; res.resume(); res.on('end', resolve); return; }
           res.once('data', () => { res.destroy(); resolve(); });
         });
+        r.on('timeout', () => r.destroy(new Error('timeout')));
         r.on('error', () => { failed++; resolve(); });
       });
     }

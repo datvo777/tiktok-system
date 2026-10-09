@@ -27,7 +27,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * <p>Point it at a scratch database, not a working one: Flyway migrates whatever
  * it is given, and the tests write freely.
  */
-final class TestDatabase {
+public final class TestDatabase {
 
     private static final String URL_ENV = "TEST_POSTGRES_URL";
 
@@ -42,7 +42,7 @@ final class TestDatabase {
      * Registers datasource properties, starting a container only when no external
      * database was supplied.
      */
-    static void register(DynamicPropertyRegistry registry) {
+    public static void register(DynamicPropertyRegistry registry) {
         if (usesExternalDatabase()) {
             registry.add("spring.datasource.url", () -> System.getenv(URL_ENV));
             registry.add("spring.datasource.username", () -> envOrDefault("TEST_POSTGRES_USER", "short_video_app"));
