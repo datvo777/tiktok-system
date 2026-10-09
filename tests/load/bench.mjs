@@ -15,10 +15,19 @@
 //
 // Accounts come from seed.mjs. METRICS_SCRAPE_TOKEN is read from .env for the server-side counters.
 import http from 'node:http';
-import { execSync, spawnSync } from 'node:child_process';
+import { fork } from 'node:child_process';
+import os from 'node:os';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
+
+// Started before anything else: see helper.mjs.
+const helper = fork(new URL('./helper.mjs', import.meta.url));
+const pending = new Map();
+let helperSeq = 0;
+await new Promise((resolve) => helper.once('message', resolve));
+helper.on('message', ({ id, out, err }) => { const p = pending.get(id); if (p) { pending.delete(id); err ? p.reject(new Error(err)) : p.resolve(out); } });
+const sh = (cmd) => new Promise((resolve, reject) => { const id = ++helperSeq; pending.set(id, { resolve, reject }); helper.send({ id, cmd }); });
 
 const { positionals, values: A } = parseArgs({
   allowPositionals: true,
@@ -32,7 +41,7 @@ const { positionals, values: A } = parseArgs({
     spacing: { type: 'string', default: '250' },
     cycles: { type: 'string', default: '100000' },
     concurrency: { type: 'string', default: '200' },
-    ramp: { type: 'string', default: '200' },
+    ramp: { type: 'string', default: '150' },
     accounts: { type: 'string' },
     out: { type: 'string' },
     host: { type: 'string', default: 'localhost' },
@@ -43,6 +52,11 @@ const SCENARIO = positionals[0];
 const MODE = A.mode;
 const PORT = Number(A.port);
 const HOST = A.host;
+// One macOS host has 16,384 ephemeral ports per (source, destination address, destination port). Two
+// sockets per SSE user at 8000 users would need 16,000 of them on one destination, so spread the
+// users over every address the backend answers on.
+const lan = Object.values(os.networkInterfaces()).flat().find((i) => i.family === 'IPv4' && !i.internal)?.address;
+const HOSTS = [HOST, ...(HOST === 'localhost' ? ['::1'] : []), ...(lan ? [lan] : [])].map((h) => (h === 'localhost' ? '127.0.0.1' : h));
 const ROOT = new URL('../../', import.meta.url).pathname;
 const ACCOUNTS = JSON.parse(readFileSync(A.accounts ?? `${process.env.BENCH_OUT}/accounts.json`, 'utf8'));
 const TOKEN = readFileSync(`${ROOT}.env`, 'utf8').match(/^METRICS_SCRAPE_TOKEN=(.+)$/m)[1].trim();
@@ -98,37 +112,36 @@ const uriCount = (m, uri) =>
 const uriSeconds = (m, uri) =>
   sum(m, 'http_server_requests_seconds_sum', (l) => l.includes(`uri="${uri}"`));
 
-function backendPid() {
-  return execSync(`lsof -ti :${PORT} -sTCP:LISTEN | head -1`).toString().trim();
+async function backendPid() {
+  return (await sh(`lsof -ti :${PORT} -sTCP:LISTEN | head -1`)).trim();
 }
-function cpuSeconds(pid) {
-  const t = execSync(`ps -o cputime= -p ${pid}`).toString().trim(); // [h:]mm:ss.cc
-  const parts = t.split(':').map(Number);
-  return parts.reduce((acc, p) => acc * 60 + p, 0);
+async function cpuSeconds(pid) {
+  const t = (await sh(`ps -o cputime= -p ${pid}`)).trim(); // [h:]mm:ss.cc
+  return t.split(':').map(Number).reduce((acc, p) => acc * 60 + p, 0);
 }
-function rssMb(pid) {
-  return Number(execSync(`ps -o rss= -p ${pid}`).toString().trim()) / 1024;
+async function rssMb(pid) {
+  return Number((await sh(`ps -o rss= -p ${pid}`)).trim()) / 1024;
 }
-function established() {
+async function established() {
   // Server side of the sockets: local address is :PORT.
-  return Number(execSync(`netstat -an -p tcp | awk '$4 ~ /\\.${PORT}$/ && $6=="ESTABLISHED"' | wc -l`).toString().trim());
+  return Number((await sh(`netstat -an -p tcp | awk '$4 ~ /\\.${PORT}$/ && $6=="ESTABLISHED"' | wc -l`)).trim());
 }
-function redisCommands() {
-  return Number(execSync(`docker exec sv-redis redis-cli info stats | grep total_commands_processed | cut -d: -f2`).toString().trim());
+async function redisCommands() {
+  return Number((await sh(`docker exec sv-redis redis-cli info stats | grep total_commands_processed | cut -d: -f2`)).trim());
 }
-function pgTransactions() {
-  return Number(execSync(
+async function pgTransactions() {
+  return Number((await sh(
     `docker exec sv-postgres psql -U shortvideo -d short_video_bench -tAc "select xact_commit+xact_rollback from pg_stat_database where datname='short_video_bench'"`,
-  ).toString().trim());
+  )).trim());
 }
 const heapUsed = (m) => sum(m, 'jvm_memory_used_bytes', (l) => l.includes('area="heap"'));
 
 async function snapshot() {
-  const pid = backendPid();
+  const pid = await backendPid();
   const m = await scrape();
   return {
-    t: now(), pid, m, cpu: cpuSeconds(pid), rss: rssMb(pid),
-    redis: redisCommands(), pg: pgTransactions(), clientCpu: process.cpuUsage(),
+    t: now(), pid, m, cpu: await cpuSeconds(pid), rss: await rssMb(pid),
+    redis: await redisCommands(), pg: await pgTransactions(), clientCpu: process.cpuUsage(),
   };
 }
 
@@ -141,6 +154,7 @@ class User {
     this.accountId = a.accountId;
     this.cookie = a.cookie;
     this.videoId = a.videoId;
+    this.host = HOSTS[i % HOSTS.length];
     this.agent = new http.Agent({ keepAlive: true, maxSockets: 2 });
     this.timers = new Set();
     this.stopped = false;
@@ -157,7 +171,7 @@ class User {
   req(kind, path, method = 'GET', parse = false) {
     return new Promise((resolve) => {
       const start = now();
-      const r = http.request({ host: HOST, port: PORT, path, method, agent: this.agent, headers: { Cookie: this.cookie }, timeout: 15_000 }, (res) => {
+      const r = http.request({ host: this.host, port: PORT, path, method, agent: this.agent, headers: { Cookie: this.cookie }, timeout: 15_000 }, (res) => {
         const chunks = [];
         res.on('data', (c) => parse && chunks.push(c));
         res.on('end', () => {
@@ -199,7 +213,7 @@ class User {
     if (this.stopped) return;
     const start = now();
     this.streamReq = http.get(
-      { host: HOST, port: PORT, path: '/api/v1/events/stream', agent: this.agent, headers: { Cookie: this.cookie, Accept: 'text/event-stream' } },
+      { host: this.host, port: PORT, path: '/api/v1/events/stream', agent: this.agent, headers: { Cookie: this.cookie, Accept: 'text/event-stream' } },
       (res) => {
         if (res.statusCode !== 200) {
           res.resume();
@@ -312,7 +326,7 @@ async function sampleDuring(ms, everyMs = 5000) {
     out.hikariActiveMax = Math.max(out.hikariActiveMax, sum(m, 'hikaricp_connections_active'));
     out.hikariPendingMax = Math.max(out.hikariPendingMax, sum(m, 'hikaricp_connections_pending'));
     out.realtimeConnections = sum(m, 'realtime_connections');
-    out.established.push(established());
+    out.established.push(await established());
   }
   return out;
 }
@@ -387,12 +401,12 @@ async function burst() {
   await sleep(Number(A.warmup) * 1000);
   const samples = [];
   let sampling = true;
-  const pid = backendPid();
+  const pid = await backendPid();
   const sampler = (async () => {
-    let prev = { m: await scrape(), cpu: cpuSeconds(pid), t: now() };
+    let prev = { m: await scrape(), cpu: await cpuSeconds(pid), t: now() };
     while (sampling) {
       await sleep(1000);
-      const m = await scrape(); const cpu = cpuSeconds(pid); const t = now();
+      const m = await scrape(); const cpu = await cpuSeconds(pid); const t = now();
       const dt = (t - prev.t) / 1000;
       samples.push({
         t: Math.round(t),
@@ -457,7 +471,7 @@ async function reconnect() {
   let tUp = null;
   let sampling = true;
   const tStart = now();
-  const pid0 = backendPid();
+  const pid0 = await backendPid();
   const sampler = (async () => {
     while (sampling) {
       timeline.push({ t: Math.round(now() - tStart), healthy: healthy() });
@@ -465,19 +479,19 @@ async function reconnect() {
     }
   })();
   rec.on = true;
-  spawnSync(`${ROOT}tests/load/backend.sh`, ['stop'], { stdio: 'inherit' });
+  await sh(`${ROOT}tests/load/backend.sh stop`);
   const tDown = now();
-  spawnSync(`${ROOT}tests/load/backend.sh`, ['start', MODE], { stdio: 'inherit' });
+  await sh(`${ROOT}tests/load/backend.sh start ${MODE}`);
   tUp = now();
   // Peak CPU and DB pool use during the minute after the server is back.
-  const pid = backendPid();
-  let cpuPrev = cpuSeconds(pid); let tPrev = now();
+  const pid = await backendPid();
+  let cpuPrev = await cpuSeconds(pid); let tPrev = now();
   const post = { cpuPeakCores: 0, hikariActivePeak: 0, hikariPendingPeak: 0, inboxRpsPeak: 0 };
   let prevMetrics = await scrape();
   const recoveredAt = { p90: null, p99: null };
   while (now() - tUp < 60_000) {
     await sleep(1000);
-    const cpu = cpuSeconds(pid); const t = now(); const m = await scrape();
+    const cpu = await cpuSeconds(pid); const t = now(); const m = await scrape();
     const dt = (t - tPrev) / 1000;
     post.cpuPeakCores = Math.max(post.cpuPeakCores, (cpu - cpuPrev) / dt);
     post.hikariActivePeak = Math.max(post.hikariActivePeak, sum(m, 'hikaricp_connections_active'));
@@ -507,13 +521,13 @@ async function reconnect() {
 async function leak() {
   const cycles = Number(A.cycles);
   const conc = Number(A.concurrency);
-  const pid = backendPid();
-  const gc = () => execSync(`jcmd ${pid} GC.run`, { stdio: 'ignore' });
+  const pid = await backendPid();
+  const gc = () => sh(`jcmd ${pid} GC.run`);
   const mem = async (label) => {
-    gc();
+    await gc();
     await sleep(1500);
     const m = await scrape();
-    return { label, rssMb: Math.round(rssMb(pid)), heapMb: Math.round(heapUsed(m) / 1048576 * 10) / 10, connections: sum(m, 'realtime_connections'), threads: sum(m, 'jvm_threads_live_threads'), files: sum(m, 'process_files_open_files') };
+    return { label, rssMb: Math.round(await rssMb(pid)), heapMb: Math.round(heapUsed(m) / 1048576 * 10) / 10, connections: sum(m, 'realtime_connections'), threads: sum(m, 'jvm_threads_live_threads'), files: sum(m, 'process_files_open_files') };
   };
   const report = { scenario: 'leak', cycles, concurrency: conc, steps: [] };
   report.steps.push(await mem('baseline'));
@@ -548,7 +562,7 @@ async function leak() {
       if (i >= cycles) return;
       const acct = ACCOUNTS[(w * 31 + i) % ACCOUNTS.length];
       await new Promise((resolve) => {
-        const r = http.get({ host: HOST, port: PORT, path: '/api/v1/events/stream', headers: { Cookie: acct.cookie, Accept: 'text/event-stream' }, agent: false }, (res) => {
+        const r = http.get({ host: HOSTS[(w + i) % HOSTS.length], port: PORT, path: '/api/v1/events/stream', headers: { Cookie: acct.cookie, Accept: 'text/event-stream' }, agent: false }, (res) => {
           if (res.statusCode !== 200) { failed++; res.resume(); res.on('end', resolve); return; }
           res.once('data', () => { res.destroy(); resolve(); });
         });
@@ -568,4 +582,5 @@ async function leak() {
 const result = await ({ steady, latency, burst, reconnect, leak }[SCENARIO] ?? (() => { throw new Error(`unknown scenario ${SCENARIO}`); }))();
 console.log(JSON.stringify(result, null, 2));
 if (A.out) writeFileSync(A.out, JSON.stringify(result, null, 2));
+helper.kill();
 process.exit(0);

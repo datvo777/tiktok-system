@@ -3,6 +3,7 @@ package com.shortvideo.shared.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jws;
+import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -40,10 +41,19 @@ public class JwtService {
 
     private final JwtProperties properties;
     private final SecretKey key;
+    /**
+     * Built once. {@code build()} resolves its JSON and compression providers through
+     * {@link java.util.ServiceLoader}, which scans the classpath; done per request that cost a
+     * classpath scan on every authenticated call, and from the executable jar it goes through the
+     * nested-jar loader's shared locks, which under many concurrent virtual threads deadlocked the
+     * whole server. A parser is immutable and safe to share.
+     */
+    private final JwtParser parser;
 
     public JwtService(JwtProperties properties, TokenKeys tokenKeys) {
         this.properties = properties;
         this.key = tokenKeys.sessionKey();
+        this.parser = Jwts.parser().verifyWith(key).requireIssuer(properties.getIssuer()).build();
     }
 
     /**
@@ -92,11 +102,7 @@ public class JwtService {
 
     public AuthenticatedAccount parse(String token) {
         try {
-            Jws<Claims> jws = Jwts.parser()
-                    .verifyWith(key)
-                    .requireIssuer(properties.getIssuer())
-                    .build()
-                    .parseSignedClaims(token);
+            Jws<Claims> jws = parser.parseSignedClaims(token);
 
             String algorithm = jws.getHeader().getAlgorithm();
             if (!EXPECTED_ALG.equals(algorithm)) {

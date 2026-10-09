@@ -17,7 +17,10 @@ stop() {
   local pid
   for pid in $(lsof -ti :8080 -sTCP:LISTEN 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done
   for _ in $(seq 1 30); do lsof -ti :8080 -sTCP:LISTEN >/dev/null 2>&1 || return 0; sleep 1; done
-  echo "backend did not stop" >&2; return 1
+  # A wedged JVM does not honour SIGTERM; a benchmark that goes on to talk to it measures nothing.
+  echo "backend did not stop on SIGTERM; killing" >&2
+  for pid in $(lsof -ti :8080 -sTCP:LISTEN 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null || true; done
+  sleep 2
 }
 
 case "${1:-}" in
@@ -34,12 +37,18 @@ case "${1:-}" in
     export REALTIME_MAX_CONNECTIONS=20000
     # The seeder creates ~800 upload drafts in a minute; the global brake (600/min) would refuse them.
     export SHORTVIDEO_UPLOAD_CREATE_RATE_LIMIT_GLOBAL_MAX_PER_WINDOW=0
+    # Tomcat's default of 8192 connections would refuse the second half of 8000 SSE users, who hold two
+    # connections each over HTTP/1.1 (the stream, and the keep-alive one for REST). Lifted so the run
+    # measures cost; the limit itself is reported as a finding.
+    export TOMCAT_MAX_CONNECTIONS=40000 TOMCAT_ACCEPT_COUNT=1000
     # Same flags for every run. Deliberately no -XX:TieredStopAtLevel=1.
     # Run from a private copy. A jar replaced underneath a running JVM (an IDE build, another `mvn package`)
     # makes it fail on the next class it loads lazily, with NoClassDefFoundError from unrelated places;
     # that corrupted one measurement run before this was added.
     [ -f "$OUT/app.jar" ] || cp backend/app/target/app.jar "$OUT/app.jar"
-    nohup java -Xms2g -Xmx4g -XX:+UseG1GC -jar "$OUT/app.jar" > "$OUT/backend-$mode.log" 2>&1 &
+    # -XX:-MaxFDLimit: on macOS the JVM otherwise caps its own descriptor limit at 10240, below what
+    # thousands of connections need (two descriptors per SSE user).
+    nohup java -Xms2g -Xmx4g -XX:+UseG1GC -XX:-MaxFDLimit -jar "$OUT/app.jar" > "$OUT/backend-$mode.log" 2>&1 &
     echo $! > "$OUT/backend.pid"
     for _ in $(seq 1 90); do
       [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/liveness)" = 200 ] && { echo "backend up ($mode), pid $(cat "$OUT/backend.pid")"; exit 0; }

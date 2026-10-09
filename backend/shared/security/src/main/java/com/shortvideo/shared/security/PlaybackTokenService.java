@@ -3,6 +3,7 @@ package com.shortvideo.shared.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jws;
+import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import java.time.Instant;
 import java.util.Date;
@@ -31,10 +32,13 @@ public class PlaybackTokenService {
 
     private final PlaybackCookieProperties properties;
     private final SecretKey key;
+    /** Built once; see {@code JwtService#parser} for why a parser must not be built per call. */
+    private final JwtParser parser;
 
     public PlaybackTokenService(PlaybackCookieProperties properties, TokenKeys tokenKeys) {
         this.properties = properties;
         this.key = tokenKeys.playbackKey();
+        this.parser = Jwts.parser().verifyWith(key).build();
     }
 
     public IssuedPlaybackToken issue(String viewerId, String videoId, int processingVersion, String mode) {
@@ -57,7 +61,7 @@ public class PlaybackTokenService {
 
     public PlaybackClaims parse(String token) {
         try {
-            Jws<Claims> jws = Jwts.parser().verifyWith(key).build().parseSignedClaims(token);
+            Jws<Claims> jws = parser.parseSignedClaims(token);
 
             String algorithm = jws.getHeader().getAlgorithm();
             if (!EXPECTED_ALG.equals(algorithm)) {
