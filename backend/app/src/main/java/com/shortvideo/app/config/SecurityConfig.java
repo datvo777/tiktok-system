@@ -170,9 +170,18 @@ public class SecurityConfig {
                         // Everything not named above: private.
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
-                        .authenticationEntryPoint((request, response, authException) ->
-                                writeProblem(response, HttpServletResponse.SC_UNAUTHORIZED,
-                                        "Unauthorized", "Valid credentials are required"))
+                        .authenticationEntryPoint((request, response, authException) -> {
+                            if (request.getAttribute(JwtAuthenticationFilter.SESSION_LIFETIME_EXCEEDED) != null) {
+                                // A different answer to the same status, so the client can tell "your session
+                                // reached its limit, sign in again" from "your credentials are wrong".
+                                writeProblem(response, HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized",
+                                        "Your session has reached its maximum length. Sign in again.",
+                                        "SESSION_LIFETIME_EXCEEDED");
+                                return;
+                            }
+                            writeProblem(response, HttpServletResponse.SC_UNAUTHORIZED,
+                                    "Unauthorized", "Valid credentials are required");
+                        })
                         .accessDeniedHandler((request, response, deniedException) ->
                                 writeProblem(response, HttpServletResponse.SC_FORBIDDEN,
                                         "Forbidden", "You may not access this resource")))
@@ -188,10 +197,16 @@ public class SecurityConfig {
 
     private void writeProblem(HttpServletResponse response, int status, String title, String detail)
             throws java.io.IOException {
+        writeProblem(response, status, title, detail, null);
+    }
+
+    private void writeProblem(HttpServletResponse response, int status, String title, String detail, String code)
+            throws java.io.IOException {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
         response.getWriter().write(
                 "{\"type\":\"about:blank\",\"title\":\"" + title + "\",\"status\":" + status
-                        + ",\"detail\":\"" + detail + "\"}");
+                        + ",\"detail\":\"" + detail + "\""
+                        + (code == null ? "" : ",\"code\":\"" + code + "\"") + "}");
     }
 }

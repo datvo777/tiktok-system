@@ -148,7 +148,9 @@ public class AuthController {
         if (!denyList.revokeIfActive(caller.tokenId(), caller.expiresAt())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Session already refreshed");
         }
-        JwtService.IssuedToken issued = jwtService.issue(caller.accountId(), roles);
+        // The login time is carried over, not reset: renewing extends the idle window, never the session's
+        // absolute lifetime (enforced by the filter, from this same value).
+        JwtService.IssuedToken issued = jwtService.issue(caller.accountId(), roles, caller.authTime());
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, sessionCookies.session(issued.token(), issued.expiresAt()).toString())

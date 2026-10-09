@@ -6,6 +6,7 @@ import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.LinkedHashSet;
@@ -24,6 +25,8 @@ import org.springframework.stereotype.Service;
 public class JwtService {
 
     private static final String ROLES_CLAIM = "roles";
+    /** OpenID Connect's name for "when the user authenticated", in epoch seconds. */
+    static final String AUTH_TIME_CLAIM = "auth_time";
     private static final String EXPECTED_ALG = "HS256";
 
     /**
@@ -83,7 +86,16 @@ public class JwtService {
         return secret;
     }
 
+    /** For a login: the person has just proved who they are. */
     public IssuedToken issue(String accountId, Set<String> roles) {
+        return issue(accountId, roles, Instant.now());
+    }
+
+    /**
+     * @param authTime when the person last logged in. A renewal passes the old token's value, so the
+     *     session's absolute lifetime keeps counting from the login instead of restarting.
+     */
+    public IssuedToken issue(String accountId, Set<String> roles, Instant authTime) {
         Instant now = Instant.now();
         Instant expiry = now.plus(properties.getTtl());
         String token = Jwts.builder()
@@ -93,6 +105,7 @@ public class JwtService {
                 .audience().add(properties.getAudience()).and()
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
+                .claim(AUTH_TIME_CLAIM, authTime.getEpochSecond())
                 .claim(ROLES_CLAIM, roles.stream().sorted().toList())
                 .claim(TYPE_CLAIM, SESSION_TYPE)
                 .signWith(key, Jwts.SIG.HS256)
@@ -139,10 +152,41 @@ public class JwtService {
             }
 
             return new AuthenticatedAccount(
-                    subject, readRoles(claims), tokenId, issuedAt.toInstant(), claims.getExpiration().toInstant());
+                    subject,
+                    readRoles(claims),
+                    tokenId,
+                    issuedAt.toInstant(),
+                    claims.getExpiration().toInstant(),
+                    readAuthTime(claims, issuedAt.toInstant()));
         } catch (JwtException | IllegalArgumentException e) {
             throw new InvalidTokenException("Token rejected: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Tokens issued before this claim existed have none. They count from when they were issued, which
+     * is the earliest the session can be shown to have started, so deploying this does not sign
+     * anyone out, and renewing such a token cannot push the session's start later than it already was.
+     */
+    private static Instant readAuthTime(Claims claims, Instant fallback) {
+        Object raw = claims.get(AUTH_TIME_CLAIM);
+        if (raw instanceof Number seconds) {
+            Instant authTime = Instant.ofEpochSecond(seconds.longValue());
+            // Never later than issuance: a claim that says the login came after the token was minted is wrong.
+            return authTime.isAfter(fallback) ? fallback : authTime;
+        }
+        return fallback;
+    }
+
+    /** The longest this account's session may last from the login. Privileged accounts get the shorter one. */
+    public Duration absoluteTtlFor(Set<String> roles) {
+        boolean privileged = roles.stream().anyMatch(properties.getPrivilegedRoles()::contains);
+        return privileged ? properties.getPrivilegedAbsoluteTtl() : properties.getAbsoluteTtl();
+    }
+
+    /** True once the session has run its full length, whatever else about the token is still valid. */
+    public boolean exceedsAbsoluteLifetime(AuthenticatedAccount account, Set<String> currentRoles, Instant now) {
+        return now.isAfter(account.authTime().plus(absoluteTtlFor(currentRoles)));
     }
 
     private Set<String> readRoles(Claims claims) {

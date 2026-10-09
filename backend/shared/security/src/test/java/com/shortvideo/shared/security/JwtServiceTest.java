@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -163,5 +164,71 @@ class JwtServiceTest {
         // outstanding token and every instance would disagree with its peers.
         assertThat(new TokenKeys(properties).sessionKey().getEncoded())
                 .isEqualTo(new TokenKeys(properties).sessionKey().getEncoded());
+    }
+
+    // ------------------------------------------------------------- absolute session lifetime
+
+    @Test
+    void aLoginStampsTheSignInTimeAndARenewalKeepsIt() {
+        Instant loggedIn = Instant.now().minus(Duration.ofDays(3)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+
+        AuthenticatedAccount renewed =
+                jwtService.parse(jwtService.issue("account-1", Set.of("USER"), loggedIn).token());
+        AuthenticatedAccount fresh = jwtService.parse(jwtService.issue("account-1", Set.of("USER")).token());
+
+        assertThat(renewed.authTime()).isEqualTo(loggedIn);
+        // A new token's own issue time is later; only the sign-in time is carried.
+        assertThat(renewed.issuedAt()).isAfter(renewed.authTime());
+        assertThat(fresh.authTime()).isEqualTo(fresh.issuedAt().truncatedTo(java.time.temporal.ChronoUnit.SECONDS));
+    }
+
+    @Test
+    void aTokenIssuedBeforeTheClaimExistedCountsFromWhenItWasIssued() {
+        Instant issuedAt = Instant.now().minus(Duration.ofMinutes(20));
+        String legacy = io.jsonwebtoken.Jwts.builder()
+                .id("legacy-1")
+                .subject("account-1")
+                .issuer(properties.getIssuer())
+                .audience().add(properties.getAudience()).and()
+                .issuedAt(java.util.Date.from(issuedAt))
+                .expiration(java.util.Date.from(issuedAt.plus(Duration.ofMinutes(30))))
+                .claim("roles", java.util.List.of("USER"))
+                .claim("typ", JwtService.SESSION_TYPE)
+                .signWith(new TokenKeys(properties).sessionKey(), io.jsonwebtoken.Jwts.SIG.HS256)
+                .compact();
+
+        AuthenticatedAccount parsed = jwtService.parse(legacy);
+
+        assertThat(parsed.authTime()).isEqualTo(parsed.issuedAt());
+    }
+
+    @Test
+    void aSignInTimeInTheFutureIsNotBelieved() {
+        String token = jwtService.issue("account-1", Set.of("USER"), Instant.now().plus(Duration.ofDays(5))).token();
+
+        AuthenticatedAccount parsed = jwtService.parse(token);
+
+        assertThat(parsed.authTime()).isEqualTo(parsed.issuedAt());
+    }
+
+    @Test
+    void privilegedAccountsGetTheShorterLimit() {
+        properties.setAbsoluteTtl(Duration.ofDays(30));
+        properties.setPrivilegedAbsoluteTtl(Duration.ofHours(12));
+
+        assertThat(jwtService.absoluteTtlFor(Set.of("USER"))).isEqualTo(Duration.ofDays(30));
+        assertThat(jwtService.absoluteTtlFor(Set.of("USER", "ADMIN"))).isEqualTo(Duration.ofHours(12));
+    }
+
+    @Test
+    void theLimitIsJudgedOnTheRolesHeldNowNotTheOnesInTheToken() {
+        properties.setAbsoluteTtl(Duration.ofDays(30));
+        properties.setPrivilegedAbsoluteTtl(Duration.ofHours(12));
+        AuthenticatedAccount thirteenHoursIn = jwtService.parse(
+                jwtService.issue("account-1", Set.of("USER"), Instant.now().minus(Duration.ofHours(13))).token());
+
+        assertThat(jwtService.exceedsAbsoluteLifetime(thirteenHoursIn, Set.of("USER"), Instant.now())).isFalse();
+        // Promoted to admin since: the same session is now past the limit that applies to admins.
+        assertThat(jwtService.exceedsAbsoluteLifetime(thirteenHoursIn, Set.of("USER", "ADMIN"), Instant.now())).isTrue();
     }
 }

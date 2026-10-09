@@ -84,6 +84,11 @@ shortvideo:
     issuer: ${JWT_ISSUER:short-video-local}
     audience: ${JWT_AUDIENCE:short-video-web}
     ttl: ${JWT_TTL_SECONDS:1800}s
+    # How long a session can last from the login however often it is renewed (ttl above only bounds
+    # an idle gap). Accounts holding a privileged role get the shorter limit.
+    absolute-ttl: ${JWT_ABSOLUTE_TTL:30d}
+    privileged-absolute-ttl: ${JWT_PRIVILEGED_ABSOLUTE_TTL:12h}
+    privileged-roles: ADMIN
     session-cookie-name: ${SESSION_COOKIE_NAME:sv_session}
     # Secure by default: serving a session cookie over plain HTTP should be an
     # explicit opt-out, and one variable drives both cookies so they cannot drift.

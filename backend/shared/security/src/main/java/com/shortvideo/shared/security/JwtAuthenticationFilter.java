@@ -58,6 +58,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
     private static final String BEARER_PREFIX = "Bearer ";
     public static final String MEDIA_PATH_PREFIX = "/media";
+    /**
+     * Request attribute set when a token was refused only because its session reached the absolute
+     * limit, so the 401 can say so ("sign in again") instead of looking like any other bad credential.
+     */
+    public static final String SESSION_LIFETIME_EXCEEDED = "sv.session.lifetimeExceeded";
 
     private final JwtService jwtService;
     private final String sessionCookieName;
@@ -157,9 +162,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 log.debug("Rejected token for missing account on {}", request.getRequestURI());
                 return null;
             }
+            // Judged on the roles the account holds now, so a promotion to admin applies the shorter limit at once.
+            if (jwtService.exceedsAbsoluteLifetime(account, roles, Instant.now())) {
+                log.debug("Rejected token past the session's absolute lifetime on {}", request.getRequestURI());
+                request.setAttribute(SESSION_LIFETIME_EXCEEDED, Boolean.TRUE);
+                return null;
+            }
             // The token's own roles are only what was true at issue time.
             return new AuthenticatedAccount(
-                    account.accountId(), roles, account.tokenId(), account.issuedAt(), account.expiresAt());
+                    account.accountId(), roles, account.tokenId(), account.issuedAt(), account.expiresAt(), account.authTime());
         } catch (DataAccessException e) {
             log.warn("Role state unavailable; refusing to authenticate", e);
             return null;

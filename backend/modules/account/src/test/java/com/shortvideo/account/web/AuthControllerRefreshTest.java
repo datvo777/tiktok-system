@@ -94,4 +94,15 @@ class AuthControllerRefreshTest {
 
         assertThatThrownBy(() -> controller.refresh(caller)).isInstanceOf(ResponseStatusException.class);
     }
+
+    @Test
+    void refreshingNeverMovesTheSignInTime() {
+        Instant loggedIn = Instant.now().minus(Duration.ofDays(9)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        caller = new AuthenticatedAccount(
+                ACCOUNT_ID, Set.of("USER"), "jti-1", Instant.now(), Instant.now().plus(Duration.ofMinutes(10)), loggedIn);
+
+        var response = controller.refresh(caller);
+
+        assertThat(jwtService.parse(response.getBody().token()).authTime()).isEqualTo(loggedIn);
+    }
 }

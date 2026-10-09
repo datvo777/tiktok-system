@@ -34,6 +34,7 @@ import {
 import { MyVideos } from './MyVideos';
 import { Notifications } from './Notifications';
 import { RealtimeStatusProvider, inboxPollMs, useRealtime } from './realtime';
+import { SESSION_LIFETIME_EXCEEDED, refreshSession as refreshSessionOnce, withTabLock } from './session';
 import { SearchPanel } from './SearchPanel';
 import { dismiss, navigate, setSheet, type Sheet as SheetName } from './router';
 import { ViewerProvider } from './viewer';
@@ -63,6 +64,9 @@ export function App() {
   // in" right after a reload of an otherwise still-valid session.
   const me = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false });
   const signedIn = !!me.data;
+  // Why the person was signed out, when it is something they can act on (the session ran its full
+  // length): shown on the sign-in form instead of a silent return to the signed-out screen.
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   // The stream is a hint that something changed, never the data itself; while it is up the
   // polling below only has to be a safety net.
   const streamConnected = useRealtime(signedIn, () => queryClient.setQueryData(['me'], null));
@@ -94,6 +98,7 @@ export function App() {
   useEffect(() => {
     if (me.error instanceof ApiError && me.error.isUnauthenticated) {
       queryClient.setQueryData(['me'], null);
+      if (me.error.code === SESSION_LIFETIME_EXCEEDED) setSessionNotice(me.error.message);
     }
   }, [me.error, queryClient]);
 
@@ -108,7 +113,14 @@ export function App() {
     if (!signedIn) return;
     const timer = setInterval(
       () => {
-        void refreshSession().catch(() => queryClient.setQueryData(['me'], null));
+        void refreshSessionOnce({ refresh: refreshSession, me: getMe, withLock: withTabLock }).then((outcome) => {
+          if (outcome === 'ended' || outcome === 'ended-lifetime') {
+            queryClient.setQueryData(['me'], null);
+            if (outcome === 'ended-lifetime') {
+              setSessionNotice('Your session has reached its maximum length. Sign in again.');
+            }
+          }
+        });
       },
       10 * 60 * 1000,
     );
@@ -277,7 +289,7 @@ export function App() {
           onClose={() => dismiss()}
           large={panel === 'search' || panel === 'favorites'}
         >
-          {panel === 'signIn' && <AuthPanel onDone={() => dismiss()} />}
+          {panel === 'signIn' && <AuthPanel notice={sessionNotice} onDone={() => dismiss()} />}
           {panel === 'upload' && <Upload onDone={() => dismiss()} />}
           {panel === 'search' && <SearchPanel />}
           {panel === 'notifications' && <Notifications />}
@@ -690,12 +702,14 @@ const DEV_PREFILL = import.meta.env.DEV
  * opens only when someone tries to do something that needs an account, or asks
  * for it.
  */
-function AuthPanel({ onDone }: { onDone: () => void }) {
+function AuthPanel({ onDone, notice }: { onDone: () => void; notice?: string | null }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState(DEV_PREFILL.email);
   const [password, setPassword] = useState(DEV_PREFILL.password);
   const [displayName, setDisplayName] = useState(DEV_PREFILL.displayName);
-  const [status, setStatus] = useState<{ text: string; error: boolean } | null>(null);
+  const [status, setStatus] = useState<{ text: string; error: boolean } | null>(
+    notice ? { text: notice, error: false } : null,
+  );
   const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
 

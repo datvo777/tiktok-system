@@ -22,6 +22,8 @@ export class ApiError extends Error {
     message: string,
     /** From the `Retry-After` header, when the server sent one in seconds. */
     readonly retryAfterMs?: number,
+    /** The problem's `code`, when the server gave one: a stable name for a cause the status alone cannot tell apart. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -55,18 +57,23 @@ export class ContractError extends Error {
   }
 }
 
-async function readProblemDetail(response: Response): Promise<string> {
+async function readProblem(response: Response): Promise<{ message: string; code?: string }> {
   try {
     const problem: unknown = await response.json();
     if (problem && typeof problem === 'object') {
-      const { detail, title } = problem as { detail?: unknown; title?: unknown };
-      if (typeof detail === 'string') return detail;
-      if (typeof title === 'string') return title;
+      const { detail, title, code } = problem as { detail?: unknown; title?: unknown; code?: unknown };
+      const message = typeof detail === 'string' ? detail : typeof title === 'string' ? title : undefined;
+      if (message !== undefined) return typeof code === 'string' ? { message, code } : { message };
     }
   } catch {
     // Body was absent or not JSON; the status is all we have.
   }
-  return `HTTP ${response.status}`;
+  return { message: `HTTP ${response.status}` };
+}
+
+async function apiError(response: Response): Promise<ApiError> {
+  const { message, code } = await readProblem(response);
+  return new ApiError(response.status, message, parseRetryAfter(response), code);
 }
 
 /**
@@ -83,7 +90,7 @@ export async function request<T>(
 ): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
-    throw new ApiError(response.status, await readProblemDetail(response), parseRetryAfter(response));
+    throw await apiError(response);
   }
   if (response.status === 204) {
     return parse(undefined);
@@ -101,7 +108,7 @@ export async function request<T>(
 export async function requestNoContent(path: string, init?: RequestInit): Promise<void> {
   const response = await fetch(path, init);
   if (!response.ok) {
-    throw new ApiError(response.status, await readProblemDetail(response), parseRetryAfter(response));
+    throw await apiError(response);
   }
 }
 

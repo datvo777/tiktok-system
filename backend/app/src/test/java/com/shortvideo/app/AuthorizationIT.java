@@ -116,6 +116,58 @@ class AuthorizationIT {
         assertThat(get("/internal/anything", token).getStatusCode()).isIn(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN);
     }
 
+    // ------------------------------------------------------- absolute session lifetime
+
+    /**
+     * Renewing extends the idle window, never the session: after 30 days (12 hours for an admin) from
+     * the login the token is refused whatever else about it is valid, and the 401 says why.
+     */
+    @Test
+    void aSessionPastItsAbsoluteLifetimeIsRefusedWithAnExplanation() {
+        String pastLimit = tokenFor(Set.of("USER"), java.time.Duration.ofDays(31));
+        String withinLimit = tokenFor(Set.of("USER"), java.time.Duration.ofDays(29));
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(pastLimit);
+        ResponseEntity<String> refused = get("/api/v1/auth/me", headers);
+
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(refused.getBody()).contains("SESSION_LIFETIME_EXCEEDED");
+        assertThat(getStatus("/api/v1/auth/me", withinLimit)).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void anExpiredSessionCannotBeRenewedBackToLife() {
+        String pastLimit = tokenFor(Set.of("USER"), java.time.Duration.ofDays(31));
+
+        assertThat(postStatus("/api/v1/auth/refresh", pastLimit, null)).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void anAdminSessionHasTheShorterLimit() {
+        String thirteenHours = tokenFor(Set.of("USER", "ADMIN"), java.time.Duration.ofHours(13));
+        String elevenHours = tokenFor(Set.of("USER", "ADMIN"), java.time.Duration.ofHours(11));
+        String ordinaryUserThirteenHours = tokenFor(Set.of("USER"), java.time.Duration.ofHours(13));
+
+        assertThat(getStatus("/api/v1/auth/me", thirteenHours)).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(getStatus("/api/v1/auth/me", elevenHours)).isEqualTo(HttpStatus.OK);
+        assertThat(getStatus("/api/v1/auth/me", ordinaryUserThirteenHours)).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void renewingKeepsTheOriginalSignInTime() {
+        String token = tokenFor(Set.of("USER"), java.time.Duration.ofDays(10));
+        java.time.Instant before = jwtService.parse(token).authTime();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+
+        ResponseEntity<Map> renewed = rest.exchange(
+                url("/api/v1/auth/refresh"), HttpMethod.POST, new HttpEntity<>(headers), Map.class);
+
+        assertThat(renewed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jwtService.parse((String) renewed.getBody().get("token")).authTime()).isEqualTo(before);
+    }
+
     /** Realtime is an opt-in experiment: with the flag off the route does not exist, so clients poll. */
     @Test
     void theRealtimeStreamDoesNotExistUnlessEnabled() {
@@ -381,6 +433,11 @@ class AuthorizationIT {
      * (or whose claim disagrees with the row) is rejected by design.
      */
     private String tokenFor(Set<String> roles) {
+        return tokenFor(roles, null);
+    }
+
+    /** As above, for a session that began {@code signedInAgo} ago (null: just now). */
+    private String tokenFor(Set<String> roles, java.time.Duration signedInAgo) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         Map<?, ?> created = rest.exchange(
@@ -396,7 +453,9 @@ class AuthorizationIT {
                 .getBody();
         String accountId = (String) created.get("accountId");
         jdbc.update("UPDATE account.account SET roles = ? WHERE account_id = ?::uuid", String.join(",", roles), accountId);
-        return jwtService.issue(accountId, roles).token();
+        return signedInAgo == null
+                ? jwtService.issue(accountId, roles).token()
+                : jwtService.issue(accountId, roles, java.time.Instant.now().minus(signedInAgo)).token();
     }
 
     private String registerAndLogin() {

@@ -1,6 +1,7 @@
 package com.shortvideo.shared.security;
 
 import java.time.Duration;
+import java.util.Set;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "shortvideo.jwt")
@@ -11,6 +12,15 @@ public class JwtProperties {
     private String issuer = "short-video-local";
     private String audience = "short-video-web";
     private Duration ttl = Duration.ofMinutes(30);
+    /**
+     * The longest a session can last from the login, however often it is renewed. {@link #ttl} only
+     * bounds an idle gap (a token must be renewed within it); without this, a session renewed every
+     * few minutes never ends.
+     */
+    private Duration absoluteTtl = Duration.ofDays(30);
+    /** The same bound for accounts holding any of {@link #privilegedRoles}: far shorter, because far more is at stake. */
+    private Duration privilegedAbsoluteTtl = Duration.ofHours(12);
+    private Set<String> privilegedRoles = Set.of("ADMIN");
     private String sessionCookieName = "sv_session";
     /**
      * Defaults to true so that shipping a session cookie over plain HTTP is an
@@ -39,6 +49,12 @@ public class JwtProperties {
     public void setAudience(String audience) { this.audience = audience; }
     public Duration getTtl() { return ttl; }
     public void setTtl(Duration ttl) { this.ttl = ttl; }
+    public Duration getAbsoluteTtl() { return absoluteTtl; }
+    public void setAbsoluteTtl(Duration absoluteTtl) { this.absoluteTtl = absoluteTtl; }
+    public Duration getPrivilegedAbsoluteTtl() { return privilegedAbsoluteTtl; }
+    public void setPrivilegedAbsoluteTtl(Duration privilegedAbsoluteTtl) { this.privilegedAbsoluteTtl = privilegedAbsoluteTtl; }
+    public Set<String> getPrivilegedRoles() { return privilegedRoles; }
+    public void setPrivilegedRoles(Set<String> privilegedRoles) { this.privilegedRoles = privilegedRoles; }
     public String getSessionCookieName() { return sessionCookieName; }
     public void setSessionCookieName(String sessionCookieName) { this.sessionCookieName = sessionCookieName; }
     public boolean isCookieSecure() { return cookieSecure; }
