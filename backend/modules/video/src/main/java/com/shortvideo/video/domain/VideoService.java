@@ -160,7 +160,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
 
         String jobId = saved.getVideoId() + ":" + version;
         var payload = new MediaEvents.MediaJobCommand(
-                jobId, saved.getVideoId().toString(), version, sourceObjectKey, DEFAULT_RENDITIONS);
+                jobId, saved.getVideoId().toString(), version, sourceObjectKey, DEFAULT_RENDITIONS, 1);
 
         outboxWriter.append(new EventEnvelope<>(
                 UUID.randomUUID(),
@@ -250,7 +250,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 saved.getVideoId().toString(),
                 saved.getProcessingVersion(),
                 saved.getSourceObjectKey(),
-                DEFAULT_RENDITIONS);
+                DEFAULT_RENDITIONS,
+                saved.getTranscodeAttempt());
         outboxWriter.append(
                 new EventEnvelope<>(
                         UUID.randomUUID(),
@@ -485,7 +486,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
 
         String jobId = saved.getVideoId() + ":" + version;
         var payload = new MediaEvents.MediaJobCommand(
-                jobId, saved.getVideoId().toString(), version, saved.getSourceObjectKey(), DEFAULT_RENDITIONS);
+                jobId, saved.getVideoId().toString(), version, saved.getSourceObjectKey(), DEFAULT_RENDITIONS, 1);
         append(saved, EventTypes.MEDIA_JOB_DISPATCHED, payload);
     }
 

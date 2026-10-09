@@ -11,6 +11,9 @@ public class WorkerProperties {
     private Duration jobTimeout = Duration.ofMinutes(15);
     private Duration probeTimeout = Duration.ofSeconds(30);
     private Duration killGrace = Duration.ofSeconds(10);
+
+    /** How long to wait for the broker to acknowledge a result before treating it as not sent. */
+    private Duration resultAckTimeout = Duration.ofSeconds(30);
     private String ffmpegPath = "ffmpeg";
     private String ffprobePath = "ffprobe";
     private long maxSourceBytes = 500L * 1024 * 1024;
@@ -39,6 +42,8 @@ public class WorkerProperties {
     public void setProbeTimeout(Duration probeTimeout) { this.probeTimeout = probeTimeout; }
     public Duration getKillGrace() { return killGrace; }
     public void setKillGrace(Duration killGrace) { this.killGrace = killGrace; }
+    public Duration getResultAckTimeout() { return resultAckTimeout; }
+    public void setResultAckTimeout(Duration resultAckTimeout) { this.resultAckTimeout = resultAckTimeout; }
     public String getFfmpegPath() { return ffmpegPath; }
     public void setFfmpegPath(String ffmpegPath) { this.ffmpegPath = ffmpegPath; }
     public String getFfprobePath() { return ffprobePath; }
