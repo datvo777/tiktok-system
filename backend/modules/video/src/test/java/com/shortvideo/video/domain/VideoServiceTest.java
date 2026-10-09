@@ -226,7 +226,8 @@ class VideoServiceTest {
     void aTransientFailureOnTheLastAttemptFailsTheVideoAndAnnouncesIt() {
         VideoJpaRepository repository = mock(VideoJpaRepository.class);
         var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
-        VideoService service = serviceWithOutbox(repository, outbox, 2);
+        var superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWithOutbox(repository, outbox, 2, superseded);
         UUID videoId = UUID.randomUUID();
         VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
         int version = video.dispatchProcessing("sources/" + videoId + "/original");
@@ -242,13 +243,18 @@ class VideoServiceTest {
         org.mockito.Mockito.verify(outbox).append(envelope.capture());
         assertThat(envelope.getValue().eventType())
                 .isEqualTo(com.shortvideo.shared.events.EventTypes.VIDEO_PROCESSING_FAILED);
+        // The worker may have copied part of its output before it failed; that prefix is reclaimed.
+        var rows = org.mockito.ArgumentCaptor.forClass(SupersededAssetEntity.class);
+        org.mockito.Mockito.verify(superseded).saveAndFlush(rows.capture());
+        assertThat(rows.getValue().prefix()).isEqualTo("processed/" + videoId + "/" + version + "/");
     }
 
     @Test
     void aTerminalFailureIsNeverRetried() {
         VideoJpaRepository repository = mock(VideoJpaRepository.class);
         var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
-        VideoService service = serviceWithOutbox(repository, outbox, 3);
+        var superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWithOutbox(repository, outbox, 3, superseded);
         UUID videoId = UUID.randomUUID();
         VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
         int version = video.dispatchProcessing("sources/" + videoId + "/original");
@@ -256,6 +262,9 @@ class VideoServiceTest {
         when(repository.saveAndFlush(video)).thenReturn(video);
 
         service.applyMediaResult(failedResult(videoId, version, "TERMINAL"));
+
+        // Reported before anything was promoted, so there is no output to reclaim.
+        org.mockito.Mockito.verifyNoInteractions(superseded);
 
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.FAILED);
         assertThat(video.getTranscodeAttempt()).isEqualTo(1);
@@ -265,9 +274,17 @@ class VideoServiceTest {
 
     private static VideoService serviceWithOutbox(
             VideoJpaRepository repository, com.shortvideo.shared.outbox.OutboxWriter outbox, int maxAttempts) {
+        return serviceWithOutbox(repository, outbox, maxAttempts, mock(SupersededAssetJpaRepository.class));
+    }
+
+    private static VideoService serviceWithOutbox(
+            VideoJpaRepository repository,
+            com.shortvideo.shared.outbox.OutboxWriter outbox,
+            int maxAttempts,
+            SupersededAssetJpaRepository superseded) {
         return new VideoService(
                 repository,
-                mock(SupersededAssetJpaRepository.class),
+                superseded,
                 outbox,
                 mock(MinioAssetVerifier.class),
                 mock(com.shortvideo.shared.revocation.DurableRevocationWriter.class),

@@ -1,5 +1,6 @@
 package com.shortvideo.worker;
 
+import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -11,6 +12,10 @@ import org.springframework.stereotype.Component;
  * 14.1). A partially written temp prefix is always discardable — {@code
  * processed/} is only written after validation, so a worker that was killed
  * mid-job leaves no half-published asset, only orphaned staging objects.
+ *
+ * <p>Only objects older than the job timeout are removed. A job stages its output after the
+ * transcode has finished, within moments, so anything older than the longest a job may run
+ * belongs to nobody; anything newer may belong to a job another worker is promoting right now.
  */
 @Component
 class StartupTempSweeper {
@@ -19,15 +24,17 @@ class StartupTempSweeper {
     private static final String PREFIX = "processing-temp/";
 
     private final MinioObjectStore store;
+    private final WorkerProperties properties;
 
-    StartupTempSweeper(MinioObjectStore store) {
+    StartupTempSweeper(MinioObjectStore store, WorkerProperties properties) {
         this.store = store;
+        this.properties = properties;
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void sweep() {
         try {
-            var keys = store.listKeysUnder(PREFIX);
+            var keys = store.listKeysUnder(PREFIX, Instant.now().minus(properties.getJobTimeout()));
             keys.forEach(store::delete);
             if (!keys.isEmpty()) {
                 log.info("Swept {} orphaned processing-temp object(s) at startup", keys.size());

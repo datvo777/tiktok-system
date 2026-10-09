@@ -60,6 +60,7 @@ class TranscodeJobHandler {
 
     void handle(MediaEvents.MediaJobCommand job, String correlationId) {
         Path workDir = null;
+        String tempPrefix = "processing-temp/" + job.jobId() + "/";
         try {
             workDir = Files.createTempDirectory("media-worker-" + safe(job.jobId()) + "-");
             Path sourceFile = workDir.resolve("source");
@@ -79,7 +80,6 @@ class TranscodeJobHandler {
                 return;
             }
 
-            String tempPrefix = "processing-temp/" + job.jobId() + "/";
             String finalPrefix = "processed/" + job.videoId() + "/" + job.processingVersion() + "/";
 
             stageAndPromote(output.masterPlaylist().getParent(), tempPrefix, finalPrefix);
@@ -90,17 +90,22 @@ class TranscodeJobHandler {
                     output.segmentCount(),
                     output.durationSeconds());
             report(job, "COMPLETED", assets, null, correlationId);
-
-            cleanupPrefix(tempPrefix);
         } catch (ResultNotPublishedException e) {
             // The job itself ran; it is the report that did not get through. Reporting a failure
             // here would be a second send that can fail the same way, so let the listener's error
             // handler redeliver the command instead (deterministic output makes the rerun safe).
             throw e;
+        } catch (TranscodeFailedException e) {
+            // Raised outside the pipeline, e.g. a source object that does not exist.
+            log.warn("Job {} failed: {}", job.jobId(), e.getMessage());
+            report(job, "FAILED", null, e.failureClass(), correlationId);
         } catch (Exception e) {
             log.error("Transient failure handling job {}", job.jobId(), e);
             report(job, "FAILED", null, "TRANSIENT", correlationId);
         } finally {
+            // Whatever way the job ended, its staging objects are of no further use: on success they
+            // were copied to processed/, on failure they are partial, and a rerun rewrites them.
+            cleanupPrefix(tempPrefix);
             if (workDir != null) {
                 deleteRecursively(workDir);
             }

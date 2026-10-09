@@ -225,7 +225,22 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             video.markFailed(failureClass);
             VideoEntity saved = repository.saveAndFlush(video);
             appendFailedEvent(saved);
+            if ("TRANSIENT".equals(failureClass)) {
+                schedulePartialOutputPurge(saved);
+            }
         }
+    }
+
+    /**
+     * A transient failure can strike while the worker is promoting its output, leaving some files
+     * under {@code processed/{videoId}/{version}/}. That version is never served (the video is not
+     * READY for it, and a late result for it is ignored), and a reprocess writes a new version, so
+     * the prefix is only storage to reclaim. A terminal failure is reported before anything is
+     * promoted, so it has nothing to clean. Idempotent: an empty prefix is not an error.
+     */
+    private void schedulePartialOutputPurge(VideoEntity video) {
+        supersededAssetRepository.saveAndFlush(
+                new SupersededAssetEntity(video.getVideoId(), video.getProcessingVersion(), null, List.of()));
     }
 
     /**
@@ -289,7 +304,9 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             return false;
         }
         video.markFailed("TRANSIENT");
-        appendFailedEvent(repository.saveAndFlush(video));
+        VideoEntity saved = repository.saveAndFlush(video);
+        appendFailedEvent(saved);
+        schedulePartialOutputPurge(saved);
         return true;
     }
 
