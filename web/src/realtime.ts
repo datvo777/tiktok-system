@@ -53,8 +53,6 @@ export interface SourceLike {
   close(): void;
 }
 
-const CLOSED = 2;
-
 export interface ConnectionDeps {
   createSource: (url: string) => SourceLike;
   /** Reload everything a hint could have changed. */
@@ -66,41 +64,133 @@ export interface ConnectionDeps {
   random?: () => number;
 }
 
-const DEBOUNCE_MS = 300;
-const MIN_BACKOFF_MS = 1_000;
-const MAX_BACKOFF_MS = 30_000;
+/** Waits and thresholds, in one place; each is explained where it is used. */
+export const TIMING = {
+  debounceMs: 300,
+  /** The first reconnect after a refusal is spread over this much, not over one second (see afterFailure). */
+  firstWindowMs: 10_000,
+  maxWindowMs: 60_000,
+  minDelayMs: 1_000,
+  /** A connection must hold this long before its failures are forgiven. */
+  stableAfterMs: 30_000,
+  /** The refetch after (re)connecting is put off by up to this much. */
+  refetchJitterMs: 5_000,
+  /** This many failures within the window trips the breaker. */
+  breakerFailures: 5,
+  breakerWindowMs: 120_000,
+  breakerPauseMinMs: 5 * 60_000,
+  breakerPauseMaxMs: 10 * 60_000,
+  /** A tab hidden this long closes its stream; showing it again reconnects within a few seconds. */
+  hiddenAfterMs: 60_000,
+  visibleJitterMs: 3_000,
+} as const;
+
+const CLOSED = 2;
 
 /**
  * One stream, kept open while signed in.
  *
- * <p>EventSource retries by itself only while the connection merely dropped (readyState
- * CONNECTING). When the server refuses it, which is what a 401 (expired or revoked session) or a
- * 503 (instance full) looks like from here, it gives up and goes CLOSED. This takes over from
- * there: confirm the session is still good (a dead one ends the stream for good), then reconnect
- * with growing, jittered delays so a restarted server is not hit by every client at once.
+ * <p>After a restart every client comes back at once, and each connection costs the server database
+ * work. The browser retries by itself while the connection merely dropped (readyState CONNECTING),
+ * using the delay each stream carried in its own random `retry:` field. When the server refuses it
+ * (a 401, or a 503 from the admission gate) EventSource gives up and goes CLOSED, and this takes
+ * over, spreading the crowd rather than marching it back together:
+ *
+ * <ul>
+ *   <li>the first wait after a refusal is drawn from a wide window (10 s), then the window doubles
+ *       up to a minute, with full jitter, so thousands of clients land on thousands of moments;
+ *   <li>the count of failures is only forgiven once a connection has held for 30 s, otherwise a
+ *       server that accepts and then drops would keep every client at the shortest wait;
+ *   <li>five failures in two minutes stop the attempts for five to ten minutes (the polling that
+ *       runs without a stream carries on), which also covers an environment that cannot hold a
+ *       stream open at all;
+ *   <li>the reload after connecting is itself put off by a few random seconds;
+ *   <li>a stream the server closes on purpose says whether to come back (a `bye` event): not when
+ *       another tab pushed this one out, since reconnecting would push that one out in turn.
+ * </ul>
  */
 export class RealtimeConnection {
   private source: SourceLike | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private refetchTimer: ReturnType<typeof setTimeout> | null = null;
+  private stableTimer: ReturnType<typeof setTimeout> | null = null;
+  private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
   private failures = 0;
+  private recentFailures: number[] = [];
   private stopped = false;
+  /** The server said not to reconnect; polling carries on without a stream. */
+  private retired = false;
+  private suspendedByVisibility = false;
 
   constructor(private readonly deps: ConnectionDeps) {}
 
+  private random(): number {
+    return (this.deps.random ?? Math.random)();
+  }
+
   start(): void {
     this.stopped = false;
+    this.retired = false;
     this.open();
   }
 
   stop(): void {
     this.stopped = true;
+    this.closeSource();
+    for (const timer of [
+      this.retryTimer,
+      this.debounceTimer,
+      this.refetchTimer,
+      this.stableTimer,
+      this.hiddenTimer,
+    ]) {
+      if (timer) clearTimeout(timer);
+    }
+    this.retryTimer = this.debounceTimer = this.refetchTimer = this.stableTimer = this.hiddenTimer = null;
+    this.deps.onStatus(false);
+  }
+
+  /** The tab was hidden. A tab nobody is looking at does not need a stream, and each one is a connection. */
+  hidden(): void {
+    if (this.stopped || this.hiddenTimer) return;
+    this.hiddenTimer = setTimeout(() => {
+      this.hiddenTimer = null;
+      this.suspendedByVisibility = true;
+      this.clearRetry();
+      this.closeSource();
+      this.deps.onStatus(false);
+    }, TIMING.hiddenAfterMs);
+  }
+
+  /** The tab is visible again: cancel a pending close, or reconnect a stream that was closed for hiding. */
+  visible(): void {
+    if (this.hiddenTimer) {
+      clearTimeout(this.hiddenTimer);
+      this.hiddenTimer = null;
+    }
+    if (this.stopped || !this.suspendedByVisibility || this.retired) return;
+    this.suspendedByVisibility = false;
+    // Everyone who left a laptop closed over lunch comes back around the same time.
+    this.scheduleOpen(this.random() * TIMING.visibleJitterMs);
+  }
+
+  private closeSource(): void {
     this.source?.close();
     this.source = null;
+  }
+
+  private clearRetry(): void {
     if (this.retryTimer) clearTimeout(this.retryTimer);
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.retryTimer = this.debounceTimer = null;
-    this.deps.onStatus(false);
+    this.retryTimer = null;
+  }
+
+  private scheduleOpen(delayMs: number): void {
+    this.clearRetry();
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (!this.stopped && !this.retired) this.open();
+    }, delayMs);
   }
 
   private open(): void {
@@ -108,11 +198,21 @@ export class RealtimeConnection {
     this.source = source;
 
     source.onopen = () => {
-      this.failures = 0;
       this.deps.onStatus(true);
-      // Anything that happened while there was no stream (a restart, a dropped connection) was not
-      // pushed to us, so reload instead of assuming nothing did.
-      this.deps.invalidate();
+      // Not "failures = 0" yet: only a connection that lasts has earned that.
+      if (this.stableTimer) clearTimeout(this.stableTimer);
+      this.stableTimer = setTimeout(() => {
+        this.stableTimer = null;
+        this.failures = 0;
+        this.recentFailures = [];
+      }, TIMING.stableAfterMs);
+      // Anything that happened while there was no stream was not pushed to us, so reload instead of
+      // assuming nothing did, but not on the same tick as every other client that just reconnected.
+      if (this.refetchTimer) clearTimeout(this.refetchTimer);
+      this.refetchTimer = setTimeout(() => {
+        this.refetchTimer = null;
+        this.deps.invalidate();
+      }, this.random() * TIMING.refetchJitterMs);
     };
 
     source.addEventListener('changed', () => {
@@ -121,18 +221,67 @@ export class RealtimeConnection {
       this.debounceTimer = setTimeout(() => {
         this.debounceTimer = null;
         this.deps.invalidate();
-      }, DEBOUNCE_MS);
+      }, TIMING.debounceMs);
     });
+
+    source.addEventListener('bye', (event) => this.onBye(source, event));
 
     source.onerror = () => {
       this.deps.onStatus(false);
+      if (this.stableTimer) {
+        clearTimeout(this.stableTimer);
+        this.stableTimer = null;
+      }
+      if (this.noteFailure()) {
+        // Too many in a row: stop trying for a while instead of keeping a struggling server busy.
+        this.closeSource();
+        this.scheduleOpen(
+          TIMING.breakerPauseMinMs + this.random() * (TIMING.breakerPauseMaxMs - TIMING.breakerPauseMinMs),
+        );
+        return;
+      }
       if (source.readyState !== CLOSED) {
-        return; // the browser is reconnecting on its own; polling covers the gap
+        return; // the browser is reconnecting on its own, after the delay the server gave it
       }
       source.close();
       if (this.source === source) this.source = null;
       void this.afterRefusal();
     };
+  }
+
+  /** @return true when the breaker has just tripped. */
+  private noteFailure(): boolean {
+    const nowMs = Date.now();
+    this.recentFailures = [...this.recentFailures.filter((t) => nowMs - t < TIMING.breakerWindowMs), nowMs];
+    if (this.recentFailures.length >= TIMING.breakerFailures) {
+      this.recentFailures = [];
+      return true;
+    }
+    return false;
+  }
+
+  private onBye(source: SourceLike, event: unknown): void {
+    let reconnect = true;
+    let afterMs = 0;
+    try {
+      const data = JSON.parse((event as { data?: string }).data ?? '{}') as {
+        reconnect?: boolean;
+        after?: number;
+      };
+      reconnect = data.reconnect !== false;
+      afterMs = typeof data.after === 'number' ? data.after : 0;
+    } catch {
+      // Unreadable: treat it as an ordinary close.
+    }
+    source.close();
+    if (this.source === source) this.source = null;
+    this.deps.onStatus(false);
+    if (!reconnect) {
+      this.retired = true; // polling covers it from here
+      return;
+    }
+    // The server chose a moment for this client; a little more spread on top of it.
+    this.scheduleOpen(afterMs + this.random() * 2_000);
   }
 
   private async afterRefusal(): Promise<void> {
@@ -149,14 +298,9 @@ export class RealtimeConnection {
       return;
     }
     this.failures += 1;
-    const random = this.deps.random ?? Math.random;
-    const ceiling = Math.min(MAX_BACKOFF_MS, MIN_BACKOFF_MS * 2 ** (this.failures - 1));
-    // "Full jitter": anywhere up to the ceiling, with a floor so the first retry is not instant.
-    const delay = Math.max(MIN_BACKOFF_MS, Math.round(random() * ceiling));
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      if (!this.stopped) this.open();
-    }, delay);
+    const window = Math.min(TIMING.maxWindowMs, TIMING.firstWindowMs * 2 ** (this.failures - 1));
+    // Full jitter across the whole window, with a floor so a retry is never immediate.
+    this.scheduleOpen(Math.max(TIMING.minDelayMs, Math.round(this.random() * window)));
   }
 }
 
@@ -196,7 +340,13 @@ export function useRealtime(signedIn: boolean, onSessionLost: () => void): boole
       onStatus: setConnected,
     });
     connection.start();
-    return () => connection.stop();
+    const onVisibility = () => (document.hidden ? connection.hidden() : connection.visible());
+    document.addEventListener('visibilitychange', onVisibility);
+    if (document.hidden) connection.hidden();
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      connection.stop();
+    };
     // onSessionLost is expected to be stable; re-running on its identity would reopen the stream.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn, queryClient]);

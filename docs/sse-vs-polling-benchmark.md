@@ -250,3 +250,43 @@ tests/load/run-events.sh     # event scenarios with fresh follower pairs
 node tests/load/summarize.mjs $BENCH_OUT/results
 ```
 Session cookies are minted once and last 8 hours; re-seed after that.
+
+## Reconnect-storm defences (S4 re-measured after they were built)
+
+The first S4 showed SSE's weak point: restarting the backend with 4,000 connected users sent the CPU to
+6.1 cores and queued 1,101 requests on the database pool, against 1.8 cores and none for polling. The
+defences are in `StreamOpenGate` (server, ahead of authentication) and `RealtimeConnection` (client);
+see the commit that added them. Same test as S4 (4,000 users, restart, 60 s of observation), with a REST
+probe (an account outside the crowd, asking for its inbox every 250 ms) running alongside.
+
+| Variant | Client | Server gate | Back to 90% / 99% | CPU peak | Hikari pending peak | Inbox req/s peak | REST probe p95 / max |
+|---|---|---|---|---|---|---|---|
+| V0 | old (fixed ~3 s retry) | off | 3.2 s / 28.7 s | **6.8 cores** | **497** | **2,317** | 20 ms / **511 ms** |
+| V1 | spread (wide jittered window) | off | 28.7 s / 36.9 s | 1.4 | 0 | 289 | 16 ms / 115 ms |
+| V2 | old | on (200 opens/s, 6 in flight) | 26.6 s / 29.6 s | 1.6 | 0 | 328 | 18 ms / 31 ms |
+| V3 | spread | on | 30.8 s / 39.0 s | 1.9 | 0 | 304 | 14 ms / 116 ms |
+| (polling, from S4) | | | 7.2 s / 8.2 s | 1.8 | 0 | 460 | not measured |
+
+Control: restarting with no clients costs 1.1-1.4 cores, so about 1.2 of every figure above is the JVM
+starting.
+
+What it shows (one run per variant, not repeated):
+
+- **Either layer alone removes the spike.** The client change (V1) and the gate (V2) each bring the peak
+  from 6.8 cores to about 1.5 and the pool queue from 497 to 0, which is polling's level (1.8 cores, 0).
+  They are redundant in this test because the test client cooperates; the gate is what protects against
+  a client that does not (V2 is an old client), and the client change is what keeps refusals from being
+  needed at all (V2 turned away 3,835 opens with a 503 and had 4,000 refused connections during the
+  outage; V3 refused 45).
+- **The price is recovery time**, accepted in advance: 90% of users are back after about 27-31 s rather
+  than 3 s, and 99% after 30-39 s. It is the same effect that makes polling's peak low: spreading.
+  Against the plan's criterion of "95% within 30 s" the variants are borderline (p95 was not measured
+  directly; p90 is 27-31 s).
+- **REST is unharmed in every variant at the 95th percentile**, but without any defence the worst probe
+  request took 511 ms against 31-116 ms with them.
+
+Caveats: the load tool imitates `EventSource` (it honours the `retry:` value the server sends, as the
+spec says a browser does); that has not been confirmed in Chrome, Firefox or Safari. The "failed attempts"
+counted by the tool include the connections reset when the old process shuts down, so the 503 and
+refused counts above are the cleaner measure of refused opens.
+

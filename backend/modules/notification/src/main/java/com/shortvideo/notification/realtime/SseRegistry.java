@@ -97,7 +97,9 @@ public class SseRegistry implements ApplicationListener<ContextClosedEvent> {
         emitter.onCompletion(gone);
         emitter.onTimeout(() -> {
             gone.run();
-            emitter.complete();
+            // The clock ran out, not the session: come straight back, but not all at the same moment.
+            sender.execute(() -> byeAndFinish(connection, "timeout", true, randomBetween(
+                    properties.getReconnectMin(), properties.getReconnectMax())));
         });
         emitter.onError(e -> gone.run());
 
@@ -113,11 +115,17 @@ public class SseRegistry implements ApplicationListener<ContextClosedEvent> {
             open.incrementAndGet();
             return list;
         });
-        evicted.forEach(c -> sender.execute(() -> finish(c)));
+        // Told not to come back: it was pushed out by a newer stream of the same account, and a client
+        // that reconnected would push that one out in turn, forever.
+        evicted.forEach(c -> sender.execute(() -> byeAndFinish(c, "evicted", false, 0)));
         opened.increment();
         // An immediate comment makes the response start now, so the browser fires `open` and
-        // proxies see bytes, rather than both waiting for the first heartbeat.
-        sender.execute(() -> send(connection, SseEmitter.event().comment("connected")));
+        // proxies see bytes, rather than both waiting for the first heartbeat. It also carries this
+        // stream's own reconnect delay (a browser uses the last `retry:` it was given for its automatic
+        // reconnects), random per stream, so even a server that dies without a word does not get its
+        // whole crowd back on the same tick.
+        long reconnectMs = randomBetween(properties.getReconnectMin(), properties.getReconnectMax());
+        sender.execute(() -> send(connection, SseEmitter.event().comment("connected").reconnectTime(reconnectMs)));
         return new Opened.Accepted(emitter);
     }
 
@@ -153,7 +161,8 @@ public class SseRegistry implements ApplicationListener<ContextClosedEvent> {
                 if (!revalidator.isStillEntitled(accountId, connection.tokenIssuedAt())) {
                     revalidationClosed.increment();
                     remove(connection);
-                    sender.execute(() -> finish(connection));
+                    // The account lost its standing: reconnecting would be refused, so say not to.
+                    sender.execute(() -> byeAndFinish(connection, "session", false, 0));
                 }
             }
         });
@@ -170,8 +179,16 @@ public class SseRegistry implements ApplicationListener<ContextClosedEvent> {
         byAccount.values().forEach(all::addAll);
         byAccount.clear();
         open.set(0);
-        all.forEach(this::finish);
+        // Each client is told to come back at a different time within the shutdown window, so the
+        // instance that replaces this one is not met by every client at once.
+        all.forEach(c -> sender.execute(() -> byeAndFinish(
+                c, "shutdown", true, randomBetween(properties.getReconnectMin(), properties.getShutdownReconnectMax()))));
         sender.shutdown();
+        try {
+            sender.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public int openConnections() {
@@ -194,6 +211,26 @@ public class SseRegistry implements ApplicationListener<ContextClosedEvent> {
             finish(connection);
             return false;
         }
+    }
+
+    /**
+     * Ends a stream the server is closing on purpose, saying whether and when to reconnect, so the
+     * client does not have to guess from a bare disconnect (which looks the same as a crash).
+     */
+    private void byeAndFinish(Connection connection, String reason, boolean reconnect, long afterMs) {
+        try {
+            connection.emitter().send(SseEmitter.event().name("bye").data(
+                    "{\"reason\":\"" + reason + "\",\"reconnect\":" + reconnect + ",\"after\":" + afterMs + "}"));
+        } catch (IOException | IllegalStateException e) {
+            log.debug("Could not say goodbye to {}: {}", connection.accountId(), e.toString());
+        }
+        finish(connection);
+    }
+
+    private static long randomBetween(Duration min, Duration max) {
+        long lo = min.toMillis();
+        long hi = Math.max(lo, max.toMillis());
+        return lo == hi ? lo : ThreadLocalRandom.current().nextLong(lo, hi + 1);
     }
 
     private void finish(Connection connection) {

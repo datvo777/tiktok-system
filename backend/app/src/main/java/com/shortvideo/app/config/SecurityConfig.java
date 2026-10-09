@@ -76,7 +76,8 @@ public class SecurityConfig {
             HttpSecurity http,
             JwtAuthenticationFilter jwtFilter,
             @Value("${shortvideo.security.public-api-docs:false}") boolean publicApiDocs,
-            @Value("${shortvideo.metrics.scrape-token:}") String metricsScrapeToken)
+            @Value("${shortvideo.metrics.scrape-token:}") String metricsScrapeToken,
+            org.springframework.beans.factory.ObjectProvider<com.shortvideo.notification.realtime.StreamOpenGate> streamGate)
             throws Exception {
         if (!metricsScrapeToken.isEmpty() && metricsScrapeToken.length() < MIN_SCRAPE_TOKEN_LENGTH) {
             // A short token would be a guessable credential on a route that lists internal metrics.
@@ -186,6 +187,14 @@ public class SecurityConfig {
                                 writeProblem(response, HttpServletResponse.SC_FORBIDDEN,
                                         "Forbidden", "You may not access this resource")))
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
+
+        // First of the three: a refused open must cost nothing, so it is turned away before the JWT
+        // filter does its Redis and PostgreSQL lookups. Absent unless realtime is enabled.
+        com.shortvideo.notification.realtime.StreamOpenGate gate = streamGate.getIfAvailable();
+        if (gate != null) {
+            http.addFilterBefore(
+                    new com.shortvideo.notification.realtime.StreamOpenGateFilter(gate), JwtAuthenticationFilter.class);
+        }
 
         if (!metricsScrapeToken.isEmpty()) {
             // Ahead of the JWT filter, which leaves an already-authenticated request alone.

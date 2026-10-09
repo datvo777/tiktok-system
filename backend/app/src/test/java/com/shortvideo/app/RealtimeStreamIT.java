@@ -132,6 +132,26 @@ class RealtimeStreamIT {
         }
     }
 
+    @Test
+    void eachStreamCarriesItsOwnRandomReconnectDelay() throws Exception {
+        Account a = newAccount();
+        Account b = newAccount();
+        Account c = newAccount();
+        try (Stream sa = open(a); Stream sb = open(b); Stream sc = open(c)) {
+            sa.awaitConnected();
+            sb.awaitConnected();
+            sc.awaitConnected();
+            // The `retry:` line follows the connected comment; give it a moment to be read.
+            await().atMost(Duration.ofSeconds(3)).until(() -> sa.retryMs > 0 && sb.retryMs > 0 && sc.retryMs > 0);
+
+            for (Stream s : List.of(sa, sb, sc)) {
+                assertThat(s.retryMs).isBetween(5_000L, 20_000L);
+            }
+            // Three draws from a 15 s range being identical would be one chance in about 225 million.
+            assertThat(java.util.Set.of(sa.retryMs, sb.retryMs, sc.retryMs)).hasSizeGreaterThan(1);
+        }
+    }
+
     // ---------------------------------------------------------------- limits
 
     @Test
@@ -147,6 +167,9 @@ class RealtimeStreamIT {
             }
 
             assertThat(streams.get(0).awaitClosed()).as("the oldest stream was ended by the server").isTrue();
+            // Told not to come back: a client that reconnected would push another tab out in turn, forever.
+            assertThat(streams.get(0).remaining())
+                    .containsSubsequence("event:bye", "data:{\"reason\":\"evicted\",\"reconnect\":false,\"after\":0}");
             assertThat(registry.openForAccount(a.id)).isEqualTo(3);
             registry.publish(a.id, "X", null, Instant.now());
             for (Stream survivor : streams.subList(1, 4)) {
@@ -216,6 +239,7 @@ class RealtimeStreamIT {
             registry.revalidate();
 
             assertThat(s.awaitClosed()).isTrue();
+            assertThat(s.remaining()).anyMatch(l -> l.startsWith("data:{\"reason\":\"session\",\"reconnect\":false"));
             assertThat(registry.openForAccount(a.id)).isZero();
         }
     }
@@ -282,6 +306,8 @@ class RealtimeStreamIT {
         private final CompletableFuture<Void> finished = new CompletableFuture<>();
         private final CompletableFuture<HttpResponse<java.util.stream.Stream<String>>> response;
         private final HttpClient client;
+        /** The reconnect delay the server put in the stream, if it has. */
+        volatile long retryMs = -1;
 
         Stream(HttpClient client, CompletableFuture<HttpResponse<java.util.stream.Stream<String>>> response) {
             this.client = client;
@@ -289,7 +315,9 @@ class RealtimeStreamIT {
             response.thenAcceptAsync(r -> {
                 try (var body = r.body()) {
                     body.forEach(line -> {
-                        if (!line.isEmpty()) {
+                        if (line.startsWith("retry:")) {
+                            retryMs = Long.parseLong(line.substring("retry:".length()).trim());
+                        } else if (!line.isEmpty()) {
                             lines.add(line);
                         }
                     });
@@ -312,6 +340,11 @@ class RealtimeStreamIT {
             String line = lines.poll(seconds, TimeUnit.SECONDS);
             assertThat(line).as("a line from the stream within %ds", seconds).isNotNull();
             return line;
+        }
+
+        /** Everything the server sent after what was already read, once it has ended the stream. */
+        List<String> remaining() {
+            return new java.util.ArrayList<>(lines);
         }
 
         boolean awaitClosed() {

@@ -17,9 +17,9 @@ public class RealtimeProperties {
     /** Across all accounts; past it the endpoint answers 503 and the client polls instead. */
     private int maxConnections = 5000;
     /** Shorter than the 30 minute token, so a client reconnects with a credential that is still good. */
-    private Duration emitterTimeout = Duration.ofMinutes(25);
+    private Duration emitterTimeout = Duration.ofMinutes(20);
     /** Spreads reconnects: without it every stream opened together would expire together. */
-    private Duration emitterTimeoutJitter = Duration.ofMinutes(1);
+    private Duration emitterTimeoutJitter = Duration.ofMinutes(8);
     /** Keeps the connection alive through proxies and finds sockets that have died. */
     private Duration heartbeatInterval = Duration.ofSeconds(20);
     /** How often each open stream is checked against the account's current standing. */
@@ -31,7 +31,41 @@ public class RealtimeProperties {
      */
     private int maxOpensPerWindow = 30;
     private Duration openWindow = Duration.ofMinutes(1);
+    /**
+     * How many new streams the instance will start authenticating per second, however many accounts
+     * ask. After a restart every client returns at once and each open costs database work, so the
+     * rest are refused immediately, before they can queue for a connection; see {@code StreamOpenGate}.
+     */
+    private int maxOpensPerSecond = 200;
+    /** Opens allowed in a burst above the steady rate. */
+    private int openBurst = 400;
+    /**
+     * Opens in their authentication phase at the same moment. Bounded well under the connection pool,
+     * so a wave of reconnects cannot take every connection from REST and the media gateway.
+     */
+    private int maxConcurrentOpens = 6;
+    /** A refused client is told to come back in 1 s up to this, widening as the refusals pile up. */
+    private Duration retryAfterMax = Duration.ofSeconds(15);
+    /** The wait each stream tells its client to use for an automatic reconnect: random, per stream. */
+    private Duration reconnectMin = Duration.ofSeconds(5);
+    private Duration reconnectMax = Duration.ofSeconds(20);
+    /** On shutdown, how far apart clients are told to reconnect. */
+    private Duration shutdownReconnectMax = Duration.ofSeconds(30);
 
+    public int getMaxOpensPerSecond() { return maxOpensPerSecond; }
+    public void setMaxOpensPerSecond(int v) { this.maxOpensPerSecond = v; }
+    public int getOpenBurst() { return openBurst; }
+    public void setOpenBurst(int v) { this.openBurst = v; }
+    public int getMaxConcurrentOpens() { return maxConcurrentOpens; }
+    public void setMaxConcurrentOpens(int v) { this.maxConcurrentOpens = v; }
+    public Duration getRetryAfterMax() { return retryAfterMax; }
+    public void setRetryAfterMax(Duration v) { this.retryAfterMax = v; }
+    public Duration getReconnectMin() { return reconnectMin; }
+    public void setReconnectMin(Duration v) { this.reconnectMin = v; }
+    public Duration getReconnectMax() { return reconnectMax; }
+    public void setReconnectMax(Duration v) { this.reconnectMax = v; }
+    public Duration getShutdownReconnectMax() { return shutdownReconnectMax; }
+    public void setShutdownReconnectMax(Duration v) { this.shutdownReconnectMax = v; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public int getMaxConnectionsPerAccount() { return maxConnectionsPerAccount; }

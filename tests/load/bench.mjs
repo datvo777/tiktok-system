@@ -43,6 +43,7 @@ const { positionals, values: A } = parseArgs({
     concurrency: { type: 'string', default: '200' },
     ramp: { type: 'string', default: '150' },
     offset: { type: 'string', default: '0' },
+    client: { type: 'string', default: 'spread' },
     accounts: { type: 'string' },
     out: { type: 'string' },
     host: { type: 'string', default: 'localhost' },
@@ -62,6 +63,9 @@ const ROOT = new URL('../../', import.meta.url).pathname;
 const ACCOUNTS = JSON.parse(readFileSync(A.accounts ?? `${process.env.BENCH_OUT}/accounts.json`, 'utf8'));
 const TOKEN = readFileSync(`${ROOT}.env`, 'utf8').match(/^METRICS_SCRAPE_TOKEN=(.+)$/m)[1].trim();
 const INBOX_MS = MODE === 'sse' ? 60_000 : 10_000;
+// 'legacy' reconnects the way the first version of the client did (fixed ~3 s, short backoff after a refusal,
+// instant refetch); 'spread' is web/src/realtime.ts with the reconnect-storm defences.
+const SPREAD = A.client === 'spread';
 const VIDEO_MS = 2_000;
 const now = () => performance.now();
 
@@ -209,7 +213,18 @@ class User {
     }
   }
 
-  // ---- event stream (what web/src/realtime.ts does, with EventSource's own 3 s retry)
+  // ---- event stream (what web/src/realtime.ts does, with EventSource's own automatic retry)
+  retryMs = 3000; // EventSource's default until the server says otherwise
+  failures = 0;
+
+  /** The wait after the server refused the stream: web/src/realtime.ts's full-jitter window. */
+  refusedDelay() {
+    if (!SPREAD) return 5_000 + Math.random() * 25_000;
+    this.failures += 1;
+    const window = Math.min(60_000, 10_000 * 2 ** (this.failures - 1));
+    return Math.max(1_000, Math.random() * window);
+  }
+
   openStream() {
     if (this.stopped) return;
     const start = now();
@@ -219,11 +234,15 @@ class User {
         if (res.statusCode !== 200) {
           res.resume();
           record('stream-open', res.statusCode, now() - start);
-          this.later(() => this.openStream(), 5_000 + Math.random() * 25_000); // refused: back off like realtime.ts
+          this.streamReq = null;
+          this.later(() => this.openStream(), this.refusedDelay());
           return;
         }
         res.setEncoding('utf8');
         let buf = '';
+        let event = '';
+        let reconnect = true;
+        let after = 0;
         res.on('data', (chunk) => {
           buf += chunk;
           let nl;
@@ -234,9 +253,17 @@ class User {
               this.streamOpen = true;
               record('stream-open', 200, now() - start);
               this.connectedAt = now();
-              void this.inbox(); // the app reloads on every open
-            } else if (line.startsWith('event:changed')) {
-              this.hinted(now());
+              // The app reloads on every open; the spread client puts that off by up to 5 s.
+              if (SPREAD) this.later(() => void this.inbox(), Math.random() * 5_000);
+              else void this.inbox();
+              if (SPREAD) this.later(() => { this.failures = 0; }, 30_000); // forgiven only once stable
+            } else if (line.startsWith('retry:')) {
+              if (SPREAD) this.retryMs = Number(line.slice(6)) || this.retryMs;
+            } else if (line.startsWith('event:')) {
+              event = line.slice(6).trim();
+              if (event === 'changed') this.hinted(now());
+            } else if (line.startsWith('data:') && event === 'bye') {
+              try { ({ reconnect, after } = JSON.parse(line.slice(5))); } catch { /* ignore */ }
             }
           }
         });
@@ -244,7 +271,9 @@ class User {
           if (!this.streamOpen && !this.streamReq) return;
           this.streamOpen = false;
           this.streamReq = null;
-          this.later(() => this.openStream(), 3_000 + Math.random() * 300); // EventSource retry
+          if (SPREAD && event === 'bye' && !reconnect) return; // told not to come back
+          const wait = SPREAD && event === 'bye' ? after + Math.random() * 2_000 : this.retryMs + (SPREAD ? 0 : Math.random() * 300);
+          this.later(() => this.openStream(), wait);
         };
         res.on('end', gone);
         res.on('close', gone);
@@ -255,7 +284,8 @@ class User {
       record('stream-open', e.code ?? e.message, now() - start);
       this.streamOpen = false;
       this.streamReq = null;
-      this.later(() => this.openStream(), 3_000 + Math.random() * 300);
+      // A connection error is the browser's own retry, after the delay the server last gave it.
+      this.later(() => this.openStream(), this.retryMs + (SPREAD ? 0 : Math.random() * 300));
     });
   }
 
@@ -491,10 +521,24 @@ async function reconnect() {
     }
   })();
   rec.on = true;
+  // A user who is not part of the crowd and only asks for its inbox, to see what the storm does to REST.
+  const probe = new User(ACCOUNTS.length - 1);
+  const probeLat = []; const probeErr = {};
+  let probing = false;
+  const probeLoop = (async () => {
+    while (sampling) {
+      if (probing) {
+        const r = await probe.req('probe', '/api/v1/notifications');
+        if (r.status === 200) probeLat.push(r.ms); else probeErr[r.status] = (probeErr[r.status] ?? 0) + 1;
+      }
+      await sleep(250);
+    }
+  })();
   await sh(`${ROOT}tests/load/backend.sh stop`);
   const tDown = now();
   await sh(`${ROOT}tests/load/backend.sh start ${MODE}`);
   tUp = now();
+  probing = true;
   // Peak CPU and DB pool use during the minute after the server is back.
   const pid = await backendPid();
   let cpuPrev = await cpuSeconds(pid); let tPrev = now();
@@ -517,10 +561,14 @@ async function reconnect() {
   rec.on = false;
   sampling = false;
   await sampler;
+  await probeLoop;
+  probe.stop();
   const result = {
     scenario: 'reconnect', mode: MODE, users: n, healthyBefore: before, healthyAfter60s: healthy(),
     downtimeS: Math.round((tUp - tDown) / 100) / 10,
     secondsAfterUpToHealthy: recoveredAt,
+    restProbe: { ...dist(probeLat), errors: probeErr },
+    client: A.client,
     post: Object.fromEntries(Object.entries(post).map(([k, v]) => [k, Math.round(v * 100) / 100])),
     client: Object.fromEntries(Object.keys(lat).map((k) => [k, { n: lat[k].length, codes: codes[k] }])),
     timelineEveryS: timeline.filter((_, i) => i % 4 === 0),

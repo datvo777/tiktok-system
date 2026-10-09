@@ -41,6 +41,10 @@ case "${1:-}" in
     # connections each over HTTP/1.1 (the stream, and the keep-alive one for REST). Lifted so the run
     # measures cost; the limit itself is reported as a finding.
     export TOMCAT_MAX_CONNECTIONS=40000 TOMCAT_ACCEPT_COUNT=1000
+    # GATE=off removes the open-rate and concurrent-open limits, to measure what they are worth.
+    if [ "${GATE:-on}" = off ]; then
+      export SHORTVIDEO_REALTIME_MAX_OPENS_PER_SECOND=0 SHORTVIDEO_REALTIME_MAX_CONCURRENT_OPENS=1000
+    fi
     # Same flags for every run. Deliberately no -XX:TieredStopAtLevel=1.
     # Run from a private copy. A jar replaced underneath a running JVM (an IDE build, another `mvn package`)
     # makes it fail on the next class it loads lazily, with NoClassDefFoundError from unrelated places;
