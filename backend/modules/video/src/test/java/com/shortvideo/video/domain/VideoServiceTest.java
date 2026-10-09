@@ -294,4 +294,41 @@ class VideoServiceTest {
                 maxAttempts,
                 java.time.Duration.ofSeconds(30));
     }
+
+    @Test
+    void aStoreThatCannotBeAskedLeavesTheVideoTranscodingAndFailsTheDelivery() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        MinioAssetVerifier verifier = mock(MinioAssetVerifier.class);
+        VideoService service = new VideoService(
+                repository,
+                mock(SupersededAssetJpaRepository.class),
+                outbox,
+                verifier,
+                mock(com.shortvideo.shared.revocation.DurableRevocationWriter.class),
+                mock(com.shortvideo.shared.audit.AdminActionRecorder.class),
+                null,
+                mock(org.springframework.transaction.PlatformTransactionManager.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        when(verifier.verify(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList()))
+                .thenThrow(new VideoExceptions.AssetStoreUnavailable("MinIO down", new RuntimeException()));
+        var result = new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
+                videoId + ":" + version,
+                videoId.toString(),
+                version,
+                "COMPLETED",
+                new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
+                null);
+
+        assertThat(catchThrowable(() -> service.applyMediaResult(result)))
+                .isInstanceOf(VideoExceptions.AssetStoreUnavailable.class);
+
+        // Not failed and not retried as a transcode: nothing was decided, so the delivery is retried.
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        assertThat(video.getTranscodeAttempt()).isEqualTo(1);
+        org.mockito.Mockito.verifyNoInteractions(outbox);
+    }
 }
