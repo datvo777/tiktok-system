@@ -96,6 +96,8 @@ class UploadTranscodeFlowIT {
         registry.add("shortvideo.minio.access-key", () -> "minioadmin");
         registry.add("shortvideo.minio.secret-key", () -> "minioadmin");
         registry.add("shortvideo.minio.bucket", () -> BUCKET);
+        registry.add("shortvideo.lifecycle.transcode-max-attempts", () -> "2");
+        registry.add("shortvideo.lifecycle.transcode-retry-backoff", () -> "300ms");
     }
 
     @BeforeAll
@@ -242,6 +244,52 @@ class UploadTranscodeFlowIT {
 
         ResponseEntity<Map> session = post("/api/v1/videos/" + videoId + "/preview-playback-session", null, auth);
         assertThat(session.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aTransientTranscodeFailureIsRetriedWithTheSameJobUntilTheBudgetIsSpent() throws Exception {
+        register(email, "correct-horse-battery");
+        HttpHeaders auth = bearer((String) login(email, "correct-horse-battery").getBody().get("token"));
+
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), auth);
+        String uploadId = (String) created.getBody().get("uploadId");
+        String videoId = (String) created.getBody().get("videoId");
+        String uploadUrl = (String) created.getBody().get("uploadUrl");
+        postToPresignedForm(uploadUrl, (Map<String, String>) created.getBody().get("formFields"), "x".getBytes(StandardCharsets.UTF_8));
+        post("/api/v1/uploads/" + uploadId + "/complete", null, auth);
+
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
+                        get("/api/v1/videos/" + videoId, auth).getBody().get("processingState"))
+                .isEqualTo("TRANSCODING"));
+
+        publishMediaResult(videoId, 1, "FAILED", null, "TRANSIENT");
+
+        // The same job is dispatched a second time and published once its backoff has passed;
+        // the video is still being worked on, so the uploader is shown no failure.
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            List<Map<String, Object>> dispatches = jdbc.queryForList(
+                    "SELECT payload #>> '{payload,jobId}' AS job_id, published_at FROM platform.outbox_event"
+                            + " WHERE aggregate_id = ? AND event_type = ? ORDER BY aggregate_version",
+                    videoId, EventTypes.MEDIA_JOB_DISPATCHED);
+            assertThat(dispatches).hasSize(2);
+            assertThat(dispatches).extracting(row -> row.get("job_id")).containsOnly(videoId + ":1");
+            assertThat(dispatches.get(1).get("published_at")).isNotNull();
+        });
+        Map<?, ?> retrying = get("/api/v1/videos/" + videoId, auth).getBody();
+        assertThat(retrying.get("processingState")).isEqualTo("TRANSCODING");
+
+        publishMediaResult(videoId, 1, "FAILED", null, "TRANSIENT");
+
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            Map<?, ?> status = get("/api/v1/videos/" + videoId, auth).getBody();
+            assertThat(status.get("processingState")).isEqualTo("FAILED");
+            assertThat(status.get("failureClass")).isEqualTo("TRANSIENT");
+        });
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = ?",
+                        Integer.class, videoId, EventTypes.MEDIA_JOB_DISPATCHED))
+                .isEqualTo(2);
     }
 
     private void stageObject(String objectKey, String content) throws Exception {

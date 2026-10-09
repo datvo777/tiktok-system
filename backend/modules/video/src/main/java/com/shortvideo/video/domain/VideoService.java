@@ -25,6 +25,7 @@ import com.shortvideo.video.api.VideoPlaybackView;
 import com.shortvideo.video.api.VideoSummaryPage;
 import com.shortvideo.video.api.VideoSummaryView;
 import com.shortvideo.video.api.VideoView;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -34,6 +35,8 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -48,6 +51,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "video";
     private static final List<String> DEFAULT_RENDITIONS = List.of("720p");
+    private static final Duration MAX_RETRY_BACKOFF = Duration.ofMinutes(10);
 
     /** Revocation source type for admin lifecycle holds (quarantine/removal — brief section 16). */
     public static final String LIFECYCLE_SOURCE = "LIFECYCLE";
@@ -61,6 +65,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     /** Read-only: used to tell a creator whether their own video is actually published. */
     private final EligibilityDirectory eligibilityDirectory;
     private final TransactionTemplate transactions;
+    private final int transcodeMaxAttempts;
+    private final Duration transcodeRetryBackoff;
 
     public VideoService(
             VideoJpaRepository repository,
@@ -71,6 +77,24 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             AdminActionRecorder auditRecorder,
             EligibilityDirectory eligibilityDirectory,
             PlatformTransactionManager transactionManager) {
+        this(repository, supersededAssetRepository, outboxWriter, assetVerifier, revocationWriter,
+                auditRecorder, eligibilityDirectory, transactionManager, 3, Duration.ofSeconds(30));
+    }
+
+    @Autowired
+    public VideoService(
+            VideoJpaRepository repository,
+            SupersededAssetJpaRepository supersededAssetRepository,
+            OutboxWriter outboxWriter,
+            MinioAssetVerifier assetVerifier,
+            DurableRevocationWriter revocationWriter,
+            AdminActionRecorder auditRecorder,
+            EligibilityDirectory eligibilityDirectory,
+            PlatformTransactionManager transactionManager,
+            @Value("${shortvideo.lifecycle.transcode-max-attempts:3}") int transcodeMaxAttempts,
+            @Value("${shortvideo.lifecycle.transcode-retry-backoff:30s}") Duration transcodeRetryBackoff) {
+        this.transcodeMaxAttempts = transcodeMaxAttempts;
+        this.transcodeRetryBackoff = transcodeRetryBackoff;
         this.repository = repository;
         this.supersededAssetRepository = supersededAssetRepository;
         this.outboxWriter = outboxWriter;
@@ -193,10 +217,57 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             appendReadyEvent(saved);
         } else {
             String failureClass = "COMPLETED".equals(result.outcome()) ? "TRANSIENT" : result.failureClass();
-            video.markFailed(failureClass == null ? "TERMINAL" : failureClass);
+            failureClass = failureClass == null ? "TERMINAL" : failureClass;
+            if ("TRANSIENT".equals(failureClass) && video.getTranscodeAttempt() < transcodeMaxAttempts) {
+                retryTranscode(video);
+                return;
+            }
+            video.markFailed(failureClass);
             VideoEntity saved = repository.saveAndFlush(video);
             appendFailedEvent(saved);
         }
+    }
+
+    /**
+     * A TRANSIENT failure with budget left (brief section 11.1): the video stays TRANSCODING and
+     * the same jobId is dispatched again, so the worker re-derives the same prefixes. The command
+     * is held back by an exponential backoff (base, 2x base, 4x base, capped at ten minutes) through
+     * the outbox's availability time. No {@code video.processing.failed} goes out until the budget
+     * is spent, so the uploader is not told about a failure that is still being retried.
+     */
+    private void retryTranscode(VideoEntity video) {
+        long failedAttempt = video.getTranscodeAttempt();
+        video.retryTranscode();
+        VideoEntity saved = repository.saveAndFlush(video);
+
+        Duration delay = transcodeRetryBackoff.multipliedBy(1L << Math.min(failedAttempt - 1, 20));
+        if (delay.compareTo(MAX_RETRY_BACKOFF) > 0) {
+            delay = MAX_RETRY_BACKOFF;
+        }
+        Instant now = Instant.now();
+        var payload = new MediaEvents.MediaJobCommand(
+                saved.getVideoId() + ":" + saved.getProcessingVersion(),
+                saved.getVideoId().toString(),
+                saved.getProcessingVersion(),
+                saved.getSourceObjectKey(),
+                DEFAULT_RENDITIONS);
+        outboxWriter.append(
+                new EventEnvelope<>(
+                        UUID.randomUUID(),
+                        EventTypes.MEDIA_JOB_DISPATCHED,
+                        1,
+                        AggregateTypes.VIDEO,
+                        saved.getVideoId().toString(),
+                        saved.getAggregateVersion(),
+                        now,
+                        PRODUCER,
+                        MODULE,
+                        MDC.get("correlationId"),
+                        null,
+                        payload),
+                now.plus(delay));
+        log.warn("Transcode of video {} failed transiently (attempt {} of {}); retrying in {}",
+                saved.getVideoId(), failedAttempt, transcodeMaxAttempts, delay);
     }
 
     /**

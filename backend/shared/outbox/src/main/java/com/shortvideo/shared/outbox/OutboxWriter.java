@@ -1,6 +1,7 @@
 package com.shortvideo.shared.outbox;
 
 import com.shortvideo.shared.events.EventEnvelope;
+import java.time.Instant;
 
 /**
  * Inserts an outbox event inside the caller's transaction (brief section 10).
@@ -17,4 +18,10 @@ public interface OutboxWriter {
      *     unique constraint enforcing one canonical event per transition.
      */
     void append(EventEnvelope<?> envelope);
+
+    /**
+     * Same as {@link #append(EventEnvelope)}, but the relay does not publish the event before
+     * {@code availableAt}. This is how a retry gets its backoff without a timer of its own.
+     */
+    void append(EventEnvelope<?> envelope, Instant availableAt);
 }

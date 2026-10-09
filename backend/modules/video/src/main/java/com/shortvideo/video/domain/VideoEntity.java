@@ -55,6 +55,10 @@ public class VideoEntity {
     @Column(name = "failure_class", length = 20)
     private String failureClass;
 
+    /** Which try of the current processingVersion's job is in flight; 1 for the first. */
+    @Column(name = "transcode_attempt", nullable = false)
+    private int transcodeAttempt = 1;
+
     @Column(name = "source_object_key", length = 500)
     private String sourceObjectKey;
 
@@ -104,6 +108,7 @@ public class VideoEntity {
         this.sourceObjectKey = sourceObjectKey;
         this.processingVersion = nextVersion;
         this.processingState = ProcessingState.TRANSCODING;
+        this.transcodeAttempt = 1;
         this.failureClass = null;
         this.updatedAt = Instant.now();
         return nextVersion;
@@ -119,6 +124,16 @@ public class VideoEntity {
         this.segmentCount = segmentCount;
         this.durationSeconds = durationSeconds;
         this.updatedAt = Instant.now();
+    }
+
+    /**
+     * A TRANSIENT failure with budget left: stay TRANSCODING for the same processingVersion and
+     * count the next try. The caller re-dispatches the same jobId (brief section 11.1).
+     */
+    public int retryTranscode() {
+        this.transcodeAttempt++;
+        this.updatedAt = Instant.now();
+        return this.transcodeAttempt;
     }
 
     public void markFailed(String failureClass) {
@@ -215,6 +230,7 @@ public class VideoEntity {
         this.processingVersion = nextVersion;
         this.processingState = ProcessingState.TRANSCODING;
         this.durabilityState = DurabilityState.PENDING;
+        this.transcodeAttempt = 1;
         this.failureClass = null;
         this.updatedAt = Instant.now();
         return nextVersion;
@@ -230,6 +246,7 @@ public class VideoEntity {
     public AssetLifecycleState getAssetLifecycleState() { return assetLifecycleState; }
     public LegalServingState getLegalServingState() { return legalServingState; }
     public String getFailureClass() { return failureClass; }
+    public int getTranscodeAttempt() { return transcodeAttempt; }
     public String getSourceObjectKey() { return sourceObjectKey; }
     public String getMasterPlaylistKey() { return masterPlaylistKey; }
     public List<String> getVariantPlaylists() { return variantPlaylists; }
