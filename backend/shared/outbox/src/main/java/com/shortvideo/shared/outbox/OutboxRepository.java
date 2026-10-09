@@ -82,6 +82,20 @@ public class OutboxRepository {
             WHERE event_id = ANY (?) AND status = 'CLAIMED' AND claim_token = ?
             """;
 
+    /**
+     * A claim whose lease ran out with the attempt budget already spent: the relay claimed this row
+     * that many times and never got as far as recording an outcome, which is what a payload that
+     * kills the relay looks like. {@code recordFailure} cannot catch it because it only runs in a
+     * relay that survived the send.
+     */
+    private static final String BURY_ABANDONED = """
+            UPDATE platform.outbox_event
+            SET status = 'DEAD',
+                last_error = 'relay claimed this event ' || attempt_count || ' times without recording an outcome',
+                claimed_by = NULL, claim_token = NULL, claimed_until = NULL
+            WHERE status = 'CLAIMED' AND claimed_until < now() AND attempt_count >= ?
+            """;
+
     private static final RowMapper<OutboxRecord> MAPPER = (rs, i) -> new OutboxRecord(
             rs.getObject("event_id", UUID.class),
             rs.getString("aggregate_type"),
@@ -147,6 +161,17 @@ public class OutboxRepository {
             statement.setObject(3, claimToken);
             return statement;
         });
+    }
+
+    /**
+     * Moves events to DEAD that the relay keeps claiming but never settles (see {@link #BURY_ABANDONED}).
+     * Run before each claim, so such a row is stopped rather than claimed once more.
+     *
+     * @return how many rows were buried
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int buryAbandoned(int maxAttempts) {
+        return jdbc.update(BURY_ABANDONED, maxAttempts);
     }
 
     /** Events the relay gave up on; served by the partial dead index. */

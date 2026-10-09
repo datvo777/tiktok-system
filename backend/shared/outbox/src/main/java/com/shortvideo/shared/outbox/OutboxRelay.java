@@ -97,12 +97,32 @@ public class OutboxRelay {
 
     @Scheduled(fixedDelayString = "${shortvideo.outbox.poll-interval:500ms}")
     public void drain() {
+        buryAbandoned();
         // A full batch means there is more behind it: carry straight on instead of idling for the
         // poll interval, which would cap throughput at one batch per interval.
         for (int i = 0; i < MAX_BATCHES_PER_RUN; i++) {
             if (drainOnce() < properties.getBatchSize()) {
                 return;
             }
+        }
+    }
+
+    /**
+     * A row left CLAIMED by a relay that died mid-send is reclaimed after its lease, counting an
+     * attempt each time. If every one of those attempts killed the relay, nothing ever reaches
+     * {@link #recordFailure}, so the budget is enforced here instead.
+     */
+    private void buryAbandoned() {
+        try {
+            int buried = repository.buryAbandoned(properties.getMaxAttempts());
+            if (buried > 0) {
+                dead.increment(buried);
+                log.error("{} outbox event(s) were claimed {} times without the relay recording an outcome and were "
+                        + "moved to DEAD; a payload that crashes the relay is the usual cause",
+                        buried, properties.getMaxAttempts());
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not check for abandoned outbox claims; will retry on next poll", e);
         }
     }
 

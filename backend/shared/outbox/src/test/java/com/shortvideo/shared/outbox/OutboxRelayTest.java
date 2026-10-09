@@ -198,4 +198,27 @@ class OutboxRelayTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("lease");
     }
+
+    @Test
+    void eventsTheRelayKeepsClaimingWithoutSettlingAreBuriedBeforeTheNextClaim() {
+        claims();
+        when(repository.buryAbandoned(properties.getMaxAttempts())).thenReturn(2);
+
+        relay.drain();
+
+        var order = org.mockito.Mockito.inOrder(repository);
+        order.verify(repository).buryAbandoned(properties.getMaxAttempts());
+        order.verify(repository).claimBatch(anyString(), any(), anyInt(), anyLong());
+        assertThat(meters.get("outbox.events.dead").counter().count()).isEqualTo(2.0);
+    }
+
+    @Test
+    void aFailureToBuryDoesNotStopTheRelayFromPublishing() {
+        claims();
+        when(repository.buryAbandoned(anyInt())).thenThrow(new IllegalStateException("db down"));
+
+        relay.drain();
+
+        verify(repository).claimBatch(anyString(), any(), anyInt(), anyLong());
+    }
 }
