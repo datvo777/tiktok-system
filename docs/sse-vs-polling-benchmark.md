@@ -466,3 +466,34 @@ Reading criterion (d) with this: REST measured by an outside user and HLS stay w
 The earlier miss was the crowd's own inbox p95 as the load generator saw it (24 ms against 15-17 ms),
 which includes the generator holding 4,000-8,000 open streams in one process; that gap is real in the
 numbers but is not shown to reach a user outside the crowd or the gateway.
+
+## Real browser behind nginx (2026-10-10)
+
+Chromium in the Claude desktop app's browser pane, the built web bundle served by `nginx:latest` in
+Docker (`proxy_buffering` left at its default **on**, `proxy_read_timeout` at 60 s, so the stream works
+only if the backend's `X-Accel-Buffering: no` is honoured), the backend from the jar in SSE mode, a scratch
+account signed in through the UI. Safari and Firefox were not available; this is one engine.
+
+| Check | Result |
+|---|---|
+| Stream opens through the proxy, response begins at once | yes; `open` fires immediately |
+| `ping` arrives on schedule with buffering on | yes, every 20 s (10, 30, 50, 70 s ...) |
+| Comments (`connected`) invisible to the page, `ping` visible | confirmed: only named events reach listeners |
+| Hint reaches the page and the app refetches | `changed {"type":"NEW_FOLLOWER"}` seen 1-5 s after the follow (outbox, Kafka); inbox refetched about 300 ms later (the debounce) |
+| Tab hidden for 60 s | the app closed its stream (server connection count dropped); showing it again reopened it within the 3 s jitter |
+| Backend shut down with a stream open | `bye {"reason":"shutdown","reconnect":true,"after":13813}` delivered before the close; the page stayed signed in through 502s from nginx |
+| Reconnect while the backend was still down | `EventSource` went CLOSED on the 502 (as the client assumed); the app retried with jitter (3 refusals in 4 s, then 36 s later success) and never showed the sign-in prompt; it was back 31 s after the backend was |
+| Half-open connection (`docker pause` on nginx, no FIN) | the silence watchdog fired and the app opened a new stream as soon as the network answered; server connection count returned to 1, nothing stuck |
+
+Two defects found only here, both fixed:
+
+- **The `?realtime=on` override was lost after signing in.** The app rewrites the URL (`?sheet=sign-in`),
+  and `realtimeEnabled()` read the query string when the hook ran, so the stream stayed off until a reload.
+  The query string is now captured once at load. (Builds that set `VITE_REALTIME=true` were not affected.)
+- **A half-open network stalled the reconnect.** After a refusal the client asks `/me` before retrying,
+  and `fetch` has no timeout, so the retry waited for the network to return. It now gives `/me` 10 s and
+  treats no answer as "could not tell" (retry, do not sign out).
+
+Not covered: Safari and Firefox (their `retry:` and CLOSED-on-502 behaviour), a proxy with HTTP/2 or TLS,
+real network latency, and more than one tab per user. The 31 s recovery with one client is the jitter
+window working as designed, not a measurement of a crowd.

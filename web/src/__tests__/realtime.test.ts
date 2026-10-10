@@ -164,6 +164,19 @@ describe('RealtimeConnection', () => {
     expect(sources).toHaveLength(1);
   });
 
+  it('does not wait forever for /me when the network never answers', async () => {
+    sessionIsValid.mockReturnValue(new Promise(() => {})); // a half-open network: no answer, no error
+    connection.start();
+    random = 0;
+
+    sources[0]!.refuse();
+    await vi.advanceTimersByTimeAsync(TIMING.sessionCheckMs);
+    await vi.advanceTimersByTimeAsync(TIMING.minDelayMs);
+
+    expect(onSessionLost).not.toHaveBeenCalled();
+    expect(sources).toHaveLength(2);
+  });
+
   it('draws the first reconnect from a wide window, so a crowd is spread rather than marched back', async () => {
     connection.start();
     random = 1; // the far end of the window

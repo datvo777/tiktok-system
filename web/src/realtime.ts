@@ -22,11 +22,18 @@ export function inboxPollMs(streamConnected: boolean): number {
 }
 
 /**
+ * The query string as it was when the page loaded. The app rewrites the URL as it moves around (opening
+ * the sign-in sheet replaces `?realtime=on` with `?sheet=sign-in`), so reading it later, when the user
+ * has signed in, found the override gone and left the stream off until the next reload.
+ */
+const INITIAL_SEARCH = typeof window === 'undefined' ? '' : window.location.search;
+
+/**
  * Whether to use the stream. Off by default (the server side is too); `?realtime=on|off` in the
  * URL overrides the build setting so the same build can be run both ways for comparison.
  */
 export function realtimeEnabled(
-  search: string = typeof window === 'undefined' ? '' : window.location.search,
+  search: string = INITIAL_SEARCH,
   buildFlag: string | undefined = import.meta.env.VITE_REALTIME,
 ): boolean {
   const override = new URLSearchParams(search).get('realtime');
@@ -83,6 +90,11 @@ export const TIMING = {
   /** A tab hidden this long closes its stream; showing it again reconnects within a few seconds. */
   hiddenAfterMs: 60_000,
   visibleJitterMs: 3_000,
+  /**
+   * How long to wait for `/me` after a refusal. A half-open network never answers, and fetch has no
+   * timeout of its own, so without this the reconnect waited for the network to come back.
+   */
+  sessionCheckMs: 10_000,
   /**
    * A stream that has said nothing for this long is treated as dead. The server pings every 20 s
    * (shortvideo.realtime.heartbeat-interval), so this tolerates two missed pings; keep it above
@@ -331,10 +343,19 @@ export class RealtimeConnection {
   private async afterRefusal(): Promise<void> {
     if (this.stopped) return;
     let valid = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      valid = await this.deps.sessionIsValid();
+      // No answer in time is "could not tell", the same as an error: retry, do not sign out.
+      valid = await Promise.race([
+        this.deps.sessionIsValid(),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), TIMING.sessionCheckMs);
+        }),
+      ]);
     } catch {
       // Could not tell (network down, server restarting): treat it as a reason to retry, not to sign out.
+    } finally {
+      if (timer) clearTimeout(timer);
     }
     if (this.stopped) return;
     if (!valid) {
