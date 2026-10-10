@@ -44,6 +44,13 @@ const { positionals, values: A } = parseArgs({
     ramp: { type: 'string', default: '150' },
     offset: { type: 'string', default: '0' },
     client: { type: 'string', default: 'spread' },
+    // Ways to spend less on a stream (see docs/sse-vs-polling-benchmark.md, "Making SSE cheaper"):
+    //  --streamFor waiting   only users waiting on an upload hold a stream; the others keep polling
+    //  --videoMs 15000       how often a waiting user polls its video while its stream is up
+    //  --idleInboxMs 10000   inbox cadence of users without a stream
+    streamFor: { type: 'string', default: 'all' },
+    videoMs: { type: 'string', default: '2000' },
+    idleInboxMs: { type: 'string', default: '10000' },
     accounts: { type: 'string' },
     out: { type: 'string' },
     host: { type: 'string', default: 'localhost' },
@@ -166,6 +173,8 @@ class User {
     this.streamOpen = false;
     this.lastInboxOk = 0;
     this.watch = null; // {sentAt, onHint, onNoticed} while an event is awaited
+    this.streams = false; // holds an event stream
+    this.waiting = false;
   }
 
   later(fn, ms) {
@@ -203,13 +212,18 @@ class User {
   }
 
   startPolling(waiting) {
-    // Page load: an immediate inbox fetch, then the steady cadence.
-    const tick = () => { void this.inbox(); this.later(tick, INBOX_MS); };
+    // Page load: an immediate inbox fetch, then the steady cadence. With a stream up the inbox is only a
+    // safety net (60 s); without one it is the way the user hears about anything (10 s by default).
+    const inboxMs = this.streams ? 60_000 : MODE === 'sse' ? Number(A.idleInboxMs) : INBOX_MS;
+    const tick = () => { void this.inbox(); this.later(tick, inboxMs); };
     void this.inbox();
-    this.later(tick, INBOX_MS);
+    this.later(tick, inboxMs);
+    this.waiting = waiting;
     if (waiting && this.videoId) {
-      const vtick = () => { void this.req('video', `/api/v1/videos/${this.videoId}`); this.later(vtick, VIDEO_MS); };
-      this.later(vtick, Math.random() * VIDEO_MS);
+      // A hint already announces READY or FAILED, so with a stream up the poll is a safety net too.
+      const videoMs = this.streams ? Number(A.videoMs) : VIDEO_MS;
+      const vtick = () => { void this.req('video', `/api/v1/videos/${this.videoId}`); this.later(vtick, videoMs); };
+      this.later(vtick, Math.random() * videoMs);
     }
   }
 
@@ -312,8 +326,9 @@ async function startUsers(n, waitingFrac) {
   for (let i = 0; i < n; i++) {
     const u = new User(i);
     users.push(u);
+    u.streams = MODE === 'sse' && (A.streamFor === 'all' || i < waitingN);
     u.startPolling(i < waitingN);
-    if (MODE === 'sse') u.openStream();
+    if (u.streams) u.openStream();
     if (i % 10 === 9) await sleep(gap * 10);
   }
   return users;
@@ -371,8 +386,15 @@ async function steady() {
   const samples = await sampleDuring(Number(A.window) * 1000);
   rec.on = false;
   const b = await snapshot();
+  // What the heap holds once the garbage is gone: `heapUsedMb` above includes whatever has not been
+  // collected yet, which is lower the more often a collection happened to run and so says little.
+  await sh(`jcmd ${b.pid} GC.run`);
+  await sleep(2000);
+  const afterGc = await scrape();
   const result = {
     scenario: 'steady', mode: MODE, users: n, waitingFraction: Number(A.waiting), warmupS: Number(A.warmup),
+    heapAfterGcMb: Math.round(heapUsed(afterGc) / 1048576),
+    rssAfterGcMb: Math.round(await rssMb(b.pid)),
     server: delta(a, b, URIS),
     samples,
     realtime: {

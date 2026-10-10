@@ -13,7 +13,8 @@ import {
   type VideoSummary,
 } from './api';
 import { navigate, videoPath } from './router';
-import { LIST_POLL_MS, hasVideoInFlight, statusBadge } from './videoStatus';
+import { useRealtimeConnected } from './realtime';
+import { hasVideoInFlight, listPollMs, statusBadge } from './videoStatus';
 import { VideoThumb } from './SearchPanel';
 import { formatCount, relativeTime } from './ui';
 
@@ -24,13 +25,14 @@ import { formatCount, relativeTime } from './ui';
  */
 export function MyVideos() {
   const [page, setPage] = useState(0);
+  const streamConnected = useRealtimeConnected();
 
   const list = useQuery({
     queryKey: ['myVideos', page],
     queryFn: () => getMyVideos(page),
     // Someone who closed the upload sheet mid-transcode lands here, and a snapshot taken at load
     // would show "Transcoding" until they happened to refocus the tab.
-    refetchInterval: (query) => (query.state.data && hasVideoInFlight(query.state.data.items) ? LIST_POLL_MS : false),
+    refetchInterval: (query) => (query.state.data && hasVideoInFlight(query.state.data.items) ? listPollMs(streamConnected) : false),
   });
 
   if (list.isPending) {

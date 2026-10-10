@@ -66,6 +66,13 @@ server:
     # that someone has to be able to find and change. accept-count is the queue behind it.
     max-connections: ${TOMCAT_MAX_CONNECTIONS:8192}
     accept-count: ${TOMCAT_ACCEPT_COUNT:100}
+    # How long an idle keep-alive connection is held. Unset keeps Tomcat's default (60 s). With the
+    # realtime stream on, every user holds one connection for the stream and, by default, a second idle
+    # one for REST that is used once a minute; closing that after a few seconds took open descriptors at
+    # 4,000 users from 8,187 to 5,352 (see docs/sse-vs-polling-benchmark.md). Only for browsers talking
+    # to Tomcat directly: behind a reverse proxy, keep this longer than the proxy's upstream keepalive
+    # timeout, or the proxy will reuse connections Tomcat has just closed and answer 502.
+    keep-alive-timeout: ${TOMCAT_KEEP_ALIVE_TIMEOUT:}
   error:
     include-message: never
     include-stacktrace: never

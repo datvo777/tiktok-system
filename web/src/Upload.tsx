@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Hls from 'hls.js';
 import { useEffect, useRef, useState } from 'react';
+import { useRealtimeConnected } from './realtime';
 import { pollDelayMs } from './videoStatus';
 import { CheckIcon, FlagIcon, PlayIcon, UploadCloudIcon } from './icons';
 import {
@@ -89,6 +90,7 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
    */
   const [stored, setStored] = useState<{ uploadId: string; videoId: string } | null>(null);
   const queryClient = useQueryClient();
+  const streamConnected = useRealtimeConnected();
 
   const upload = useMutation({
     mutationFn: async ({ selected, title, description }: { selected: File; title: string; description: string }) => {
@@ -173,7 +175,7 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
       const data = query.state.data;
       if (!data || data.processingState === 'FAILED') return false;
       if (data.processingState === 'READY') return POST_READY_POLL_MS;
-      return pollDelayMs(data.pollAfterMs, Date.now() - startedAt);
+      return pollDelayMs(data.pollAfterMs, Date.now() - startedAt, streamConnected);
     },
   });
 

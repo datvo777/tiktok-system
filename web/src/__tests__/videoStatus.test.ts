@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VideoSummary } from '../api';
-import { hasVideoInFlight, pollDelayMs, statusBadge } from '../videoStatus';
+import { SAFETY_NET_POLL_MS, hasVideoInFlight, listPollMs, pollDelayMs, statusBadge } from '../videoStatus';
 
 const NOW = Date.parse('2026-10-08T12:00:00Z');
 
@@ -66,5 +66,18 @@ describe('pollDelayMs', () => {
     expect(pollDelayMs(2000, 90_000)).toBe(4000);
     expect(pollDelayMs(2000, 5 * 60_000)).toBe(10_000);
     expect(pollDelayMs(8000, 5 * 60_000)).toBe(10_000);
+  });
+});
+
+describe('with the realtime stream up', () => {
+  it('relaxes the polls to a safety net, because a hint announces the change', () => {
+    expect(pollDelayMs(2000, 5_000, true)).toBe(SAFETY_NET_POLL_MS);
+    expect(pollDelayMs(2000, 5 * 60_000, true)).toBe(SAFETY_NET_POLL_MS);
+    expect(listPollMs(true)).toBe(SAFETY_NET_POLL_MS);
+  });
+
+  it('is unchanged without it', () => {
+    expect(pollDelayMs(2000, 5_000, false)).toBe(2000);
+    expect(listPollMs(false)).toBeLessThan(SAFETY_NET_POLL_MS);
   });
 });

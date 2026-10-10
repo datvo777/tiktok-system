@@ -290,3 +290,61 @@ spec says a browser does); that has not been confirmed in Chrome, Firefox or Saf
 counted by the tool include the connections reset when the old process shuts down, so the 503 and
 refused counts above are the cleaner measure of refused opens.
 
+## Making SSE cheaper (resource cost re-measured with candidate fixes)
+
+The first comparison put SSE's price at twice the connections and descriptors, 25-35% more resident
+memory, and a Tomcat connection cap (8,192) reached at about 4,000 users. Candidates, measured at 4,000
+signed-in users of whom 10% wait on an upload, 90 s windows, backend from the jar:
+
+- **P** polling only. **S0** stream for everyone as first built. **S1** S0 with Tomcat's idle keep-alive
+  closed after 5 s. **S2** S1 with the status polls relaxed from 2 s to 15 s while the stream is up (a
+  hint already announces READY or FAILED, so the poll is only a safety net). **D** S2 but only users
+  waiting on an upload hold a stream; the rest poll the inbox every 10 s. **D2** D with the rest at 30 s.
+
+First pass (2 reps each, median; req/s is the server's own count):
+
+| | req/s | of which inbox / video | Backend CPU | Open files | Streams |
+|---|---|---|---|---|---|
+| P | 600 | 400 / 200 | 0.57 | 4,196 | 0 |
+| S0 | 289 | 89 / 200 | 0.42 | 8,187 | 4,000 |
+| S1 | 289 | 89 / 200 | 0.42 | 5,352 | 3,999 |
+| S2 | **116** | 89 / 27 | **0.26** | 5,142 | 4,000 |
+| D | 396 | 369 / 27 | 0.45 | 2,887 | 400 |
+
+Second pass (1 rep, with a forced GC before reading the heap, which the first pass lacked):
+
+| | req/s | CPU | Open files | Live heap after GC | Inbox p95 / video p95 |
+|---|---|---|---|---|---|
+| P | 600 | 0.57 | 4,189 | 436 MB | 13 / 10 ms |
+| S1 | 289 | 0.40 | 5,327 | 682 MB | 17 / 12 ms |
+| S2 | 116 | 0.26 | 5,162 | 605 MB | 22 / 14 ms |
+| D | 396 | 0.49 | 2,971 | 349 MB | 11 / 9 ms |
+| D2 | 156 | 0.33 | 1,494 | 173 MB | 16 / 12 ms |
+
+What it shows (heap figures carry roughly +-150 MB of noise from a single run; the rest is stable):
+
+- **Closing the idle keep-alive connection (S0 -> S1)** takes descriptors at 4,000 users from 8,187 to
+  5,352 (-35%) at no CPU cost. An earlier run without waiting users saw resident memory fall 20% too;
+  here it did not, so treat the memory effect as unproven.
+- **Relaxing the status polls while the stream is up (S1 -> S2)** is the big one: 200 of the 289 req/s
+  were status polls. Total requests fall 80% and backend CPU 54% below polling (0.26 vs 0.57 cores).
+- **Stream only for those waiting (D, D2)** gives the fewest connections and the smallest heap, but the
+  others learn about likes, comments and follows only by polling (10 s or 30 s); at 30 s that is three
+  times slower than polling is today. It trades the user-visible benefit of SSE away for resources.
+- Live heap for a stream is about 45-60 KB (S2 minus P, 4,000 streams), well under the 125-150 KB per
+  user measured before the keep-alive change.
+
+Chosen: **S2**. It has the lowest request rate and CPU of everything tried, keeps notifications near
+instant for everyone, and costs 23% more descriptors than polling instead of 95% more. It is also the
+smallest change. D remains the lever to pull if one instance must hold more than about 6,000 signed-in
+users: it needs the client to know when a user is waiting, which is more logic than this was worth.
+
+Built: `server.tomcat.keep-alive-timeout` (`TOMCAT_KEEP_ALIVE_TIMEOUT`, unset by default; set it to `5s`
+only when browsers reach Tomcat directly, because behind a proxy a value shorter than the proxy's
+upstream keepalive makes it reuse connections Tomcat just closed), and the status and list polls now
+relax to a 15 s safety net whenever the stream is connected. A tab hidden for 60 s already closes its
+stream, so in real use fewer than all signed-in users hold one.
+
+Not measured: HTTP/2 through a reverse proxy (one browser connection for stream and REST), one stream
+per browser rather than per tab, and narrower Tomcat buffers.
+
