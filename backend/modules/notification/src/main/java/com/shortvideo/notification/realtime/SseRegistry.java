@@ -148,9 +148,15 @@ public class SseRegistry implements ApplicationListener<ContextClosedEvent> {
         }
     }
 
+    /**
+     * A named event rather than a comment: a browser's EventSource never surfaces comments, so the
+     * client could not tell a quiet stream from a socket that died without a FIN (a NAT that dropped
+     * the mapping, a laptop that slept). The client's watchdog is sized to a few of these.
+     */
     @Scheduled(fixedDelayString = "${shortvideo.realtime.heartbeat-interval:20s}")
     public void heartbeat() {
-        byAccount.values().forEach(list -> list.forEach(c -> sender.execute(() -> send(c, SseEmitter.event().comment("hb")))));
+        byAccount.values().forEach(list -> list.forEach(
+                c -> sender.execute(() -> send(c, SseEmitter.event().name("ping").data("{}")))));
     }
 
     /** Closes the streams of accounts that have been suspended or have changed their password. */

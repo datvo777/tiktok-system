@@ -41,6 +41,16 @@ const { positionals, values: A } = parseArgs({
     spacing: { type: 'string', default: '250' },
     cycles: { type: 'string', default: '100000' },
     concurrency: { type: 'string', default: '200' },
+    //  --rate 120   leak churn: opens per second, kept under the stream-open gate (200/s) so the run
+    //               measures cleanup and not the gate's refusals. 0 = as fast as possible.
+    rate: { type: 'string', default: '0' },
+    //  --holds 3000,3000,3000   leak: the sizes of the hold/release rounds (identical rounds show a leak as growth)
+    holds: { type: 'string', default: '1000,3000,6000' },
+    //  --hls 30 --hlsVideo video.json   steady: that many viewers fetching a published video's segment in a
+    //               loop through the media gateway, plus a REST probe, alongside the crowd (S5)
+    hls: { type: 'string', default: '0' },
+    hlsVideo: { type: 'string' },
+    hlsPauseMs: { type: 'string', default: '100' },
     ramp: { type: 'string', default: '150' },
     offset: { type: 'string', default: '0' },
     client: { type: 'string', default: 'spread' },
@@ -377,14 +387,66 @@ async function sampleDuring(ms, everyMs = 5000) {
   return out;
 }
 
+/**
+ * S5: viewers fetching HLS segments in a loop (much tighter than a real player, which asks once per
+ * segment duration) and a user outside the crowd asking for its inbox, so that what the crowd does to
+ * the gateway and to REST shows up in 'hls' and 'probe'.
+ */
+function startHls(count, videoFile) {
+  const { videoId, cookie } = JSON.parse(readFileSync(videoFile, 'utf8'));
+  const state = { stop: false, cookie: null };
+  const agent = new http.Agent({ keepAlive: true, maxSockets: count + 4 });
+  const get = (path, headers) => new Promise((resolve) => {
+    const t = now();
+    const r = http.get({ host: '127.0.0.1', port: PORT, path, agent, headers }, (res) => {
+      let bytes = 0; res.on('data', (c) => { bytes += c.length; });
+      res.on('end', () => resolve({ status: res.statusCode, ms: now() - t, bytes, headers: res.headers }));
+      res.on('error', () => resolve({ status: 0, ms: now() - t, bytes }));
+    });
+    r.on('error', () => resolve({ status: 0, ms: now() - t, bytes: 0 }));
+  });
+  const refresh = async () => {
+    const t = await new Promise((resolve) => {
+      const r = http.request({ host: '127.0.0.1', port: PORT, method: 'POST', path: `/api/v1/videos/${videoId}/public-playback-session`, headers: { Cookie: cookie } }, (res) => {
+        res.resume(); res.on('end', () => resolve((res.headers['set-cookie'] ?? []).find((c) => c.startsWith('sv_playback=')).split(';')[0]));
+      });
+      r.end();
+    });
+    state.cookie = `${cookie}; ${t}`;
+  };
+  const loops = (async () => {
+    await refresh();
+    const renew = setInterval(() => refresh(), 120_000);
+    const workers = Array.from({ length: count }, async () => {
+      while (!state.stop) {
+        const r = await get(`/media/videos/${videoId}/1/low/segment_000.ts`, { Cookie: state.cookie });
+        record('hls', r.status, r.ms);
+        await sleep(Number(A.hlsPauseMs));
+      }
+    });
+    await Promise.all(workers);
+    clearInterval(renew);
+  })();
+  const probe = new User(ACCOUNTS.length - 1);
+  const probeLoop = (async () => {
+    while (!state.stop) {
+      await probe.req('probe', '/api/v1/notifications');
+      await sleep(250);
+    }
+  })();
+  return { stop: async () => { state.stop = true; await Promise.all([loops, probeLoop]); agent.destroy(); } };
+}
+
 async function steady() {
   const n = Number(A.users);
   const users = await startUsers(n, Number(A.waiting));
   await sleep(Number(A.warmup) * 1000);
+  const hls = Number(A.hls) > 0 ? startHls(Number(A.hls), A.hlsVideo) : null;
   const a = await snapshot();
   rec.on = true;
   const samples = await sampleDuring(Number(A.window) * 1000);
   rec.on = false;
+  await hls?.stop();
   const b = await snapshot();
   // What the heap holds once the garbage is gone: `heapUsedMb` above includes whatever has not been
   // collected yet, which is lower the more often a collection happened to run and so says little.
@@ -611,11 +673,19 @@ async function leak() {
     const m = await scrape();
     return { label, rssMb: Math.round(await rssMb(pid)), heapMb: Math.round(heapUsed(m) / 1048576 * 10) / 10, connections: sum(m, 'realtime_connections'), threads: sum(m, 'jvm_threads_live_threads'), files: sum(m, 'process_files_open_files') };
   };
-  const report = { scenario: 'leak', cycles, concurrency: conc, steps: [] };
+  const rate = Number(A.rate);
+  // The classes holding the most live heap, after a GC: what a leak would show up as growth in.
+  const histogram = async () => {
+    await gc();
+    const out = await sh(`jcmd ${pid} GC.class_histogram | head -22 | tail -20`);
+    return out.trim().split('\n').map((l) => l.trim().split(/\s+/)).map(([, , bytes, name]) => ({ name, mb: Math.round(Number(bytes) / 1048576 * 10) / 10 }));
+  };
+  const report = { scenario: 'leak', cycles, concurrency: conc, rate, steps: [] };
   report.steps.push(await mem('baseline'));
+  report.histogramBefore = await histogram();
 
   // Per-connection cost: hold K streams, force a GC, compare against the baseline.
-  for (const hold of [1000, 3000, 6000]) {
+  for (const hold of A.holds.split(',').map(Number)) {
     const holders = [];
     const target = hold;
     for (let i = 0; i < target; i++) {
@@ -631,21 +701,25 @@ async function leak() {
     step.open = holders.filter((u) => u.streamOpen).length;
     report.steps.push(step);
     holders.forEach((u) => u.stop());
-    await sleep(25_000); // the server finds out at its next heartbeat
+    await sleep(60_000); // the server finds out at its next heartbeat (20 s), and closing thousands takes a while
     report.steps.push(await mem(`released ${hold}`));
   }
 
   // Churn: open, read the first line, drop; many times.
-  let done = 0; let failed = 0; let peak = 0;
+  let done = 0; let failed = 0; let peak = 0; const statuses = {};
   const t0 = now();
   const worker = async (w) => {
     while (true) {
       const i = done++;
       if (i >= cycles) return;
+      if (rate > 0) { // open i is due at i / rate seconds after the start
+        const due = t0 + (i / rate) * 1000;
+        if (due > now()) await sleep(due - now());
+      }
       const acct = ACCOUNTS[(w * 31 + i) % ACCOUNTS.length];
       await new Promise((resolve) => {
         const r = http.get({ host: HOSTS[(w + i) % HOSTS.length], port: PORT, path: '/api/v1/events/stream', headers: { Cookie: acct.cookie, Accept: 'text/event-stream' }, agent: false, timeout: 15_000 }, (res) => {
-          if (res.statusCode !== 200) { failed++; res.resume(); res.on('end', resolve); return; }
+          if (res.statusCode !== 200) { failed++; statuses[res.statusCode] = (statuses[res.statusCode] ?? 0) + 1; res.resume(); res.on('end', resolve); return; }
           res.once('data', () => { res.destroy(); resolve(); });
         });
         r.on('timeout', () => r.destroy(new Error('timeout')));
@@ -656,9 +730,10 @@ async function leak() {
   const monitor = (async () => { while (done < cycles) { await sleep(5000); try { peak = Math.max(peak, sum(await scrape(), 'realtime_connections')); } catch { /* ignore */ } } })();
   await Promise.all(Array.from({ length: conc }, (_, w) => worker(w)));
   await monitor;
-  report.churn = { seconds: Math.round((now() - t0) / 1000), failed, peakConnections: peak };
-  await sleep(30_000);
+  report.churn = { seconds: Math.round((now() - t0) / 1000), failed, refusedByStatus: statuses, peakConnections: peak };
+  await sleep(60_000);
   report.steps.push(await mem('after churn'));
+  report.histogramAfter = await histogram();
   return report;
 }
 

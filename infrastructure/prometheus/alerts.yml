@@ -3,6 +3,17 @@
 groups:
   - name: short-video-backend
     rules:
+      - alert: BackendDown
+        # Every other rule here reads the backend's own metrics, so a dead or unscrapable backend (a
+        # wrong or rejected METRICS_SCRAPE_TOKEN gives a 401, which is also up == 0) silences all of them.
+        expr: up{job="short-video-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The backend is not being scraped
+          description: Prometheus cannot read /actuator/prometheus, so the alerts below cannot fire. Check that the process is up and that METRICS_SCRAPE_TOKEN matches on both sides.
+
       - alert: OutboxEventsDead
         # Nothing replays or deletes a DEAD row, so every one is an event some consumer never saw.
         expr: outbox_dead_rows > 0

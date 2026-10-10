@@ -30,6 +30,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private static final int MIN_SCRAPE_TOKEN_LENGTH = 32;
+    /** The value in .env.example. It is published, so it reads /actuator/prometheus for anyone who has seen the repository. */
+    static final String SAMPLE_SCRAPE_TOKEN = "local-dev-metrics-token-change-me-0123456789";
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -77,13 +79,10 @@ public class SecurityConfig {
             JwtAuthenticationFilter jwtFilter,
             @Value("${shortvideo.security.public-api-docs:false}") boolean publicApiDocs,
             @Value("${shortvideo.metrics.scrape-token:}") String metricsScrapeToken,
+            @Value("${shortvideo.jwt.allow-insecure-secret:false}") boolean allowInsecure,
             org.springframework.beans.factory.ObjectProvider<com.shortvideo.notification.realtime.StreamOpenGate> streamGate)
             throws Exception {
-        if (!metricsScrapeToken.isEmpty() && metricsScrapeToken.length() < MIN_SCRAPE_TOKEN_LENGTH) {
-            // A short token would be a guessable credential on a route that lists internal metrics.
-            throw new IllegalStateException("shortvideo.metrics.scrape-token must be at least "
-                    + MIN_SCRAPE_TOKEN_LENGTH + " characters, or empty to disable scraping with a token");
-        }
+        requireUsableScrapeToken(metricsScrapeToken, allowInsecure);
         http
                 // Stateless bearer/cookie auth. Cross-site POSTs cannot carry the
                 // SameSite=Lax session cookie, which is what stands in for CSRF
@@ -172,6 +171,15 @@ public class SecurityConfig {
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint((request, response, authException) -> {
+                            if (request.getAttribute(JwtAuthenticationFilter.AUTH_STATE_UNAVAILABLE) != null) {
+                                // Random, so clients that were all refused by the same blip do not all come back together.
+                                response.setHeader("Retry-After", String.valueOf(
+                                        java.util.concurrent.ThreadLocalRandom.current().nextInt(3, 11)));
+                                writeProblem(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                                        "Service Unavailable", "Could not verify the session right now. Try again shortly.",
+                                        "AUTH_STATE_UNAVAILABLE");
+                                return;
+                            }
                             if (request.getAttribute(JwtAuthenticationFilter.SESSION_LIFETIME_EXCEEDED) != null) {
                                 // A different answer to the same status, so the client can tell "your session
                                 // reached its limit, sign in again" from "your credentials are wrong".
@@ -202,6 +210,26 @@ public class SecurityConfig {
         }
 
         return http.build();
+    }
+
+    /**
+     * @param allowInsecure the same switch the {@code local} and {@code test} profiles use to permit the
+     *     published JWT placeholder; the sample scrape token is the same kind of throwaway
+     */
+    static void requireUsableScrapeToken(String token, boolean allowInsecure) {
+        if (token.isEmpty()) {
+            return;
+        }
+        if (token.length() < MIN_SCRAPE_TOKEN_LENGTH) {
+            // A short token would be a guessable credential on a route that lists internal metrics.
+            throw new IllegalStateException("shortvideo.metrics.scrape-token must be at least "
+                    + MIN_SCRAPE_TOKEN_LENGTH + " characters, or empty to disable scraping with a token");
+        }
+        if (SAMPLE_SCRAPE_TOKEN.equals(token) && !allowInsecure) {
+            throw new IllegalStateException("shortvideo.metrics.scrape-token is still the sample from "
+                    + ".env.example, which is public. Set METRICS_SCRAPE_TOKEN to a random value "
+                    + "(openssl rand -hex 32), or leave it empty to disable scraping with a token.");
+        }
     }
 
     private void writeProblem(HttpServletResponse response, int status, String title, String detail)

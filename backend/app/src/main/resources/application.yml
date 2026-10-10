@@ -1,6 +1,8 @@
 spring:
   application:
     name: short-video-backend
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
 
   # Blocking I/O on virtual threads: the media gateway holds a thread per stream
   # in Milestone 2, so the constraint to watch is bytes and connections, not threads.
@@ -60,6 +62,10 @@ spring:
 
 server:
   port: 8080
+  # SseRegistry says goodbye to every open stream on ContextClosedEvent, before this phase starts, so
+  # the wait is for requests that are really in flight (uploads completing, HLS segments) and not for
+  # streams that would otherwise hold it until the timeout.
+  shutdown: graceful
   tomcat:
     # Spelled out rather than left to the defaults (the same numbers today): every open realtime
     # stream holds one of these connections for up to 25 minutes, so this is a capacity limit

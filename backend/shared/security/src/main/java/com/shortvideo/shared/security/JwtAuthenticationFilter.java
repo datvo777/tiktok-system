@@ -63,6 +63,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      * limit, so the 401 can say so ("sign in again") instead of looking like any other bad credential.
      */
     public static final String SESSION_LIFETIME_EXCEEDED = "sv.session.lifetimeExceeded";
+    /**
+     * Request attribute set when the token could not be judged because Redis or the database failed.
+     * The request is still refused (Rule 9), but as "try again" (503) rather than "your credential is
+     * bad" (401): a client that reads 401 as a lost session signs everyone out during a blip.
+     */
+    public static final String AUTH_STATE_UNAVAILABLE = "sv.auth.stateUnavailable";
 
     private final JwtService jwtService;
     private final String sessionCookieName;
@@ -146,6 +152,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             // Rule 9: unknown state denies. Failing open here would mean a database
             // blip silently reinstates every suspended account.
             log.warn("Revocation state unavailable; refusing to authenticate", e);
+            request.setAttribute(AUTH_STATE_UNAVAILABLE, Boolean.TRUE);
             return null;
         }
         try {
@@ -154,6 +161,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         } catch (DataAccessException e) {
             log.warn("Credential-freshness state unavailable; refusing to authenticate", e);
+            request.setAttribute(AUTH_STATE_UNAVAILABLE, Boolean.TRUE);
             return null;
         }
         try {
@@ -173,6 +181,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     account.accountId(), roles, account.tokenId(), account.issuedAt(), account.expiresAt(), account.authTime());
         } catch (DataAccessException e) {
             log.warn("Role state unavailable; refusing to authenticate", e);
+            request.setAttribute(AUTH_STATE_UNAVAILABLE, Boolean.TRUE);
             return null;
         }
     }

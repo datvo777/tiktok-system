@@ -83,6 +83,12 @@ export const TIMING = {
   /** A tab hidden this long closes its stream; showing it again reconnects within a few seconds. */
   hiddenAfterMs: 60_000,
   visibleJitterMs: 3_000,
+  /**
+   * A stream that has said nothing for this long is treated as dead. The server pings every 20 s
+   * (shortvideo.realtime.heartbeat-interval), so this tolerates two missed pings; keep it above
+   * twice that interval if the server's is raised.
+   */
+  silenceMs: 45_000,
 } as const;
 
 const CLOSED = 2;
@@ -116,6 +122,7 @@ export class RealtimeConnection {
   private refetchTimer: ReturnType<typeof setTimeout> | null = null;
   private stableTimer: ReturnType<typeof setTimeout> | null = null;
   private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+  private silenceTimer: ReturnType<typeof setTimeout> | null = null;
   private failures = 0;
   private recentFailures: number[] = [];
   private stopped = false;
@@ -144,10 +151,17 @@ export class RealtimeConnection {
       this.refetchTimer,
       this.stableTimer,
       this.hiddenTimer,
+      this.silenceTimer,
     ]) {
       if (timer) clearTimeout(timer);
     }
-    this.retryTimer = this.debounceTimer = this.refetchTimer = this.stableTimer = this.hiddenTimer = null;
+    this.retryTimer =
+      this.debounceTimer =
+      this.refetchTimer =
+      this.stableTimer =
+      this.hiddenTimer =
+      this.silenceTimer =
+        null;
     this.deps.onStatus(false);
   }
 
@@ -178,6 +192,31 @@ export class RealtimeConnection {
   private closeSource(): void {
     this.source?.close();
     this.source = null;
+    this.clearSilence();
+  }
+
+  private clearSilence(): void {
+    if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    this.silenceTimer = null;
+  }
+
+  /** Called on open and on every event: the stream is alive, so give it another silence allowance. */
+  private heard(source: SourceLike): void {
+    this.clearSilence();
+    this.silenceTimer = setTimeout(() => {
+      this.silenceTimer = null;
+      if (this.source !== source || this.stopped) return;
+      // No FIN ever arrived, so EventSource still believes it is connected and would never retry.
+      this.deps.onStatus(false);
+      this.closeSource();
+      if (this.noteFailure()) {
+        this.scheduleOpen(
+          TIMING.breakerPauseMinMs + this.random() * (TIMING.breakerPauseMaxMs - TIMING.breakerPauseMinMs),
+        );
+        return;
+      }
+      void this.afterRefusal();
+    }, TIMING.silenceMs);
   }
 
   private clearRetry(): void {
@@ -199,6 +238,7 @@ export class RealtimeConnection {
 
     source.onopen = () => {
       this.deps.onStatus(true);
+      this.heard(source);
       // Not "failures = 0" yet: only a connection that lasts has earned that.
       if (this.stableTimer) clearTimeout(this.stableTimer);
       this.stableTimer = setTimeout(() => {
@@ -215,7 +255,10 @@ export class RealtimeConnection {
       }, this.random() * TIMING.refetchJitterMs);
     };
 
+    source.addEventListener('ping', () => this.heard(source));
+
     source.addEventListener('changed', () => {
+      this.heard(source);
       // A burst of events (several videos finishing together) is one reload, not one each.
       if (this.debounceTimer) return;
       this.debounceTimer = setTimeout(() => {
@@ -228,6 +271,7 @@ export class RealtimeConnection {
 
     source.onerror = () => {
       this.deps.onStatus(false);
+      this.clearSilence();
       if (this.stableTimer) {
         clearTimeout(this.stableTimer);
         this.stableTimer = null;

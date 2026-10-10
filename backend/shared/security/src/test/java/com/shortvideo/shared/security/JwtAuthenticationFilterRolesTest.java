@@ -112,4 +112,26 @@ class JwtAuthenticationFilterRolesTest {
 
         assertThat(run()).isNull();
     }
+
+    @Test
+    void unreadableStateIsMarkedSoItCanBeAnswered503NotTaughtAsABadCredential() throws Exception {
+        when(roleReader.rolesOf(ACCOUNT_ID)).thenThrow(new QueryTimeoutException("db down"));
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/auth/me");
+        request.addHeader("Authorization", "Bearer " + token);
+
+        filter.doFilter(request, new MockHttpServletResponse(), mock(FilterChain.class));
+
+        assertThat(request.getAttribute(JwtAuthenticationFilter.AUTH_STATE_UNAVAILABLE)).isEqualTo(Boolean.TRUE);
+    }
+
+    @Test
+    void aDeletedAccountIsNotMarkedUnavailable() throws Exception {
+        when(roleReader.rolesOf(ACCOUNT_ID)).thenReturn(Optional.empty());
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/auth/me");
+        request.addHeader("Authorization", "Bearer " + token);
+
+        filter.doFilter(request, new MockHttpServletResponse(), mock(FilterChain.class));
+
+        assertThat(request.getAttribute(JwtAuthenticationFilter.AUTH_STATE_UNAVAILABLE)).isNull();
+    }
 }

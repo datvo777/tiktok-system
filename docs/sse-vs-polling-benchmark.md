@@ -348,3 +348,121 @@ stream, so in real use fewer than all signed-in users hold one.
 Not measured: HTTP/2 through a reverse proxy (one browser connection for stream and REST), one stream
 per browser rather than per tab, and narrower Tomcat buffers.
 
+
+## Decisions taken from these numbers
+
+- **No in-process cache for the "account still active" check.** With the storm defences on (V1-V3) the
+  Hikari queue peaked at 0 and the REST probe p95 stayed at 14-18 ms, so the per-request revocation
+  query is not what limited S4; the unspread reconnect wave was. A cache would only buy back a few
+  milliseconds in steady state, and costs the property that a suspension takes effect at once when
+  Redis is down (Rule 12). Revisit only if S1 at 8,000 users shows `hikaricp_connections_pending > 0`.
+- **A dependency failure while judging a token answers 503 + `Retry-After`, not 401.** Still refused
+  (Rule 9), but the web client treats 401 as a lost session and signs the user out, which a database
+  blip must not do. Set by `JwtAuthenticationFilter.AUTH_STATE_UNAVAILABLE`, answered in `SecurityConfig`.
+- **Open item against criterion (d):** inbox p95 under S2 is 22 ms against polling's 13 ms. The absolute
+  cost is small but the pre-registered 20% bound is not met; S3, S5 and S6 are still unmeasured.
+
+## Re-measurement, 2026-10-10 (S3, S6, and the two oddities)
+
+Backend: `a89047f` plus the uncommitted heartbeat-as-event, graceful shutdown and 503-on-unreadable-state
+changes, run from the jar, one laptop, no proxy or TLS. Gate on, `shortvideo.realtime` at its defaults.
+SSE runs use the benchmark client's own cadences (video polled every 2 s), not the relaxed S2 cadences.
+
+### S3 burst, 2,000 users, events sent in about 1 s
+
+| Mode | Events | Received | Noticed p50 / p95 / p99 (ms) | Peak CPU | Hikari pending peak |
+|---|---|---|---|---|---|
+| polling | 100 | 100 | 1136 / 1286 / 1316 | 0.52 | 0 |
+| sse | 100 | 100 | 1117 / 1364 / 1388 | 0.39 | 0 |
+| polling | 1000 | 1000 | 4137 / 6745 / 6967 | 1.62 | 214 |
+| sse | 1000 | 1000 | 1089 / 1299 / 1334 | 1.61 | 439 |
+
+No event was lost in either mode. Under 1,000 events in one second SSE keeps its notice latency near
+1.1 s where polling slips to 4-7 s, at the same CPU peak. The Hikari queue peaks in both (214 and 439);
+the load generator's 1,000 follow requests land on the same pool in that second, so the figure is not
+attributable to SSE alone. The single-event latency run agrees with the first matrix: 5.5 / 9.8 s for
+polling against 1.1 / 1.3 s for SSE (p50 / p95).
+
+### S6 leak check (first attempt invalid, then redone)
+
+The first run's churn was refused 19,769 times out of 20,000 by the open gate and the per-account
+limiter, so it measured the gate, not cleanup; its release wait (25 s) was also too short for 5,900
+dead sockets. `leak()` now paces the churn under the gate (`--rate`), waits 60 s after a release, and
+records `GC.class_histogram` before and after.
+
+- **Paced churn, 60,000 open/close cycles at 120/s:** 43 failed (17 of them 503), peak 4,855 registered
+  connections, then **0 connections and 200 open files** (baseline 0 and 189). A closed client stays
+  registered until the next heartbeat write fails, up to about 20 s, which is where that peak comes from.
+- **Five identical hold-3,000/release rounds:** live heap after GC and release 436, 433, 429, 431, 432 MB;
+  RSS 2,380-2,390 MB throughout; connections and files back to baseline every time. **Flat, so not a leak.**
+  The first round raises the floor from about 100 MB to about 430 MB and it stays there: `byte[]` and
+  `char[]` plus Tomcat's `ByteChunk`/`CharChunk`/`MessageBytes`, which look like pooled buffers sized to
+  the peak. Why Tomcat keeps that much was not investigated; it is a one-time cost, not growth.
+
+### The two oddities
+
+- **REST p95 42 ms vs 17 ms at 8,000 users did not reproduce.** Two reps each, client-observed:
+
+  | Users | Mode | Inbox p50 / p95 / p99 | Backend CPU | Server req/s | Hikari pending | Errors |
+  |---|---|---|---|---|---|---|
+  | 4,000 | polling | 8 / 14.7 / 19 | 0.64 | 600 | 0 | 0 |
+  | 4,000 | sse | 9.5 / 24.5 / 38 | 0.47 | 289 | 0 | 0 |
+  | 8,000 | polling | 7.3 / 17.1 / 23 | 0.81 | 1,200 | 28 | 0 |
+  | 8,000 | sse | 7.8 / 23.8 / 50 | 0.57 | 538 | 0 | 0-1 |
+
+  SSE's inbox p95 is 7-10 ms higher (+67% at 4,000, +39% at 8,000), so criterion (d) is still **not met**
+  on the 20% rule, but it is a stable gap of a few milliseconds and not the 42 ms seen once. The pool is
+  never queued under SSE; it is under polling at 8,000 (28 pending). Part of the gap may be the load
+  generator, which holds up to 8,000 streams in one process; it was not separated out.
+- **Polling at 4,000 failing 22% with 3.8 GB RSS did not reproduce:** 0 errors and about 1.9 GB RSS in
+  both reps. Still unexplained; treat it as a one-off of the first matrix, not as a result.
+
+Steady-state totals agree with the first matrix: SSE needs about half the requests and 27-30% less CPU
+than polling (0.47 vs 0.64 cores at 4,000; 0.57 vs 0.81 at 8,000), for twice the open descriptors.
+
+### Not measured
+
+- **S5 (SSE alongside 20-30 HLS streams and REST).** `bench.mjs` has no such scenario, and it needs a
+  published, transcoded video in the scratch database and storage. Whether the gateway's 503s or REST
+  p95 move with SSE load is therefore unknown.
+- Chrome, Firefox and Safari behaviour of `retry:` and of the new `ping` event; the silence watchdog is
+  covered by unit tests only.
+- Anything through a reverse proxy or real network latency.
+
+Conclusion unchanged: the flag stays off. Criterion (d) is still missed by a few milliseconds and S5 is
+open; the case for enabling remains notice latency (about 1.1 s against 5-10 s, also under a burst), not load.
+
+### S5: SSE alongside HLS viewers and REST (2026-10-10)
+
+Setup: a real 2 s clip uploaded through the pipeline (media-worker, ffmpeg), approved by a scratch admin
+and published; 30 viewers fetch its segment (`/media/videos/{id}/1/low/segment_000.ts`, about 128 KB)
+through the gateway in a loop with a 100 ms pause, which is much tighter than a player; a user outside
+the crowd asks for its inbox every 250 ms (the REST probe); 4,000 users, 10% waiting on an upload, 30 s
+warm-up and a 90 s window, two reps per row, SSE with the benchmark client's 2 s video poll. `control`
+is the HLS viewers and probe with no crowd; it ran on a cold JVM (no traffic to warm the JIT before the
+window), so it is slower than the other two and is not a baseline to subtract.
+
+| Run | HLS segment p50 / p95 / p99 / max (ms) | HLS non-200 | REST probe p50 / p95 / p99 (ms) | Backend CPU | Server req/s |
+|---|---|---|---|---|---|
+| control r1 / r2 | 10 / 14.7 / 22 / 43 ; 11 / 16.5 / 23 / 38 | 0 | 4.4 / 8.6 / 10 ; 4.6 / 9.3 / 11 | 0.70 ; 0.72 | 276 ; 272 |
+| polling r1 / r2 | 5.6 / 10.4 / 13.5 / 22 ; 7 / 12.7 / 21 / 359 | 0 | 2.2 / 4.2 / 7.5 ; 2.2 / 5.2 / 28 | 0.82 ; 0.86 | 885 ; 880 |
+| sse r1 / r2 | 7.1 / 12.7 / 20 / 112 ; 6.2 / 10.8 / 18 / 116 | 0 | 2.5 / 5.1 / 10 ; 2.3 / 5.6 / 21 | 0.71 ; 0.68 | 570 ; 573 |
+
+- **The gateway is not affected by the crowd's transport.** About 25,000 segment fetches per run, every
+  one a 200; p95 is 10.4 / 12.7 ms under polling and 12.7 / 10.8 ms under SSE (+2% on the means), which
+  is inside the spread between reps of the same mode.
+- **The REST probe's p95 is 4.2 / 5.2 ms under polling and 5.1 / 5.6 ms under SSE** (+14% on the means,
+  under the 20% bound, on two reps and about 355 requests each). Its p99 and max are noisy in both modes.
+- Neither mode queued the Hikari pool. SSE used 17% less CPU than polling here (0.70 vs 0.84) with the
+  HLS load added on top. The SSE max latencies (112 and 116 ms against 22 and 359 for polling) are single
+  requests, not a pattern; the sample is too small to say more.
+
+What this does not test: 30 viewers stay under the gateway's 32 concurrent-stream permits and the segment
+is small, so the 503 path of the gateway was **not** exercised and larger segments (more time per permit)
+were not tried. Real players ask once per segment duration, so this load is heavier than reality, not
+lighter. One clip, one resolution, a laptop, no proxy.
+
+Reading criterion (d) with this: REST measured by an outside user and HLS stay within 20% of polling.
+The earlier miss was the crowd's own inbox p95 as the load generator saw it (24 ms against 15-17 ms),
+which includes the generator holding 4,000-8,000 open streams in one process; that gap is real in the
+numbers but is not shown to reach a user outside the crowd or the gateway.

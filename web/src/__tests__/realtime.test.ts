@@ -30,6 +30,9 @@ class FakeSource implements SourceLike {
   hint() {
     this.listeners.get('changed')?.({});
   }
+  ping() {
+    this.listeners.get('ping')?.({});
+  }
   /** The browser gave up (a 401 or 503 on connect). */
   refuse() {
     this.readyState = 2;
@@ -43,6 +46,14 @@ class FakeSource implements SourceLike {
   drop() {
     this.readyState = 0;
     this.onerror?.({});
+  }
+}
+
+/** Time passing on a healthy stream: the server pings every 20 s, so the silence watchdog stays quiet. */
+async function advanceWithPings(source: FakeSource, ms: number) {
+  for (let left = ms; left > 0; left -= 20_000) {
+    await vi.advanceTimersByTimeAsync(Math.min(20_000, left));
+    source.ping();
   }
 }
 
@@ -104,6 +115,31 @@ describe('RealtimeConnection', () => {
     vi.advanceTimersByTime(TIMING.debounceMs);
 
     expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces a stream that has gone silent, which EventSource would never notice', async () => {
+    connection.start();
+    sources[0]!.open();
+
+    await vi.advanceTimersByTimeAsync(TIMING.silenceMs);
+
+    expect(sources[0]!.closed).toBe(true);
+    expect(status.at(-1)).toBe(false);
+    await vi.advanceTimersByTimeAsync(TIMING.firstWindowMs);
+    expect(sources).toHaveLength(2);
+  });
+
+  it('keeps a stream that keeps pinging', async () => {
+    connection.start();
+    sources[0]!.open();
+
+    for (let i = 0; i < 6; i += 1) {
+      await vi.advanceTimersByTimeAsync(TIMING.silenceMs - 1_000);
+      sources[0]!.ping();
+    }
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]!.closed).toBe(false);
   });
 
   it('leaves a dropped connection to the browser and just reports it down', () => {
@@ -242,7 +278,8 @@ describe('RealtimeConnection', () => {
     sources[0]!.open();
 
     connection.hidden();
-    await vi.advanceTimersByTimeAsync(TIMING.hiddenAfterMs);
+    await advanceWithPings(sources[0]!, TIMING.hiddenAfterMs - 1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(sources[0]!.closed).toBe(true);
     expect(status.at(-1)).toBe(false);
 
@@ -257,9 +294,9 @@ describe('RealtimeConnection', () => {
     sources[0]!.open();
 
     connection.hidden();
-    await vi.advanceTimersByTimeAsync(TIMING.hiddenAfterMs - 1);
+    await advanceWithPings(sources[0]!, TIMING.hiddenAfterMs - 1);
     connection.visible();
-    await vi.advanceTimersByTimeAsync(TIMING.hiddenAfterMs * 2);
+    await advanceWithPings(sources[0]!, TIMING.hiddenAfterMs * 2);
 
     expect(sources[0]!.closed).toBe(false);
     expect(sources).toHaveLength(1);
