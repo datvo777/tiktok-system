@@ -497,3 +497,45 @@ Two defects found only here, both fixed:
 Not covered: Safari and Firefox (their `retry:` and CLOSED-on-502 behaviour), a proxy with HTTP/2 or TLS,
 real network latency, and more than one tab per user. The 31 s recovery with one client is the jitter
 window working as designed, not a measurement of a crowd.
+
+## Behind a reverse proxy: where the descriptors go (2026-10-10)
+
+4,000 users, 10% waiting on an upload, 30 s warm-up and a 90 s window, backend from the jar. "Proxy" is
+`nginx:latest` in Docker Desktop (`tests/load/bench.mjs --port 8088 --backendPort 8080`), HTTP/1.1 to an
+`upstream` block with `keepalive 256` and `keepalive_timeout 30s` (shorter than Tomcat's 60 s), default
+buffering on, `worker_connections 16384`. Tomcat figures come from the backend's own metrics and from
+`netstat` on port 8080; nginx figures from `/proc/*/fd` inside the container, sampled every 15 s.
+
+| Run | Tomcat open files | Connections Tomcat sees | nginx open files | Backend CPU | Inbox p95 (client, ms) |
+|---|---|---|---|---|---|
+| SSE, direct (2 reps) | 8,177 ; 8,187 | 8,002 | - | 0.45 ; 0.44 | 20.2 ; 18.7 |
+| SSE, via nginx (2 reps) | 4,277 ; 4,281 | 4,040-4,100 | about 12,400 | 0.42 ; 0.41 | 18.1 ; 18.7 |
+| polling, direct | 4,195 | 4,017 | - | 0.60 | 11.6 |
+| polling, via nginx | 302 | 117-125 | about 4,470 | 0.55 | 9.7 |
+
+- **Tomcat's descriptors halve under SSE (8.2k to 4.3k) and almost vanish under polling (4.2k to 0.3k).**
+  What remains is one connection per stream plus a small keepalive pool for REST, which nginx reuses.
+  The idle REST connection of every browser now sits on nginx, not on Tomcat. So Tomcat's
+  `max-connections` (8,192) is no longer reached at 4,000 users; it would be at about 8,000 streams,
+  so `realtime.max-connections` (5,000) becomes the binding limit, as intended.
+- **The descriptors move, they do not disappear.** nginx holds about 12,400 for 4,000 SSE users (4,000
+  streams and 4,000 idle REST connections from browsers, and 4,000 streams plus the pool upstream), about
+  16.7k across both processes against 8.2k direct. nginx used a few percent of one core and about 230 MB.
+  `worker_rlimit_nofile` and `worker_connections` must be sized for roughly three descriptors per streaming
+  user, and the proxy host's own `LimitNOFILE` with them.
+- **Backend CPU and the inbox p95 are unchanged** by the proxy; REST p95 through nginx was 18 ms against
+  19-20 direct.
+- **A reliability problem on this setup, cause not isolated.** Via nginx, 86-146 stream opens per run
+  (2-4%) got a 504, and a handful of REST requests timed out (27 inbox and 8 video in the proxied polling
+  run, about 0.1%). nginx's own log gives the cause for every 504: `upstream timed out (110: Connection
+  timed out) while connecting to upstream`, i.e. it could not open the TCP connection to Tomcat for 60 s,
+  while the backend counted no rejections. Slowing the ramp from 150 to 50 users per second did not clear
+  it (54 504s). Every client recovered through its own retry (4,000 streams open at the end of each run).
+  The proxy-to-backend hop here crosses Docker Desktop's macOS VM boundary (`host.docker.internal`), and
+  the macOS listen backlog is 128 (`kern.ipc.somaxconn`), so this is most likely the environment and not
+  nginx or Tomcat. That has **not** been shown: it needs the same test with nginx on the same host
+  (Linux, or `brew install nginx`) before the 504 rate is quoted as a property of the proxy.
+
+Conclusion: putting the backend behind a reverse proxy is the right way to run the stream, for the
+descriptors on Tomcat and for nothing else it costs measurably, provided the proxy is sized for the total.
+Ask for the connect-timeout check on a native proxy before relying on it.

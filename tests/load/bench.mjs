@@ -65,11 +65,15 @@ const { positionals, values: A } = parseArgs({
     out: { type: 'string' },
     host: { type: 'string', default: 'localhost' },
     port: { type: 'string', default: '8080' },
+    //  --port 8088 --backendPort 8080   traffic goes through a proxy on 8088; metrics, pid and the
+    //               connection count still come from the backend itself
+    backendPort: { type: 'string' },
   },
 });
 const SCENARIO = positionals[0];
 const MODE = A.mode;
 const PORT = Number(A.port);
+const BACKEND_PORT = Number(A.backendPort ?? A.port);
 const HOST = A.host;
 // One macOS host has 16,384 ephemeral ports per (source, destination address, destination port). Two
 // sockets per SSE user at 8000 users would need 16,000 of them on one destination, so spread the
@@ -125,7 +129,7 @@ function sum(m, name, pred) {
   return s;
 }
 async function scrape() {
-  const res = await fetch(`http://${HOST}:${PORT}/actuator/prometheus`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  const res = await fetch(`http://${HOST}:${BACKEND_PORT}/actuator/prometheus`, { headers: { Authorization: `Bearer ${TOKEN}` } });
   if (!res.ok) throw new Error(`scrape ${res.status}`);
   return parseProm(await res.text());
 }
@@ -135,7 +139,7 @@ const uriSeconds = (m, uri) =>
   sum(m, 'http_server_requests_seconds_sum', (l) => l.includes(`uri="${uri}"`));
 
 async function backendPid() {
-  return (await sh(`lsof -ti :${PORT} -sTCP:LISTEN | head -1`)).trim();
+  return (await sh(`lsof -ti :${BACKEND_PORT} -sTCP:LISTEN | head -1`)).trim();
 }
 async function cpuSeconds(pid) {
   const t = (await sh(`ps -o cputime= -p ${pid}`)).trim(); // [h:]mm:ss.cc
@@ -146,7 +150,7 @@ async function rssMb(pid) {
 }
 async function established() {
   // Server side of the sockets: local address is :PORT.
-  return Number((await sh(`netstat -an -p tcp | awk '$4 ~ /\\.${PORT}$/ && $6=="ESTABLISHED"' | wc -l`)).trim());
+  return Number((await sh(`netstat -an -p tcp | awk '$4 ~ /\\.${BACKEND_PORT}$/ && $6=="ESTABLISHED"' | wc -l`)).trim());
 }
 async function redisCommands() {
   return Number((await sh(`docker exec sv-redis redis-cli info stats | grep total_commands_processed | cut -d: -f2`)).trim());
