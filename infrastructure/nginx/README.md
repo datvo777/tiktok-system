@@ -68,7 +68,22 @@ before treating the rate as a property of nginx.
 Not done here: security headers (the backend sets them already), rate limiting at the proxy
 (`limit_conn` per address would hurt users behind a shared address), and TLS termination.
 
-## mTLS for the admin host (experiment)
+## mTLS for the admin host (optional)
+
+Nothing else here depends on this section: the default `nginx` service, the backend and the web app work
+without it, and the `nginx-mtls` service only starts with `--profile mtls`. It is one way to keep the
+admin app off the public edge, to be weighed against the others:
+
+| Layer | What it adds | Cost |
+|---|---|---|
+| Admin on its own hostname, `/internal` hidden on the public one (already in `nginx.conf`) | the admin API is not reachable from the user-facing name | none |
+| Application login with the ADMIN role and the shorter privileged session (already in the backend) | who the person is | none |
+| MFA in the application (not built) | a stolen password is not enough | design and code; recommended for ADMIN |
+| mTLS (this section) | only enrolled devices can reach the admin app at all | a CA to run, certificates to issue, renew and revoke, and a first-visit certificate prompt; poor fit for phones |
+| VPN or an identity-aware proxy (not built) | the admin app is not on the public Internet | an extra service to run |
+
+mTLS is a reasonable extra for a small team on laptops and not a requirement; MFA covers a different
+risk (a stolen password) that mTLS does not.
 
 Mutual TLS is decided per hostname, so users and staff can share one nginx and one port: the public name
 asks for no client certificate and the admin name requires one. The admin app and `/internal` are not

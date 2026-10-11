@@ -278,8 +278,9 @@ services:
     restart: unless-stopped
     stop_grace_period: 35s
 
-  # Experiment: mutual TLS on an admin hostname only (nginx/mtls.conf). Generate the throwaway
-  # certificates first with nginx/mtls/gen-dev-certs.sh. Same image pin as `nginx` above.
+  # Optional: mutual TLS on an admin hostname only (nginx/mtls.conf); nothing else depends on it.
+  # Generate the throwaway certificates first with nginx/mtls/gen-dev-certs.sh. Same image pin as
+  # `nginx` above.
   nginx-mtls:
     image: nginx:1.29.4
     container_name: sv-nginx-mtls
