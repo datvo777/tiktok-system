@@ -17,3 +17,6 @@ data/
 
 # Local Kafka CA, broker key and per-principal passwords (infrastructure/kafka/secure/gen-secrets.sh)
 infrastructure/kafka/secure/generated/
+
+# Throwaway mTLS test certificates (infrastructure/nginx/mtls/gen-dev-certs.sh)
+infrastructure/nginx/mtls/generated/

@@ -278,6 +278,27 @@ services:
     restart: unless-stopped
     stop_grace_period: 35s
 
+  # Experiment: mutual TLS on an admin hostname only (nginx/mtls.conf). Generate the throwaway
+  # certificates first with nginx/mtls/gen-dev-certs.sh. Same image pin as `nginx` above.
+  nginx-mtls:
+    image: nginx:1.29.4
+    container_name: sv-nginx-mtls
+    profiles: ["mtls"]
+    ports:
+      - "${NGINX_MTLS_PORT:-8443}:8443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    volumes:
+      - ./nginx/mtls.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/mtls/generated:/etc/nginx/tls:ro
+      - ../web/dist:/usr/share/nginx/html:ro
+      - ../admin-web/dist:/usr/share/nginx/html-admin:ro
+
 volumes:
   postgres-data:
   minio-data:

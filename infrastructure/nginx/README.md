@@ -67,3 +67,68 @@ before treating the rate as a property of nginx.
 
 Not done here: security headers (the backend sets them already), rate limiting at the proxy
 (`limit_conn` per address would hurt users behind a shared address), and TLS termination.
+
+## mTLS for the admin host (experiment)
+
+Mutual TLS is decided per hostname, so users and staff can share one nginx and one port: the public name
+asks for no client certificate and the admin name requires one. The admin app and `/internal` are not
+served on the public name at all (`/internal` is a 404 there).
+
+```bash
+infrastructure/nginx/mtls/gen-dev-certs.sh                       # throwaway CA and certificates
+(cd web && npm run build); (cd admin-web && npm run build)
+docker compose --env-file .env -f infrastructure/docker-compose.yml --profile mtls up -d nginx-mtls
+# https://tksystem.localhost:8443 (users)   https://admin.tksystem.localhost:8443 (staff, needs a client certificate)
+```
+
+`*.localhost` resolves to this machine in browsers; the server certificate is self-signed, and a browser
+needs the staff certificate imported before the admin name will work (not tried in a browser).
+
+Tested with curl from inside the container (nginx 1.29.4, the backend running):
+
+| Request | Result |
+|---|---|
+| public name, no certificate | 200 |
+| public name, `/internal/...` | 404 |
+| admin name, no certificate | 400, from nginx; the backend is never reached |
+| admin name, certificate from a CA nginx does not trust | 400 |
+| admin name, valid staff certificate | 200; login, `/auth/me` and `/internal/v1/videos/pending` all work |
+| admin name, valid session cookie but **no** certificate | 400, so a stolen session or password alone is not enough |
+| request by IP address (no known name) | refused during the handshake (`ssl_reject_handshake`) |
+| handshake as the public name, `Host: admin...`, no certificate | 421, **also with the two guard checks removed**, so the version does it by itself |
+| a path not on the admin allowlist (`/api/v1/feed`) | the admin page, not the API |
+
+The session cookie is `HttpOnly`, `Secure` and host-only, so the public name never receives the admin's.
+
+Two corrections to what was assumed beforehand: with `ssl_verify_client on` nginx completes the TLS
+handshake and then answers 400 (it does not abort the handshake), and the SNI/Host mismatch did not
+reproduce on this version.
+
+Not tested: a browser with an imported client certificate, HTTP/2, an L7 load balancer in front (it would terminate TLS, so nginx would never see the certificate), and
+older nginx versions. The generated keys are unprotected files; a real staff CA belongs offline, with
+short-lived client certificates, a revocation process and MFA in the application.
+
+### Revoking a client certificate
+
+`mtls/revoke-dev-cert.sh alice` revokes a certificate and rewrites the list nginx reads (`ssl_crl`).
+Tested with two staff certificates (`alice`, `bob`):
+
+| Step | alice | bob |
+|---|---|---|
+| before any revocation | 200 | 200 |
+| alice revoked, list rewritten, nginx **not** reloaded | **200** | 200 |
+| after `docker exec sv-nginx-mtls nginx -s reload` | 400 | 200 |
+| the list is regenerated valid for 5 s, then the time passes (no reload) | - | **400** |
+| a fresh 7-day list and a reload | 400 | 200 |
+
+- **A revocation is not immediate.** nginx reads the list when it starts or reloads, so a lost laptop
+  stays able to connect until someone regenerates the list and reloads.
+- **A revocation is selective:** bob was unaffected.
+- **An expired list locks everyone out.** Once the list passes its next-update time nginx refuses every
+  client certificate, the valid ones too, and no reload is needed for that to happen. So the list must be
+  regenerated on a schedule well inside its validity (here 7 days) and the age of the file watched
+  (an alert on the next-update time, or on the age of `staff-ca.crl`), the same way a TLS certificate's
+  expiry is.
+- The revocation list is per CA: a client certificate must come from the CA the list belongs to
+  (`alice` and `bob` do, `mallory` does not and is refused regardless).
+- Not tested: OCSP (nginx does not do it for client certificates), a CRL served by URL, or a large list.
