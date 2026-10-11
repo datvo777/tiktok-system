@@ -31,12 +31,87 @@ const pendingPageSchema = s.object({
 });
 export type PendingVideoPage = Infer<typeof pendingPageSchema>;
 
-export async function login(email: string, password: string): Promise<LoginResponse> {
+/**
+ * The password was right and a code is still needed. No session exists yet: the token is good for nothing but
+ * finishing the sign-in with {@link verifyMfa}, and expires within minutes.
+ */
+const challengeSchema = s.object({ mfaRequired: s.boolean, mfaToken: s.string, expiresAt: s.string });
+
+export type LoginResult =
+  { kind: 'signed-in'; accountId: string; expiresAt: string } | { kind: 'mfa-required'; mfaToken: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   return request(
     '/api/v1/auth/login',
-    (payload) => loginSchema.parse('login', payload),
+    (payload): LoginResult => {
+      if (payload && typeof payload === 'object' && 'mfaRequired' in payload) {
+        const challenge = challengeSchema.parse('login', payload);
+        return { kind: 'mfa-required', mfaToken: challenge.mfaToken };
+      }
+      const done = loginSchema.parse('login', payload);
+      return { kind: 'signed-in', accountId: done.accountId, expiresAt: done.expiresAt };
+    },
     jsonBody({ email, password }),
   );
+}
+
+/** Second step of signing in: a code from the authenticator app, or one of the recovery codes. */
+export async function verifyMfa(
+  mfaToken: string,
+  proof: { code: string } | { recoveryCode: string },
+): Promise<LoginResponse> {
+  return request(
+    '/api/v1/auth/mfa/verify',
+    (payload) => loginSchema.parse('mfa verify', payload),
+    jsonBody({ mfaToken, ...proof }),
+  );
+}
+
+const mfaStatusSchema = s.object({
+  enrolled: s.boolean,
+  signedInWithSecondFactor: s.boolean,
+  required: s.boolean,
+});
+export type MfaStatus = Infer<typeof mfaStatusSchema>;
+
+/** Null when the server has the second factor switched off (the route does not exist). */
+export async function getMfaStatus(): Promise<MfaStatus | null> {
+  try {
+    return await request('/api/v1/auth/mfa/status', (payload) =>
+      mfaStatusSchema.parse('mfa status', payload),
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+const enrollSchema = s.object({ secret: s.string, otpauthUri: s.string });
+export type TotpEnrollment = Infer<typeof enrollSchema>;
+
+/** Asks for the password again: a session cookie alone does not show who is at the keyboard. */
+export async function startTotpEnrollment(password: string): Promise<TotpEnrollment> {
+  return request(
+    '/api/v1/auth/mfa/totp/enroll',
+    (payload) => enrollSchema.parse('mfa enroll', payload),
+    jsonBody({ password }),
+  );
+}
+
+const confirmSchema = s.object({
+  accountId: s.string,
+  expiresAt: s.string,
+  recoveryCodes: s.array(s.string),
+});
+
+/** The recovery codes come back here once and are not available again. The new session is in the cookie. */
+export async function confirmTotpEnrollment(code: string): Promise<string[]> {
+  const confirmed = await request(
+    '/api/v1/auth/mfa/totp/confirm',
+    (payload) => confirmSchema.parse('mfa confirm', payload),
+    jsonBody({ code }),
+  );
+  return confirmed.recoveryCodes;
 }
 
 const meSchema = s.object({
@@ -208,7 +283,9 @@ export type VideoDetail = Infer<typeof videoDetailSchema>;
 
 /** A 404 here means no eligibility row exists for that id yet (or ever) -- not necessarily a typo'd id. */
 export async function getVideoDetail(videoId: string): Promise<VideoDetail> {
-  return request(`/internal/v1/videos/${videoId}`, (payload) => videoDetailSchema.parse('videoDetail', payload));
+  return request(`/internal/v1/videos/${videoId}`, (payload) =>
+    videoDetailSchema.parse('videoDetail', payload),
+  );
 }
 
 /** Public search (creator name, title, or description) reused here for admin lookup by keyword. */

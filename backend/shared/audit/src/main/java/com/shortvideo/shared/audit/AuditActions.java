@@ -24,5 +24,10 @@ public final class AuditActions {
     public static final String ACCOUNT_SUSPENDED = "account.suspended";
     public static final String ACCOUNT_REINSTATED = "account.reinstated";
 
+    /** The account's own act, so actor and target are the same account. */
+    public static final String MFA_ENROLLED = "account.mfa_enrolled";
+    /** A recovery code was spent to sign in: worth a look, whether it was the owner or not. */
+    public static final String MFA_RECOVERY_USED = "account.mfa_recovery_used";
+
     private AuditActions() {}
 }

@@ -926,3 +926,26 @@ input.mono { font-family: var(--font-mono); font-size: 0.8rem; }
   opacity: 0.7;
   text-transform: capitalize;
 }
+
+/* One-time recovery codes, shown once after the second factor is turned on. */
+.recovery-codes {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  line-height: 1.7;
+  letter-spacing: 0.04em;
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+  background: var(--raise);
+  border: 1px solid var(--line-hi);
+  border-radius: 6px;
+  user-select: all;
+}
+
+/* The enrolment QR code: white behind it whatever the theme, with room around it. */
+.qr-code {
+  display: block;
+  margin: 0.75rem 0;
+  border-radius: 6px;
+  max-width: 100%;
+  height: auto;
+}

@@ -106,6 +106,14 @@ shortvideo:
     # Secure by default: serving a session cookie over plain HTTP should be an
     # explicit opt-out, and one variable drives both cookies so they cannot drift.
     cookie-secure: ${COOKIE_SECURE:true}
+  mfa:
+    # Second factor at sign-in, required for the roles below before they can reach /internal. Off: sign-in
+    # and /internal behave exactly as before. See docs/mfa-plan.md.
+    enabled: ${MFA_ENABLED:false}
+    required-roles: ${MFA_REQUIRED_ROLES:ADMIN}
+    issuer: ${MFA_ISSUER:Short}
+    # 32 random bytes, base64 (`openssl rand -base64 32`). Required when enabled; losing it loses every secret.
+    encryption-key: ${MFA_ENCRYPTION_KEY:}
   realtime:
     # Server-sent "something changed" hints next to polling, which stays the default and the
     # fallback. Off until enabled; see RealtimeProperties for the limits.
@@ -247,6 +255,9 @@ shortvideo:
     # Permits the published placeholder above; refused in every other profile.
     allow-insecure-secret: true
     cookie-secure: false
+  mfa:
+    # The published placeholder, accepted only here (see MfaSecretCipher): the same trade as the JWT one above.
+    encryption-key: ${MFA_ENCRYPTION_KEY:bG9jYWwtZGV2LW1mYS1rZXktZG8tbm90LXVzZS14eXo=}
   playback:
     cookie-secure: false
 

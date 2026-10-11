@@ -34,6 +34,7 @@ public class TokenKeys {
 
     private final SecretKey sessionKey;
     private final SecretKey playbackKey;
+    private final SecretKey mfaPendingKey;
 
     public TokenKeys(JwtProperties properties) {
         byte[] root = JwtService.requireUsableSecret(
@@ -41,6 +42,7 @@ public class TokenKeys {
                 .getBytes(StandardCharsets.UTF_8);
         this.sessionKey = derive(root, "shortvideo/session-token/v1");
         this.playbackKey = derive(root, "shortvideo/playback-token/v1");
+        this.mfaPendingKey = derive(root, "shortvideo/mfa-pending-token/v1");
     }
 
     /** Signs and verifies the API session token issued at login. */
@@ -51,6 +53,11 @@ public class TokenKeys {
     /** Signs and verifies the short-lived, path-scoped media playback cookie. */
     public SecretKey playbackKey() {
         return playbackKey;
+    }
+
+    /** Signs and verifies the short-lived token that stands between the password and the second factor. */
+    public SecretKey mfaPendingKey() {
+        return mfaPendingKey;
     }
 
     private static SecretKey derive(byte[] root, String info) {

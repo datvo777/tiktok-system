@@ -80,6 +80,7 @@ public class SecurityConfig {
             @Value("${shortvideo.security.public-api-docs:false}") boolean publicApiDocs,
             @Value("${shortvideo.metrics.scrape-token:}") String metricsScrapeToken,
             @Value("${shortvideo.jwt.allow-insecure-secret:false}") boolean allowInsecure,
+            com.shortvideo.shared.security.MfaProperties mfa,
             org.springframework.beans.factory.ObjectProvider<com.shortvideo.notification.realtime.StreamOpenGate> streamGate)
             throws Exception {
         requireUsableScrapeToken(metricsScrapeToken, allowInsecure);
@@ -102,6 +103,9 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/accounts").permitAll()
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/logout").permitAll()
+                        // The second step of signing in: identified by the pending token from the password step,
+                        // not by a session, because there is none yet. Absent (404) when the factor is off.
+                        .requestMatchers("/api/v1/auth/mfa/verify").permitAll()
                         // Container probes only. The aggregate /actuator/health
                         // response carries datasource URLs, broker addresses and
                         // disk paths, so it is not public even though liveness and
@@ -124,7 +128,25 @@ public class SecurityConfig {
                         // report, prometheus, metrics, info — enumerates internal
                         // topology and is admin-only.
                         .requestMatchers("/actuator/**").hasRole("ADMIN")
-                        .requestMatchers("/internal/**").hasRole("ADMIN")
+                        // The admin API: the ADMIN role and, when the second factor is on, a sign-in that used
+                        // one. Judged here, in one place, rather than by each controller.
+                        .requestMatchers("/internal/**").access((authentication, context) -> {
+                            var who = authentication.get();
+                            boolean admin = who != null && who.isAuthenticated() && who.getAuthorities().stream()
+                                    .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
+                            if (!admin) {
+                                return new AuthorizationDecision(false);
+                            }
+                            if (mfa.isEnabled()
+                                    && who.getPrincipal() instanceof com.shortvideo.shared.security.AuthenticatedAccount caller
+                                    && mfa.getRequiredRoles().stream().anyMatch(caller.roles()::contains)
+                                    && !caller.hasSecondFactor()) {
+                                // Lets the 403 below say why, so a client can send the person to enrol or sign in again.
+                                context.getRequest().setAttribute(JwtAuthenticationFilter.MFA_REQUIRED, Boolean.TRUE);
+                                return new AuthorizationDecision(false);
+                            }
+                            return new AuthorizationDecision(true);
+                        })
                         // ---------------------------------------------------------------
                         // The anonymous read tier.
                         //
@@ -191,9 +213,15 @@ public class SecurityConfig {
                             writeProblem(response, HttpServletResponse.SC_UNAUTHORIZED,
                                     "Unauthorized", "Valid credentials are required");
                         })
-                        .accessDeniedHandler((request, response, deniedException) ->
-                                writeProblem(response, HttpServletResponse.SC_FORBIDDEN,
-                                        "Forbidden", "You may not access this resource")))
+                        .accessDeniedHandler((request, response, deniedException) -> {
+                            if (request.getAttribute(JwtAuthenticationFilter.MFA_REQUIRED) != null) {
+                                writeProblem(response, HttpServletResponse.SC_FORBIDDEN, "Forbidden",
+                                        "This area needs a sign-in with a second factor.", "MFA_REQUIRED");
+                                return;
+                            }
+                            writeProblem(response, HttpServletResponse.SC_FORBIDDEN,
+                                    "Forbidden", "You may not access this resource");
+                        }))
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
         // First of the three: a refused open must cost nothing, so it is turned away before the JWT

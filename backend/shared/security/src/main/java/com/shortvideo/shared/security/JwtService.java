@@ -27,6 +27,8 @@ public class JwtService {
     private static final String ROLES_CLAIM = "roles";
     /** OpenID Connect's name for "when the user authenticated", in epoch seconds. */
     static final String AUTH_TIME_CLAIM = "auth_time";
+    /** RFC 8176 authentication methods; absent on tokens issued before it existed, which count as password-only. */
+    static final String AMR_CLAIM = "amr";
     private static final String EXPECTED_ALG = "HS256";
 
     /**
@@ -96,6 +98,14 @@ public class JwtService {
      *     session's absolute lifetime keeps counting from the login instead of restarting.
      */
     public IssuedToken issue(String accountId, Set<String> roles, Instant authTime) {
+        return issue(accountId, roles, authTime, Set.of(AuthenticatedAccount.PASSWORD));
+    }
+
+    /**
+     * @param amr how the person proved who they are; a renewal passes the old token's value, so a session
+     *     can never gain a second factor by being refreshed. Only the second step of a sign-in adds one.
+     */
+    public IssuedToken issue(String accountId, Set<String> roles, Instant authTime, Set<String> amr) {
         Instant now = Instant.now();
         Instant expiry = now.plus(properties.getTtl());
         String token = Jwts.builder()
@@ -106,6 +116,7 @@ public class JwtService {
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
                 .claim(AUTH_TIME_CLAIM, authTime.getEpochSecond())
+                .claim(AMR_CLAIM, amr.stream().sorted().toList())
                 .claim(ROLES_CLAIM, roles.stream().sorted().toList())
                 .claim(TYPE_CLAIM, SESSION_TYPE)
                 .signWith(key, Jwts.SIG.HS256)
@@ -157,7 +168,8 @@ public class JwtService {
                     tokenId,
                     issuedAt.toInstant(),
                     claims.getExpiration().toInstant(),
-                    readAuthTime(claims, issuedAt.toInstant()));
+                    readAuthTime(claims, issuedAt.toInstant()),
+                    readAmr(claims));
         } catch (JwtException | IllegalArgumentException e) {
             throw new InvalidTokenException("Token rejected: " + e.getMessage(), e);
         }
@@ -176,6 +188,22 @@ public class JwtService {
             return authTime.isAfter(fallback) ? fallback : authTime;
         }
         return fallback;
+    }
+
+    private static Set<String> readAmr(Claims claims) {
+        Object raw = claims.get(AMR_CLAIM);
+        if (raw instanceof java.util.Collection<?> methods) {
+            Set<String> out = new java.util.HashSet<>();
+            for (Object method : methods) {
+                if (method instanceof String name && !name.isBlank()) {
+                    out.add(name);
+                }
+            }
+            if (!out.isEmpty()) {
+                return Set.copyOf(out);
+            }
+        }
+        return Set.of(AuthenticatedAccount.PASSWORD);
     }
 
     /** The longest this account's session may last from the login. Privileged accounts get the shorter one. */

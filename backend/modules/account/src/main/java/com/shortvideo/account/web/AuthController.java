@@ -5,10 +5,13 @@ import com.shortvideo.account.domain.AccountEntity;
 import com.shortvideo.account.domain.AccountExceptions;
 import com.shortvideo.account.domain.AccountService;
 import com.shortvideo.account.domain.Emails;
+import com.shortvideo.account.mfa.MfaDtos;
+import com.shortvideo.account.mfa.MfaService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.ClientIpResolver;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.LoginRateLimiter;
+import com.shortvideo.shared.security.MfaPendingTokens;
 import com.shortvideo.shared.security.SessionCookies;
 import com.shortvideo.shared.security.SessionTokenDenyList;
 import io.swagger.v3.oas.annotations.Operation;
@@ -17,6 +20,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -41,6 +45,9 @@ public class AuthController {
     private final SessionTokenDenyList denyList;
     private final LoginRateLimiter rateLimiter;
     private final ClientIpResolver clientIpResolver;
+    /** Absent when {@code shortvideo.mfa.enabled} is false, which leaves sign-in exactly as it was. */
+    private final ObjectProvider<MfaService> mfaService;
+    private final MfaPendingTokens pendingTokens;
 
     public AuthController(
             AccountService accountService,
@@ -48,13 +55,17 @@ public class AuthController {
             SessionCookies sessionCookies,
             SessionTokenDenyList denyList,
             LoginRateLimiter rateLimiter,
-            ClientIpResolver clientIpResolver) {
+            ClientIpResolver clientIpResolver,
+            ObjectProvider<MfaService> mfaService,
+            MfaPendingTokens pendingTokens) {
         this.accountService = accountService;
         this.jwtService = jwtService;
         this.sessionCookies = sessionCookies;
         this.denyList = denyList;
         this.rateLimiter = rateLimiter;
         this.clientIpResolver = clientIpResolver;
+        this.mfaService = mfaService;
+        this.pendingTokens = pendingTokens;
     }
 
     /**
@@ -63,7 +74,7 @@ public class AuthController {
      */
     @PostMapping("/login")
     @Operation(summary = "Log in and open a session")
-    public ResponseEntity<AccountDtos.LoginResponse> login(
+    public ResponseEntity<?> login(
             @Valid @RequestBody AccountDtos.LoginRequest request, HttpServletRequest httpRequest) {
 
         // Normalised here, the same way authenticate() normalises internally, so the
@@ -83,6 +94,14 @@ public class AuthController {
             throw rejected;
         }
         rateLimiter.recordSuccess(email);
+
+        // The password was right. With a second factor on the account, no session is issued yet: the person
+        // gets a short-lived token that is good for nothing except finishing the sign-in with a code.
+        MfaService mfa = mfaService.getIfAvailable();
+        if (mfa != null && mfa.hasActiveFactor(account.getAccountId().toString())) {
+            MfaPendingTokens.Issued pending = pendingTokens.issue(account.getAccountId().toString());
+            return ResponseEntity.ok(MfaDtos.Challenge.of(pending.token(), pending.expiresAt()));
+        }
 
         JwtService.IssuedToken issued =
                 jwtService.issue(account.getAccountId().toString(), accountService.rolesOf(account));
@@ -150,7 +169,7 @@ public class AuthController {
         }
         // The login time is carried over, not reset: renewing extends the idle window, never the session's
         // absolute lifetime (enforced by the filter, from this same value).
-        JwtService.IssuedToken issued = jwtService.issue(caller.accountId(), roles, caller.authTime());
+        JwtService.IssuedToken issued = jwtService.issue(caller.accountId(), roles, caller.authTime(), caller.amr());
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, sessionCookies.session(issued.token(), issued.expiresAt()).toString())

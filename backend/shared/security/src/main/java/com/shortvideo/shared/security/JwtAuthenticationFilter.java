@@ -69,6 +69,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      * bad" (401): a client that reads 401 as a lost session signs everyone out during a blip.
      */
     public static final String AUTH_STATE_UNAVAILABLE = "sv.auth.stateUnavailable";
+    /**
+     * Request attribute set by the {@code /internal} authorization rule when the caller holds the role but signed
+     * in without a second factor, so the 403 can say {@code MFA_REQUIRED} instead of looking like a missing role.
+     */
+    public static final String MFA_REQUIRED = "sv.auth.mfaRequired";
 
     private final JwtService jwtService;
     private final String sessionCookieName;
@@ -178,7 +183,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
             // The token's own roles are only what was true at issue time.
             return new AuthenticatedAccount(
-                    account.accountId(), roles, account.tokenId(), account.issuedAt(), account.expiresAt(), account.authTime());
+                    account.accountId(), roles, account.tokenId(), account.issuedAt(), account.expiresAt(), account.authTime(), account.amr());
         } catch (DataAccessException e) {
             log.warn("Role state unavailable; refusing to authenticate", e);
             request.setAttribute(AUTH_STATE_UNAVAILABLE, Boolean.TRUE);

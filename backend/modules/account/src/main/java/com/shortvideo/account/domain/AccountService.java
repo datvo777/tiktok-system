@@ -360,6 +360,31 @@ public class AccountService implements AccountDirectory {
         afterCommit(() -> credentialFreshnessCache.put(accountId, changedAt));
     }
 
+    /** The address the account signs in with: what an authenticator app shows beside the code. */
+    @Transactional(readOnly = true)
+    public String emailOf(String accountId) {
+        return repository
+                .findById(parseId(accountId))
+                .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"))
+                .getEmail();
+    }
+
+    /**
+     * Re-checks the password of someone who is already signed in, before an act that changes how they sign in
+     * (enrolling a second factor). A session cookie alone does not show the person at the keyboard knows it.
+     *
+     * @throws AccountExceptions.InvalidCredentials when it is wrong
+     */
+    @Transactional(readOnly = true)
+    public void requirePassword(String accountId, String rawPassword) {
+        AccountEntity account = repository
+                .findById(parseId(accountId))
+                .orElseThrow(() -> new AccountExceptions.AccountNotFound("No such account"));
+        if (!passwordEncoder.matches(rawPassword, account.getPasswordHash())) {
+            throw new AccountExceptions.InvalidCredentials("Current password is incorrect");
+        }
+    }
+
     @Override
     @Transactional(readOnly = true)
     public Optional<AccountView> find(String accountId) {

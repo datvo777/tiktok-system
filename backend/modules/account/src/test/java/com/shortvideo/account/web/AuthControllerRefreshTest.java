@@ -17,6 +17,8 @@ import com.shortvideo.shared.security.ClientIpResolver;
 import com.shortvideo.shared.security.JwtProperties;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.LoginRateLimiter;
+import com.shortvideo.shared.security.MfaPendingTokens;
+import com.shortvideo.shared.security.MfaProperties;
 import com.shortvideo.shared.security.SessionCookies;
 import com.shortvideo.shared.security.SessionTokenDenyList;
 import com.shortvideo.shared.security.TokenKeys;
@@ -26,6 +28,7 @@ import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -56,7 +59,9 @@ class AuthControllerRefreshTest {
                 new SessionCookies(properties),
                 denyList,
                 mock(LoginRateLimiter.class),
-                mock(ClientIpResolver.class));
+                mock(ClientIpResolver.class),
+                mock(ObjectProvider.class),
+                new MfaPendingTokens(properties, new MfaProperties(), new TokenKeys(properties)));
 
         when(accountService.find(ACCOUNT_ID))
                 .thenReturn(Optional.of(new AccountView(
@@ -104,5 +109,25 @@ class AuthControllerRefreshTest {
         var response = controller.refresh(caller);
 
         assertThat(jwtService.parse(response.getBody().token()).authTime()).isEqualTo(loggedIn);
+    }
+
+    @Test
+    void refreshingNeverAddsASecondFactor() {
+        var response = controller.refresh(caller);
+
+        assertThat(jwtService.parse(response.getBody().token()).amr()).containsExactly("pwd");
+    }
+
+    @Test
+    void refreshingKeepsTheSecondFactorTheSessionHad() {
+        AuthenticatedAccount withCode = new AuthenticatedAccount(
+                ACCOUNT_ID, Set.of("USER"), "jti-2", Instant.now(), Instant.now().plus(Duration.ofMinutes(10)),
+                Instant.now(), Set.of("pwd", "otp"));
+
+        var response = controller.refresh(withCode);
+
+        var renewed = jwtService.parse(response.getBody().token());
+        assertThat(renewed.amr()).containsExactlyInAnyOrder("pwd", "otp");
+        assertThat(renewed.hasSecondFactor()).isTrue();
     }
 }

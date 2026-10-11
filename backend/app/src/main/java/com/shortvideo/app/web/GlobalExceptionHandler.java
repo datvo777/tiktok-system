@@ -12,6 +12,8 @@ import com.shortvideo.playback.MediaStreamsExhaustedException;
 import com.shortvideo.publication.domain.PublicationExceptions;
 import com.shortvideo.report.domain.ReportExceptions;
 import com.shortvideo.search.domain.SearchUnavailableException;
+import com.shortvideo.account.mfa.MfaExceptions;
+import com.shortvideo.shared.security.MfaUnavailableException;
 import com.shortvideo.shared.security.TooManyLoginAttemptsException;
 import com.shortvideo.shared.security.TooManyRegistrationAttemptsException;
 import com.shortvideo.social.domain.SocialExceptions;
@@ -187,6 +189,47 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler({AccountExceptions.InvalidCredentials.class, AccountExceptions.AccountNotActive.class})
     public ProblemDetail unauthorized(RuntimeException e) {
         return problem(HttpStatus.UNAUTHORIZED, "Unauthorized", "Invalid email or password");
+    }
+
+    // ---- second factor: each answer carries a stable `code`, since a status alone cannot tell them apart ----
+
+    @ExceptionHandler(MfaExceptions.InvalidCode.class)
+    public ProblemDetail invalidMfaCode(MfaExceptions.InvalidCode e) {
+        ProblemDetail problem = problem(HttpStatus.UNAUTHORIZED, "Unauthorized", e.getMessage());
+        problem.setProperty("code", "INVALID_MFA_CODE");
+        return problem;
+    }
+
+    @ExceptionHandler(MfaExceptions.PendingSignInInvalid.class)
+    public ProblemDetail pendingSignInInvalid(MfaExceptions.PendingSignInInvalid e) {
+        ProblemDetail problem = problem(HttpStatus.UNAUTHORIZED, "Unauthorized", e.getMessage());
+        problem.setProperty("code", "MFA_TOKEN_INVALID");
+        return problem;
+    }
+
+    @ExceptionHandler(MfaExceptions.PasswordIncorrect.class)
+    public ProblemDetail mfaPasswordIncorrect(MfaExceptions.PasswordIncorrect e) {
+        ProblemDetail problem = problem(HttpStatus.FORBIDDEN, "Forbidden", e.getMessage());
+        problem.setProperty("code", "PASSWORD_INCORRECT");
+        return problem;
+    }
+
+    @ExceptionHandler({MfaExceptions.AlreadyEnrolled.class, MfaExceptions.NoPendingEnrollment.class})
+    public ProblemDetail mfaEnrolmentState(RuntimeException e) {
+        ProblemDetail problem = problem(HttpStatus.CONFLICT, "Conflict", e.getMessage());
+        problem.setProperty("code", e instanceof MfaExceptions.AlreadyEnrolled
+                ? "MFA_ALREADY_ENROLLED" : "MFA_NO_PENDING_ENROLLMENT");
+        return problem;
+    }
+
+    @ExceptionHandler(MfaUnavailableException.class)
+    public ResponseEntity<ProblemDetail> mfaUnavailable(MfaUnavailableException e) {
+        ProblemDetail problem = problem(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable",
+                "Could not check the code right now. Try again shortly.");
+        problem.setProperty("code", "MFA_UNAVAILABLE");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem);
     }
 
     /** Malformed, reserved or taken — all things the person can fix by typing something else. */
