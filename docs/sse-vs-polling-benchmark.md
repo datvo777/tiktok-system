@@ -539,3 +539,18 @@ buffering on, `worker_connections 16384`. Tomcat figures come from the backend's
 Conclusion: putting the backend behind a reverse proxy is the right way to run the stream, for the
 descriptors on Tomcat and for nothing else it costs measurably, provided the proxy is sized for the total.
 Ask for the connect-timeout check on a native proxy before relying on it.
+
+### The packaged nginx (infrastructure/nginx), same test, 2026-10-11
+
+`docker compose --profile proxy up -d nginx` with the config in `infrastructure/nginx/nginx.conf`
+(`proxy_connect_timeout 5s`, stream in its own location, `keepalive 64`), 4,000 SSE users, two reps:
+
+- Tomcat open files 4,314 and 4,325 (4,277 and 4,281 with the earlier hand-written config); nginx about
+  10,900 at the end of the window; backend CPU 0.38 and 0.36; inbox p95 19 and 17.3 ms; 3,999 and 4,000
+  streams open at the end; `rejected` 0.
+- **New upstream connections:** 6.2% of the REST requests over a whole run, but 16-20% of the requests
+  logged during the first third (users still arriving) and about 0.1-2% afterwards, so the pool is at about
+  the 1% target in steady state.
+- **Connect timeouts remain** (327 in the first run's log, all during ramp-up) and now cost 5 s instead of
+  60 s; 13 and 37 REST requests in the window got a 504. Not seen without the container for the same ramp.
+  Still attributed to the Docker Desktop path to the host, not shown.
