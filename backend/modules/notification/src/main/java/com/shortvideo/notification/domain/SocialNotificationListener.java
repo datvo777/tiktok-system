@@ -14,7 +14,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Notifies a creator of new comments and followers (brief section 20, Milestone 7). */
+/** Notifies a creator of new likes, comments, replies and followers (brief section 20, Milestone 7). */
 @Component
 class SocialNotificationListener {
 
@@ -34,7 +34,11 @@ class SocialNotificationListener {
         this.objectMapper = objectMapper;
     }
 
-    @KafkaListener(topics = Topics.SOCIAL_EVENTS, groupId = "notification-social-listener")
+    // The topic has three partitions and carries the platform's highest-volume events (likes,
+    // comments, follows), so this is the one listener given a thread per partition. Records
+    // with the same key share a partition, so per-key order is unchanged. Not applied to the
+    // others: each extra thread competes for the database connection pool.
+    @KafkaListener(topics = Topics.SOCIAL_EVENTS, groupId = "notification-social-listener", concurrency = "3")
     @Transactional
     public void onSocialEvent(String payload) {
         try {
@@ -54,6 +58,27 @@ class SocialNotificationListener {
                                 displayName(commenterId) + " commented on your video.",
                                 (String) p.get("videoId"));
                     }
+                }
+                case EventTypes.SOCIAL_COMMENT_REPLIED -> {
+                    String replierId = (String) p.get("replierId");
+                    String parentAuthorId = (String) p.get("parentAuthorId");
+                    // Replying to yourself is not news to you.
+                    if (!replierId.equals(parentAuthorId)) {
+                        notificationService.create(
+                                parentAuthorId,
+                                "COMMENT_REPLY",
+                                displayName(replierId) + " replied to your comment.",
+                                (String) p.get("videoId"));
+                    }
+                }
+                case EventTypes.SOCIAL_VIDEO_LIKED -> {
+                    // The producer already drops self-likes and repeat likes, so
+                    // anything arriving here is a genuine first like by someone else.
+                    notificationService.create(
+                            (String) p.get("videoOwnerId"),
+                            "NEW_LIKE",
+                            displayName((String) p.get("likerId")) + " liked your video.",
+                            (String) p.get("videoId"));
                 }
                 case EventTypes.SOCIAL_CREATOR_FOLLOWED -> {
                     String followerName = displayName((String) p.get("followerId"));

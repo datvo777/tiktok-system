@@ -7,6 +7,7 @@ import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.events.MediaEvents;
 import com.shortvideo.shared.events.Topics;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -15,6 +16,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,19 +40,19 @@ class TranscodeJobHandler {
     private static final String PRODUCER = "media-worker";
 
     private final MinioObjectStore store;
-    private final HlsTranscoder transcoder;
+    private final TranscodePipeline pipeline;
     private final WorkerProperties properties;
     private final KafkaTemplate<String, String> kafka;
     private final ObjectMapper objectMapper;
 
     TranscodeJobHandler(
             MinioObjectStore store,
-            HlsTranscoder transcoder,
+            TranscodePipeline pipeline,
             WorkerProperties properties,
             KafkaTemplate<String, String> kafka,
             ObjectMapper objectMapper) {
         this.store = store;
-        this.transcoder = transcoder;
+        this.pipeline = pipeline;
         this.properties = properties;
         this.kafka = kafka;
         this.objectMapper = objectMapper;
@@ -58,6 +60,7 @@ class TranscodeJobHandler {
 
     void handle(MediaEvents.MediaJobCommand job, String correlationId) {
         Path workDir = null;
+        String tempPrefix = "processing-temp/" + job.jobId() + "/";
         try {
             workDir = Files.createTempDirectory("media-worker-" + safe(job.jobId()) + "-");
             Path sourceFile = workDir.resolve("source");
@@ -70,30 +73,39 @@ class TranscodeJobHandler {
 
             HlsTranscoder.TranscodeOutput output;
             try {
-                output = transcoder.transcode(sourceFile, workDir.resolve("output"));
+                output = pipeline.run(sourceFile, workDir.resolve("output"));
             } catch (TranscodeFailedException e) {
                 log.warn("Transcode failed for job {}: {}", job.jobId(), e.getMessage());
                 report(job, "FAILED", null, e.failureClass(), correlationId);
                 return;
             }
 
-            String tempPrefix = "processing-temp/" + job.jobId() + "/";
             String finalPrefix = "processed/" + job.videoId() + "/" + job.processingVersion() + "/";
 
             stageAndPromote(output.masterPlaylist().getParent(), tempPrefix, finalPrefix);
 
             MediaEvents.Assets assets = new MediaEvents.Assets(
                     finalPrefix + "master.m3u8",
-                    List.of(finalPrefix + output.variantRelativePath()),
+                    output.variantRelativePaths().stream().map(path -> finalPrefix + path).toList(),
                     output.segmentCount(),
                     output.durationSeconds());
             report(job, "COMPLETED", assets, null, correlationId);
-
-            cleanupPrefix(tempPrefix);
+        } catch (ResultNotPublishedException e) {
+            // The job itself ran; it is the report that did not get through. Reporting a failure
+            // here would be a second send that can fail the same way, so let the listener's error
+            // handler redeliver the command instead (deterministic output makes the rerun safe).
+            throw e;
+        } catch (TranscodeFailedException e) {
+            // Raised outside the pipeline, e.g. a source object that does not exist.
+            log.warn("Job {} failed: {}", job.jobId(), e.getMessage());
+            report(job, "FAILED", null, e.failureClass(), correlationId);
         } catch (Exception e) {
             log.error("Transient failure handling job {}", job.jobId(), e);
             report(job, "FAILED", null, "TRANSIENT", correlationId);
         } finally {
+            // Whatever way the job ended, its staging objects are of no further use: on success they
+            // were copied to processed/, on failure they are partial, and a rerun rewrites them.
+            cleanupPrefix(tempPrefix);
             if (workDir != null) {
                 deleteRecursively(workDir);
             }
@@ -132,7 +144,7 @@ class TranscodeJobHandler {
                 job.jobId(), job.videoId(), job.processingVersion(), outcome, assets, failureClass);
 
         var envelope = new EventEnvelope<>(
-                UUID.randomUUID(),
+                resultEventId(job, outcome, failureClass),
                 EventTypes.MEDIA_RESULT_REPORTED,
                 1,
                 AggregateTypes.VIDEO,
@@ -145,9 +157,32 @@ class TranscodeJobHandler {
                 null,
                 payload);
         try {
-            kafka.send(Topics.MEDIA_RESULTS, job.videoId(), objectMapper.writeValueAsString(envelope));
+            kafka.send(Topics.MEDIA_RESULTS, job.videoId(), objectMapper.writeValueAsString(envelope))
+                    .get(properties.getResultAckTimeout().toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ResultNotPublishedException(job.jobId(), e);
         } catch (Exception e) {
             log.error("Failed to publish media.results.v1 for job {}", job.jobId(), e);
+            throw new ResultNotPublishedException(job.jobId(), e);
+        }
+    }
+
+    /**
+     * Derived from the job, its try number and the outcome, so a redelivered command reports with
+     * the same id and the Video module's inbox absorbs the duplicate. The try number keeps the
+     * results of two tries of the same jobId (a TRANSIENT retry) apart. The inbox is cleaned up
+     * after a while, so the processingVersion check on the Video side remains the real fence.
+     */
+    static UUID resultEventId(MediaEvents.MediaJobCommand job, String outcome, String failureClass) {
+        String key = job.jobId() + "|" + job.attemptNumber() + "|" + outcome + "|" + (failureClass == null ? "" : failureClass);
+        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** The result could not be handed to the broker; the command should be redelivered. */
+    static final class ResultNotPublishedException extends RuntimeException {
+        ResultNotPublishedException(String jobId, Throwable cause) {
+            super("media.results.v1 for job " + jobId + " was not acknowledged", cause);
         }
     }
 
@@ -175,6 +210,9 @@ class TranscodeJobHandler {
         String lower = relativePath.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".m3u8")) return "application/vnd.apple.mpegurl";
         if (lower.endsWith(".ts")) return "video/mp2t";
+        // The poster is served straight to an <img>/<video poster>, so it needs a
+        // real image type -- octet-stream would make the browser refuse to render it.
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
         return "application/octet-stream";
     }
 

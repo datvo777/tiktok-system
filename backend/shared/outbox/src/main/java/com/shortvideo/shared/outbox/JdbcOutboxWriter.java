@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EventEnvelope;
 import java.sql.Timestamp;
+import java.time.Instant;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -28,6 +29,11 @@ public class JdbcOutboxWriter implements OutboxWriter {
 
     @Override
     public void append(EventEnvelope<?> envelope) {
+        append(envelope, envelope.occurredAt());
+    }
+
+    @Override
+    public void append(EventEnvelope<?> envelope, Instant availableAt) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException(
                     "OutboxWriter.append must run inside the transaction that writes the "
@@ -49,7 +55,7 @@ public class JdbcOutboxWriter implements OutboxWriter {
                 envelope.aggregateVersion(),
                 serialize(envelope),
                 occurred,
-                occurred);
+                Timestamp.from(availableAt));
     }
 
     private String serialize(EventEnvelope<?> envelope) {

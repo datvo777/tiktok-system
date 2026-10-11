@@ -1,0 +1,886 @@
+<title>System Interview Field Guide</title>
+<style>
+  :root {
+    --bg: #f5f6f9;
+    --surface: #ffffff;
+    --surface-alt: #eef0f5;
+    --border: #dee1e9;
+    --border-strong: #c5cad6;
+    --text: #14181f;
+    --text-muted: #565f70;
+    --text-faint: #8890a0;
+    --accent: #4f46e5;
+    --accent-strong: #382fc9;
+    --accent-soft: #ecebfd;
+    --warn: #b45309;
+    --warn-soft: #fef3e0;
+    --warn-border: #f2d19b;
+    --good: #15803d;
+    --good-soft: #e8f7ee;
+    --good-border: #b7e3c6;
+    --code-bg: #161922;
+    --code-text: #dfe3ec;
+    --code-accent: #9d97ff;
+    --shadow: 0 1px 2px rgba(20, 24, 31, 0.04), 0 8px 24px -12px rgba(20, 24, 31, 0.12);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1117;
+      --surface: #171a22;
+      --surface-alt: #1e222c;
+      --border: #2a2f3b;
+      --border-strong: #3a4051;
+      --text: #e7e9ee;
+      --text-muted: #9ba3b4;
+      --text-faint: #6d7688;
+      --accent: #948dff;
+      --accent-strong: #b1abff;
+      --accent-soft: #23213f;
+      --warn: #e8a33d;
+      --warn-soft: #332512;
+      --warn-border: #5a4420;
+      --good: #4ade80;
+      --good-soft: #12261a;
+      --good-border: #22492f;
+      --code-bg: #0b0d12;
+      --code-text: #dfe3ec;
+      --code-accent: #b1abff;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0f1117;
+    --surface: #171a22;
+    --surface-alt: #1e222c;
+    --border: #2a2f3b;
+    --border-strong: #3a4051;
+    --text: #e7e9ee;
+    --text-muted: #9ba3b4;
+    --text-faint: #6d7688;
+    --accent: #948dff;
+    --accent-strong: #b1abff;
+    --accent-soft: #23213f;
+    --warn: #e8a33d;
+    --warn-soft: #332512;
+    --warn-border: #5a4420;
+    --good: #4ade80;
+    --good-soft: #12261a;
+    --good-border: #22492f;
+    --code-bg: #0b0d12;
+    --code-text: #dfe3ec;
+    --code-accent: #b1abff;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    color: var(--text);
+    text-wrap: balance;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  code, .mono {
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  a { color: var(--accent); }
+
+  .shell {
+    display: flex;
+    max-width: 1240px;
+    margin: 0 auto;
+    align-items: flex-start;
+  }
+
+  /* ---------- sidebar ---------- */
+
+  .toc {
+    position: sticky;
+    top: 0;
+    width: 250px;
+    flex-shrink: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 2.5rem 1.25rem 2.5rem 1.75rem;
+    border-right: 1px solid var(--border);
+  }
+
+  .toc-kicker {
+    font-family: "Archivo", sans-serif;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.35rem;
+  }
+
+  .toc-title {
+    font-family: "Archivo", sans-serif;
+    font-weight: 800;
+    font-size: 1.15rem;
+    letter-spacing: -0.01em;
+    margin-bottom: 1.75rem;
+  }
+
+  .toc nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+  }
+
+  .toc a {
+    display: block;
+    font-family: "Archivo", sans-serif;
+    font-size: 0.83rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-decoration: none;
+    padding: 0.32rem 0.5rem;
+    border-radius: 6px;
+    border-left: 2px solid transparent;
+  }
+
+  .toc a:hover { color: var(--text); background: var(--surface-alt); }
+
+  .toc .sub a {
+    font-weight: 500;
+    font-size: 0.78rem;
+    padding-left: 1.1rem;
+    color: var(--text-faint);
+  }
+
+  /* ---------- main content ---------- */
+
+  main {
+    flex: 1;
+    min-width: 0;
+    padding: 3.5rem 3.5rem 8rem;
+  }
+
+  .kicker {
+    font-family: "Archivo", sans-serif;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1.doc-title {
+    font-size: clamp(2rem, 3.4vw, 2.6rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin-top: 0.5rem;
+    max-width: 22ch;
+  }
+
+  .doc-dek {
+    max-width: 62ch;
+    color: var(--text-muted);
+    font-size: 1.08rem;
+    margin-top: 0.9rem;
+  }
+
+  section {
+    max-width: 68ch;
+    margin-top: 4rem;
+    scroll-margin-top: 2rem;
+  }
+
+  section.wide { max-width: 100%; }
+
+  h2.section-title {
+    font-size: 1.5rem;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    padding-bottom: 0.6rem;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 1.5rem;
+  }
+
+  h3.sub-title {
+    font-size: 1.12rem;
+    font-weight: 700;
+    margin-top: 2.25rem;
+    margin-bottom: 0.7rem;
+  }
+
+  p { margin: 0.9rem 0 0; }
+  ul, ol { margin: 0.9rem 0 0; padding-left: 1.3rem; }
+  li { margin-top: 0.4rem; }
+  li::marker { color: var(--text-faint); }
+
+  strong { color: var(--text); font-weight: 700; }
+
+  .lede {
+    font-size: 1.05rem;
+    color: var(--text-muted);
+  }
+
+  /* ---------- callouts ---------- */
+
+  .callout {
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+    margin-top: 1.4rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .callout-label {
+    font-family: "Archivo", sans-serif;
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .callout p { margin-top: 0.5rem; font-size: 0.97rem; }
+  .callout p:first-of-type { margin-top: 0; }
+
+  .callout.pattern { border-color: var(--good-border); background: var(--good-soft); }
+  .callout.pattern .callout-label { color: var(--good); }
+
+  .callout.tradeoff { border-color: var(--accent); background: var(--accent-soft); }
+  .callout.tradeoff .callout-label { color: var(--accent-strong); }
+
+  .callout.limitation { border-color: var(--warn-border); background: var(--warn-soft); }
+  .callout.limitation .callout-label { color: var(--warn); }
+
+  /* ---------- code / flow blocks ---------- */
+
+  .codeblock {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+    margin-top: 1.2rem;
+    overflow-x: auto;
+    font-size: 0.83rem;
+    line-height: 1.7;
+    box-shadow: var(--shadow);
+  }
+
+  .codeblock .step { color: var(--code-accent); font-weight: 600; }
+  .codeblock .arrow { color: var(--text-faint); }
+
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: 1.2rem;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+  }
+
+  .flow-step {
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: 0.9rem;
+    padding: 0.85rem 1.1rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    align-items: baseline;
+  }
+
+  .flow-step:first-child { border-top: none; }
+
+  .flow-num {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.75rem;
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .flow-step .flow-text { font-size: 0.93rem; }
+  .flow-step code { font-size: 0.85em; color: var(--accent-strong); }
+
+  /* ---------- table ---------- */
+
+  .table-wrap { overflow-x: auto; margin-top: 1.2rem; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    min-width: 480px;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  th {
+    font-family: "Archivo", sans-serif;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border-bottom: 2px solid var(--border-strong);
+  }
+
+  /* ---------- Q&A cards ---------- */
+
+  .qa {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem 1.4rem;
+    margin-top: 1.1rem;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .qa-q {
+    font-family: "Archivo", sans-serif;
+    font-weight: 700;
+    font-size: 1rem;
+    display: flex;
+    gap: 0.6rem;
+  }
+
+  .qa-q .qmark {
+    font-family: "Archivo", sans-serif;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .qa-a { margin-top: 0.6rem; color: var(--text-muted); font-size: 0.95rem; }
+  .qa-a ul { margin-top: 0.5rem; }
+
+  /* ---------- module grid ---------- */
+
+  .module-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.6rem;
+    margin-top: 1.4rem;
+  }
+
+  .module-chip {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 0.55rem 0.8rem;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.78rem;
+  }
+
+  .module-chip .tag {
+    display: block;
+    font-family: "Archivo", sans-serif;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-top: 0.2rem;
+  }
+
+  hr.divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 3rem 0;
+  }
+
+  ::selection { background: var(--accent-soft); }
+
+  @media (max-width: 880px) {
+    .toc { display: none; }
+    main { padding: 2.5rem 1.25rem 6rem; }
+  }
+</style>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<div class="shell">
+  <aside class="toc">
+    <div class="toc-kicker">Field Guide</div>
+    <div class="toc-title">System Interview Prep</div>
+    <nav>
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#patterns">Core patterns</a>
+      <div class="sub">
+        <a href="#pattern-outbox">Transactional outbox</a>
+        <a href="#pattern-inbox">Durable inbox</a>
+        <a href="#pattern-version">Version-guarded projections</a>
+        <a href="#pattern-revocation">Revocation vs. eligibility</a>
+        <a href="#pattern-gateway">Media gateway authority order</a>
+      </div>
+      <a href="#flows">Two flows, traced</a>
+      <a href="#tradeoffs">Trade-offs to defend</a>
+      <a href="#limitations">Known limitations</a>
+      <a href="#scaling">If this had to scale</a>
+      <a href="#qa">Mock questions</a>
+      <a href="#glossary">Vocabulary</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="kicker">Reference document</div>
+    <h1 class="doc-title">Explaining the short-video platform in a system interview</h1>
+    <p class="doc-dek">
+      This is the project, reduced to what an interviewer actually probes: not what you built, but why —
+      what problem each decision solved, what you gave up to make it, and where you already know it's weak.
+      Read it once top to bottom, then use the sidebar to drill back into whatever comes up.
+    </p>
+
+    <section id="overview">
+      <h2 class="section-title">Overview</h2>
+      <p class="lede">
+        A short-video platform (upload → transcode → moderate → publish → discover → play) built as a local,
+        single-machine MVP across eight milestones. The interesting part isn't the video pipeline — it's that
+        every mutation is designed to survive a crash at the worst possible moment, and every read is designed
+        to fail closed when it doesn't have enough information to say yes.
+      </p>
+      <p>
+        Stack: Java 21, Spring Boot, PostgreSQL, Redis, Kafka, MinIO (S3-compatible object storage), OpenSearch,
+        Prometheus/Grafana/Jaeger for observability. Two React frontends (creator app, admin app). A Maven
+        multi-module reactor, not a single jar.
+      </p>
+      <div class="callout tradeoff">
+        <div class="callout-label">Opening line that works</div>
+        <p>
+          "It's a modular monolith with the failure-handling discipline of a distributed system — I wanted to
+          prove out outbox/inbox/idempotency patterns without paying microservices' operational cost on a
+          solo local build. The module boundaries are real, though: every cross-module call goes through an
+          explicit interface or a Kafka event, never a shared table — so splitting a module into its own
+          service later is a deployment change, not a rewrite."
+        </p>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2 class="section-title">Architecture</h2>
+      <p>
+        18 Maven modules in one reactor, one deployable Spring Boot app (<code>backend/app</code>) plus one
+        separate always-stateless worker (<code>media-worker</code>). One Postgres instance, one schema per
+        module. A module reads another module's data only through a synchronous read-only Java interface
+        (the <code>*Directory</code> pattern) or by reacting to that module's Kafka events — never by querying
+        its tables directly.
+      </p>
+
+      <h3 class="sub-title">Business modules, in the order data flows through them</h3>
+      <div class="module-grid">
+        <div class="module-chip">account<span class="tag">identity</span></div>
+        <div class="module-chip">upload<span class="tag">intake</span></div>
+        <div class="module-chip">video<span class="tag">processing</span></div>
+        <div class="module-chip">moderation<span class="tag">trust &amp; safety</span></div>
+        <div class="module-chip">appeal<span class="tag">trust &amp; safety</span></div>
+        <div class="module-chip">publication<span class="tag">coordinator</span></div>
+        <div class="module-chip">eligibility<span class="tag">projection</span></div>
+        <div class="module-chip">social<span class="tag">engagement</span></div>
+        <div class="module-chip">feed<span class="tag">discovery</span></div>
+        <div class="module-chip">search<span class="tag">discovery</span></div>
+        <div class="module-chip">notification<span class="tag">engagement</span></div>
+        <div class="module-chip">playback<span class="tag">delivery</span></div>
+      </div>
+      <p>
+        Plus five shared libraries every module depends on: <code>events</code> (the envelope + topic names),
+        <code>outbox</code>, <code>inbox</code>, <code>security</code>, <code>revocation</code>.
+      </p>
+
+      <div class="callout tradeoff">
+        <div class="callout-label">Why a monolith, not microservices</div>
+        <p>
+          Microservices earn their cost when different parts of a system need independent scaling, independent
+          deploy cadence, or independent teams. None of that applied here. What <em>did</em> matter was proving
+          the consistency patterns (outbox, inbox, version-guarded projections) that a real production system —
+          monolith or not — needs the moment more than one thing can fail independently. A monolith with Kafka
+          between modules gets you that discipline without the network being a second thing to reason about on
+          top of the business logic.
+        </p>
+      </div>
+    </section>
+
+    <section id="patterns">
+      <h2 class="section-title">Core patterns</h2>
+      <p class="lede">These five ideas are 80% of what's worth explaining well. Everything else is application.</p>
+
+      <h3 class="sub-title" id="pattern-outbox">1. Transactional outbox</h3>
+      <p>
+        The problem: you update the database and publish a Kafka event describing that update. Those are two
+        separate systems — if the process dies between them, or the publish fails after the commit, your event
+        stream and your database silently disagree forever.
+      </p>
+      <p>
+        The fix: the event goes into a Postgres table (<code>platform.outbox_event</code>) in the <strong>same
+        transaction</strong> as the business write. A separate relay polls that table, claims a batch with
+        <code>SELECT ... FOR UPDATE SKIP LOCKED</code> and a time-boxed lease, publishes to Kafka, then marks
+        the row published. If the relay dies mid-claim, the lease expires and the next poll (from the same or a
+        different relay instance) reclaims it — <em>verified live</em>: I inserted a row already
+        <code>CLAIMED</code> by a fake relay with an expired lease and watched the running relay reclaim and
+        publish it within 2 seconds.
+      </p>
+      <div class="callout pattern">
+        <div class="callout-label">Why this is the right answer, not just a common one</div>
+        <p>
+          It converts "update DB, then publish" (two systems, no shared transaction) into "update DB" (one
+          system, ACID) — the publish becomes a background concern with its own retry logic, decoupled from the
+          request path. The producer-idempotence flag on the Kafka producer plus a unique
+          <code>(aggregate_type, aggregate_id, aggregate_version)</code> constraint means even a redelivered
+          publish from the relay can't create a duplicate row.
+        </p>
+      </div>
+
+      <h3 class="sub-title" id="pattern-inbox">2. Durable inbox</h3>
+      <p>
+        Kafka only promises <em>at-least-once</em> delivery. Every consumer in this system claims an event by
+        inserting <code>(consumer_name, event_id)</code> into a shared <code>platform.consumed_event</code>
+        table, inside the same transaction as the business effect, <strong>before</strong> doing anything else.
+        A duplicate-key violation means "already handled" — ack the offset, do nothing.
+      </p>
+      <div class="codeblock">
+<span class="step">claim(consumerName, eventId)</span> <span class="arrow">→</span> insert into consumed_event
+<span class="arrow">  ├─</span> success → apply business effect, commit, ack offset
+<span class="arrow">  └─</span> duplicate key → business effect already applied → ack offset, do nothing
+      </div>
+      <p>
+        <em>Verified live</em>: republished the exact same event twice via a raw Kafka producer and confirmed
+        exactly one notification row was created, not two — this is Rule 5 in the brief's own words:
+        "duplicate notification delivery has one user-visible effect."
+      </p>
+
+      <h3 class="sub-title" id="pattern-version">3. Version-guarded projections</h3>
+      <p>
+        <code>eligibility.video_eligibility</code> is written by three independent event streams — processing,
+        moderation, publication — each owned by a different module. A single optimistic-lock version on the
+        whole row would cause false contention: module B's write bumps the version, then module A's
+        slightly-older-numbered write gets rejected even though it never touched B's columns.
+      </p>
+      <p>
+        The fix: <strong>three separate version-guard columns</strong>
+        (<code>processing_version_source</code>, <code>moderation_version_source</code>,
+        <code>publication_version_source</code>), each only compared against events from its own domain. Never
+        compare a moderation version against a publication version — that's Rule 10 in the brief.
+      </p>
+      <div class="callout limitation">
+        <div class="callout-label">A limitation I found by testing it, not by reading the spec</div>
+        <p>
+          Reconciliation (a periodic sweep that re-derives eligibility from each source's own authoritative
+          table) can only fix drift where the source's <em>real</em> version has genuinely advanced past what's
+          stored — a truly missed event. I tried two things that <em>don't</em> self-heal: deleting a row
+          entirely (eligibility has zero foreign-key knowledge of what videos exist, by design, so it can never
+          rediscover a video it's never seen), and corrupting a row's value while leaving its version number
+          unchanged (the guard has nothing to compare against, so it never fires). Both are inherent to any
+          purely version-guarded reconciliation design, not bugs — and saying that out loud, unprompted, is a
+          stronger answer than pretending the system has no edges.
+        </p>
+      </div>
+
+      <h3 class="sub-title" id="pattern-revocation">4. Two consistency models on purpose: revocation vs. eligibility</h3>
+      <p>
+        These answer different questions, so they're allowed to behave differently:
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th></th><th>Revocation</th><th>Eligibility</th></tr>
+          <tr>
+            <td>Question it answers</td>
+            <td>Is there an active reason to block this <em>right now</em>?</td>
+            <td>Is everything generally lined up for this to be visible?</td>
+          </tr>
+          <tr>
+            <td>Consistency model</td>
+            <td>Synchronous, pessimistic. Durable Postgres write + Redis update happen before the admin
+              action's response.</td>
+            <td>Asynchronous, eventually consistent via Kafka projections.</td>
+          </tr>
+          <tr>
+            <td>On failure</td>
+            <td>Fails closed — restrictive changes must land before responding (Rule 8).</td>
+            <td>Permissive changes may lag; a missing row is treated as deny, never allow (Rule 9).</td>
+          </tr>
+          <tr>
+            <td>Checked</td>
+            <td>Redis first (fast deny path) → Postgres (authoritative, catches Redis staleness).</td>
+            <td>Only after both revocation checks pass, for an explicit allow.</td>
+          </tr>
+        </table>
+      </div>
+      <p>
+        Redis can be flushed entirely and it never produces an incorrect <em>allow</em> — worst case it adds one
+        Postgres read to every request until the periodic rebuild catches up.
+        <em>Verified live</em>: <code>FLUSHALL</code> against the running Redis, and the revocation cache
+        rebuilt itself from Postgres and matched the pre-flush state exactly within 10 seconds, with zero
+        incorrect grants in between.
+      </p>
+
+      <h3 class="sub-title" id="pattern-gateway">5. Media gateway authority order</h3>
+      <p>
+        The Spring app is the <em>only</em> path to processed video bytes — the MinIO bucket is never public,
+        no presigned read URL is ever issued for a processed object. Every single media request runs this
+        exact order, and the order is the whole point:
+      </p>
+      <div class="flow">
+        <div class="flow-step"><span class="flow-num">01</span><span class="flow-text">Trusted owner identity from the persisted video row (not the request)</span></div>
+        <div class="flow-step"><span class="flow-num">02</span><span class="flow-text">Redis active deny check — fast path, video and account</span></div>
+        <div class="flow-step"><span class="flow-num">03</span><span class="flow-text">Durable Postgres revocation check — authoritative, overrides Redis either way</span></div>
+        <div class="flow-step"><span class="flow-num">04</span><span class="flow-text">Durable eligibility decision — only reached in <code>PUBLIC</code> mode, only for an explicit allow</span></div>
+        <div class="flow-step"><span class="flow-num">05</span><span class="flow-text">Stream via a bounded buffer with HTTP Range support — never buffer a whole object to serve part of it</span></div>
+      </div>
+      <p>
+        <em>Verified live under load</em>: 7,404 concurrent range requests over 50 seconds (488&nbsp;MB
+        streamed, 0% failures, p95 latency 12.6&nbsp;ms) — JVM heap moved from 166&nbsp;MB to 204&nbsp;MB, nowhere
+        near proportional to bytes streamed, which is the actual proof that step 5 holds under concurrency and
+        not just in a single-request test.
+      </p>
+    </section>
+
+    <section id="flows" class="wide">
+      <h2 class="section-title">Two flows, traced end to end</h2>
+      <p style="max-width: 68ch">
+        Interviewers like asking you to trace a request through the whole system. Have two of these cold.
+      </p>
+
+      <h3 class="sub-title" style="max-width: 68ch">Upload → playable</h3>
+      <div class="flow" style="max-width: 68ch">
+        <div class="flow-step"><span class="flow-num">1</span><span class="flow-text">Client asks for an upload session → backend issues an <strong>owner-scoped, size-limited presigned MinIO PUT URL</strong>. The video's draft row is created in the same call.</span></div>
+        <div class="flow-step"><span class="flow-num">2</span><span class="flow-text">Client PUTs bytes <strong>directly to MinIO</strong> — the backend never touches video bytes (video bytes never go through Kafka either).</span></div>
+        <div class="flow-step"><span class="flow-num">3</span><span class="flow-text">Client calls <code>complete</code> → outbox event <code>video.upload.completed</code>.</span></div>
+        <div class="flow-step"><span class="flow-num">4</span><span class="flow-text">Video module consumes it, dispatches a transcode <strong>command</strong> to the media worker (same aggregate, same version bump — only the topic differs).</span></div>
+        <div class="flow-step"><span class="flow-num">5</span><span class="flow-text">media-worker (stateless, <strong>owns no database</strong>, so it can never emit an authoritative event) downloads the source, transcodes locally, stages output under <code>processing-temp/{jobId}/</code>, validates, then server-side <strong>copies</strong> to <code>processed/{videoId}/{version}/</code> only after validation.</span></div>
+        <div class="flow-step"><span class="flow-num">6</span><span class="flow-text">Worker reports a <strong>result</strong> (not an event — it has no aggregate to version). Video module applies it idempotently and is the one that emits the authoritative <code>video.processing.ready</code>.</span></div>
+        <div class="flow-step"><span class="flow-num">7</span><span class="flow-text">Owner can preview immediately (separate, private authorization path). Public playback still needs moderation approval + publish intent + eligibility, all independent of processing.</span></div>
+      </div>
+
+      <h3 class="sub-title" style="max-width: 68ch">Reject → appeal → reinstated</h3>
+      <div class="flow" style="max-width: 68ch">
+        <div class="flow-step"><span class="flow-num">1</span><span class="flow-text">Admin rejects. <strong>One transaction</strong>: moderation state → <code>REJECTED</code>, a durable revocation record, the outbox event. Redis updated synchronously right after commit.</span></div>
+        <div class="flow-step"><span class="flow-num">2</span><span class="flow-text">Three independent modules react to that one event, each owning its own reaction: Video retains the asset (<code>REJECTED_RETAINED</code> — not deleted, so an appeal can restore it), Publication force-suspends (bypassing normal reevaluation), Notification tells the creator why.</span></div>
+        <div class="flow-step"><span class="flow-num">3</span><span class="flow-text">Creator appeals. The Appeal module owns appeal state — it does <strong>not</strong> call Moderation directly.</span></div>
+        <div class="flow-step"><span class="flow-num">4</span><span class="flow-text">Admin approves the appeal → Appeal module emits its own event. Moderation module <strong>consumes</strong> that event and reinstates itself — every module reacts to events, none calls another module's mutation synchronously.</span></div>
+        <div class="flow-step"><span class="flow-num">5</span><span class="flow-text">Video module restores the asset <strong>only after re-verifying the underlying files still exist in MinIO</strong> — "if valid," not blindly.</span></div>
+        <div class="flow-step"><span class="flow-num">6</span><span class="flow-text">Publication reevaluates normally; the revocation record is cleared; the video is playable again.</span></div>
+      </div>
+      <div class="callout pattern">
+        <div class="callout-label">The one-line answer for "why doesn't Appeal just call Moderation.reinstate()"</div>
+        <p>
+          Because then Appeal would need to know Moderation's internal state machine, and Moderation couldn't
+          change its reinstatement rules without touching Appeal's code. Event-driven reaction keeps each module
+          the sole owner of its own transitions — the same reason microservices communicate over the network
+          instead of importing each other's classes, applied inside one process.
+        </p>
+      </div>
+    </section>
+
+    <section id="tradeoffs">
+      <h2 class="section-title">Trade-offs worth defending out loud</h2>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>Why Kafka inside a monolith — isn't that overkill?</div>
+        <div class="qa-a">
+          The consistency problem (ordering, replay, at-least-once, dual-write) is identical whether modules
+          live in one process or ten. Using real async messaging internally means the outbox/inbox/idempotency
+          patterns get proven under this codebase's own load, not assumed — and it decouples modules at the code
+          level too: Video module never imports Notification module's service class.
+        </div>
+      </div>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>One database, schema-per-module — why not separate databases per module?</div>
+        <div class="qa-a">
+          Separate databases would mean distributed transactions the moment two modules need atomicity within a
+          request (they don't, here, by design — cross-module writes always go through outbox events, never a
+          two-phase commit). One instance keeps local transactions ACID and simple; schema separation still
+          enforces "no module touches another's tables" as a real boundary, just not a network one. This is a
+          deliberate stopping point short of full service-per-database, appropriate for a local MVP — and
+          explicitly reversible later, since nothing queries across schemas.
+        </div>
+      </div>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>Why does revocation get synchronous writes but eligibility gets async projections — why not make everything synchronous, or everything async, for consistency?</div>
+        <div class="qa-a">
+          Because they have different cost/risk profiles. Revocation changes are rare (an admin action) and must
+          be instant and unambiguous — false negatives (letting a banned video play) are the failure mode that
+          matters. Eligibility is read on every feed and playback request; forcing it fully synchronous would
+          mean every playback check fans out to processing, moderation, and publication's tables directly,
+          which is exactly Rule 4 ("do not synchronously call five services for every feed item"). Async
+          projection with a fail-closed default is the correct trade for something read constantly and changed
+          rarely.
+        </div>
+      </div>
+    </section>
+
+    <section id="limitations">
+      <h2 class="section-title">Known limitations — say these before you're asked</h2>
+      <p class="lede">
+        Volunteering a system's real edges, with the reasoning behind why they exist, reads as far stronger
+        than waiting to be caught. These were all found by deliberately trying to break the system, not by
+        guessing.
+      </p>
+
+      <div class="callout limitation">
+        <div class="callout-label">Reconciliation can't recover everything</div>
+        <p>Covered above — can't recreate a deleted row, can't fix same-version corruption. Inherent to version-guarded reconciliation, not a bug.</p>
+      </div>
+
+      <div class="callout limitation">
+        <div class="callout-label">Search is creator-name only</div>
+        <p>
+          There's no caption/description field on a video in this data model, so the search index only matches
+          on creator display name. The indexing pipeline itself (Kafka-driven, externally-versioned OpenSearch
+          writes so a stale event can never overwrite a newer document) is the real deliverable and would extend
+          to captions the moment that field exists.
+        </p>
+      </div>
+
+      <div class="callout limitation">
+        <div class="callout-label">Integration tests can't run in every environment</div>
+        <p>
+          The Testcontainers-based IT suite needs a working Docker daemon reachable via its versioned API; one
+          specific sandbox here has a Docker Desktop/docker-java version mismatch that breaks that regardless of
+          <code>DOCKER_HOST</code>. The tests compile and are correct; the resilience scenarios they encode
+          (outbox reclaim, duplicate-delivery-has-one-effect, inbox retention) were all separately verified live
+          against the real running stack by hand.
+        </p>
+      </div>
+
+      <div class="callout limitation">
+        <div class="callout-label">Tracing doesn't reach the database yet</div>
+        <p>
+          OpenTelemetry spans exist for HTTP requests, the security filter chain, and scheduled jobs — not yet
+          for individual JDBC or Redis calls. The collector/exporter path (Jaeger over OTLP) is real and proven;
+          extending span coverage is additive, not architectural.
+        </p>
+      </div>
+    </section>
+
+    <section id="scaling">
+      <h2 class="section-title">If this had to actually scale</h2>
+      <p>The classic follow-up. The honest answer is that most of the scaling story is already built in, just not exercised:</p>
+      <ul>
+        <li><strong>Outbox relay</strong> already supports N instances safely — claims use <code>SKIP LOCKED</code> plus a relay id, so two relays can never double-publish the same row. Only ever run as one instance locally.</li>
+        <li><strong>Kafka partitioning</strong> keys by <code>videoId</code>/<code>accountId</code>, guaranteeing per-aggregate ordering — the same property that lets consumer groups scale horizontally without breaking ordering guarantees.</li>
+        <li><strong>The media gateway is explicitly an MVP-only delivery path</strong> — the brief calls this out directly. Production would move bytes to a CDN/edge with signed cookies; the playback-session <em>authorization</em> contract (issued centrally, checked at the edge) stays the same, only the byte-serving moves.</li>
+        <li><strong>Eligibility is a pure read-optimized projection</strong> — nothing about it prevents read replicas or sharding by creator/video id.</li>
+        <li><strong>Redis can be wrong without being unsafe</strong> — the authority order means a distributed cache cluster swap-in changes latency, never correctness.</li>
+      </ul>
+      <div class="callout tradeoff">
+        <div class="callout-label">What genuinely isn't proven yet</div>
+        <p>
+          Multi-instance backend behavior was never actually run — no load balancer, no session affinity testing,
+          no multi-region. That's an honest "haven't tested it, but here's why I believe the design supports it and
+          specifically what I'd verify first" answer, not a claim it's already scaled.
+        </p>
+      </div>
+    </section>
+
+    <section id="qa">
+      <h2 class="section-title">Mock questions to rehearse out loud</h2>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>Walk me through what happens if the media worker crashes halfway through a transcode.</div>
+        <div class="qa-a">
+          Local ffmpeg output lands in a temp directory first — nothing touches MinIO until encoding finishes
+          locally. If the crash happens before that, nothing exists anywhere and the video stays correctly stuck
+          in <code>TRANSCODING</code>. If it happens after staging begins, an orphaned <code>processing-temp/</code>
+          object can exist, and a <code>StartupTempSweeper</code> removes it on the worker's next boot. Either
+          way, <code>processed/</code> — the only prefix the gateway will serve — never gets a partial write,
+          because it's only reached by a server-side copy after validation. I verified both cases live: killed
+          the worker with <code>kill -9</code> mid-encode of a real video (no partial prefix, and the Kafka job
+          got redelivered and completed correctly on restart), and separately planted a fake orphaned staging
+          object and confirmed the sweeper removed it.
+        </div>
+      </div>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>How do you know a duplicate Kafka message won't double-charge — sorry, double-notify — a user?</div>
+        <div class="qa-a">
+          The durable inbox: every consumer inserts <code>(consumer_name, event_id)</code> before applying any
+          effect, inside the same transaction. A duplicate key means "seen it," ack and skip. I proved this
+          isn't just a claim — republished the identical event twice via a raw producer and confirmed exactly
+          one row.
+        </div>
+      </div>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>What's the worst bug you found in your own system?</div>
+        <div class="qa-a">
+          Reusing the same Kafka event type for two different meanings. A "video's asset lifecycle changed"
+          signal was piggybacked onto the existing <code>video.processing.ready</code> event type to save adding
+          a new one — but the Publication module already treated that event type as "a transcode just
+          completed" and reevaluated a rejected video straight out of <code>SUSPENDED</code>. Found it by testing
+          the full reject flow live, not by code review. Fixed by introducing a dedicated
+          <code>video.lifecycle.changed</code> event. The lesson: an event type is a contract with every existing
+          consumer, not just the one you're adding a new reason to publish it.
+        </div>
+      </div>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>Why version the envelope (<code>schemaVersion</code>) separately from the aggregate version?</div>
+        <div class="qa-a">
+          They answer different questions. <code>aggregateVersion</code> is "how many times has this specific
+          row changed" — used for ordering and staleness guards. <code>schemaVersion</code> is "what shape is
+          this payload" — used for backward-compatible consumer evolution. Conflating them would mean you
+          couldn't add an optional field to a payload without it looking like a business state change.
+        </div>
+      </div>
+
+      <div class="qa">
+        <div class="qa-q"><span class="qmark">Q</span>If you had another two weeks, what would you build next?</div>
+        <div class="qa-a">
+          In order: multi-instance backend testing (the design should support it, but "should" isn't "verified"),
+          database/Redis spans in the tracing so a slow request can be diagnosed end to end instead of just at
+          the HTTP boundary, and a real caption field so search stops being scoped to creator name only. I'd
+          deliberately <em>not</em> reach for Kubernetes or multi-region next — those solve problems this system
+          doesn't have evidence of having yet.
+        </div>
+      </div>
+    </section>
+
+    <section id="glossary">
+      <h2 class="section-title">Vocabulary to have crisp definitions for</h2>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Term</th><th>One sentence</th></tr>
+          <tr><td class="mono">Outbox pattern</td><td>Writing an event to the same database transaction as the business change, so publish failures can never desync the event stream from the source of truth.</td></tr>
+          <tr><td class="mono">Inbox pattern</td><td>Recording that a specific event was already applied, so at-least-once delivery behaves like exactly-once effect.</td></tr>
+          <tr><td class="mono">SKIP LOCKED</td><td>A row-locking clause that lets a claimer skip rows another transaction already has locked, instead of blocking — how multiple relay instances safely share one work queue.</td></tr>
+          <tr><td class="mono">Fail closed</td><td>When required state is unknown or unreachable, deny by default rather than allow — the opposite of fail-open.</td></tr>
+          <tr><td class="mono">Eventual consistency</td><td>A system where replicas/projections converge to the same value given enough time and no further writes, but may briefly disagree.</td></tr>
+          <tr><td class="mono">Idempotent consumer</td><td>A message handler where processing the same message twice produces the same end state as processing it once.</td></tr>
+          <tr><td class="mono">Optimistic concurrency</td><td>Allowing concurrent writes to proceed and detecting conflicts at commit time via a version check, instead of locking upfront.</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <hr class="divider">
+    <p style="color: var(--text-faint); font-size: 0.85rem; max-width: 68ch;">
+      Everything marked "verified live" in this guide was run against the actual local stack during
+      development — not asserted from reading the code. If asked to demo any of it, that's the fastest way
+      back to credibility under pressure: reproduce it, don't just describe it.
+    </p>
+  </main>
+</div>

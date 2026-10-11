@@ -43,6 +43,9 @@ public class UploadSessionEntity {
     @Column(name = "idempotency_key", length = 200)
     private String idempotencyKey;
 
+    @Column(name = "create_idempotency_key", length = 200, updatable = false)
+    private String createIdempotencyKey;
+
     @Column(name = "expires_at", nullable = false, updatable = false)
     private Instant expiresAt;
 
@@ -57,6 +60,16 @@ public class UploadSessionEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * The presigned policy's expiry is checked when the store starts receiving the form,
+     * not when the last byte arrives, so a large upload begun just before it can finish
+     * well after it. Completing, and reaping, therefore both wait this long past
+     * {@code expiresAt}; without it a slow client's finished upload was rejected as
+     * expired and its object deleted. Nothing can <em>start</em> a new upload in this
+     * window, since the policy itself is already dead.
+     */
+    public static final java.time.Duration COMPLETION_GRACE = java.time.Duration.ofMinutes(30);
+
     protected UploadSessionEntity() {}
 
     public UploadSessionEntity(
@@ -66,7 +79,8 @@ public class UploadSessionEntity {
             String objectKey,
             long minSizeBytes,
             long maxSizeBytes,
-            Instant expiresAt) {
+            Instant expiresAt,
+            String createIdempotencyKey) {
         Instant now = Instant.now();
         this.uploadId = uploadId;
         this.videoId = videoId;
@@ -76,6 +90,7 @@ public class UploadSessionEntity {
         this.minSizeBytes = minSizeBytes;
         this.maxSizeBytes = maxSizeBytes;
         this.expiresAt = expiresAt;
+        this.createIdempotencyKey = createIdempotencyKey;
         this.createdAt = now;
         this.updatedAt = now;
     }
@@ -85,6 +100,10 @@ public class UploadSessionEntity {
         this.completedSizeBytes = size;
         this.idempotencyKey = idempotencyKey;
         this.updatedAt = Instant.now();
+    }
+
+    public boolean canStillComplete(Instant now) {
+        return now.isBefore(expiresAt.plus(COMPLETION_GRACE));
     }
 
     public boolean isSizeWithinRange(long size) {

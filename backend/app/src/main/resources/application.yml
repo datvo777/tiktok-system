@@ -1,12 +1,24 @@
 spring:
   application:
     name: short-video-backend
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
 
   # Blocking I/O on virtual threads: the media gateway holds a thread per stream
   # in Milestone 2, so the constraint to watch is bytes and connections, not threads.
   threads:
     virtual:
       enabled: true
+
+  task:
+    scheduling:
+      # Spring's default is a single thread for every @Scheduled method. Six jobs
+      # share this pool, and the outbox relay can block a whole drain cycle
+      # publishing a batch of 100 with a 30s per-record timeout. On one thread that
+      # starves the revocation cache rebuilder — the one job whose delay has safety
+      # consequences — along with every cleanup job.
+      pool:
+        size: ${SCHEDULER_POOL_SIZE:4}
 
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:short_video}
@@ -27,7 +39,7 @@ spring:
   flyway:
     enabled: true
     # Each module owns its migrations (brief section 9).
-    locations: classpath:db/migration/platform,classpath:db/migration/account,classpath:db/migration/upload,classpath:db/migration/video,classpath:db/migration/eligibility,classpath:db/migration/moderation,classpath:db/migration/publication,classpath:db/migration/social,classpath:db/migration/appeal,classpath:db/migration/notification
+    locations: classpath:db/migration/platform,classpath:db/migration/account,classpath:db/migration/upload,classpath:db/migration/video,classpath:db/migration/eligibility,classpath:db/migration/moderation,classpath:db/migration/publication,classpath:db/migration/social,classpath:db/migration/appeal,classpath:db/migration/report,classpath:db/migration/notification
     schemas: platform
     default-schema: platform
     create-schemas: true
@@ -44,30 +56,95 @@ spring:
       group-id: short-video-backend
       auto-offset-reset: earliest
       # Durable consumers commit their DB transaction before acknowledging the
-      # offset (Rule 5); the listener container factory below acks per record
-      # only after the listener method returns without exception.
+      # offset (Rule 5); the listener container factory acks once per poll, only
+      # after every record in it has been applied (see KafkaConfig).
       enable-auto-commit: false
 
 server:
   port: 8080
+  # SseRegistry says goodbye to every open stream on ContextClosedEvent, before this phase starts, so
+  # the wait is for requests that are really in flight (uploads completing, HLS segments) and not for
+  # streams that would otherwise hold it until the timeout.
+  shutdown: graceful
+  tomcat:
+    # Spelled out rather than left to the defaults (the same numbers today): every open realtime
+    # stream holds one of these connections for up to 25 minutes, so this is a capacity limit
+    # that someone has to be able to find and change. accept-count is the queue behind it.
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:8192}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
+    # How long an idle keep-alive connection is held. Unset keeps Tomcat's default (60 s). With the
+    # realtime stream on, every user holds one connection for the stream and, by default, a second idle
+    # one for REST that is used once a minute; closing that after a few seconds took open descriptors at
+    # 4,000 users from 8,187 to 5,352 (see docs/sse-vs-polling-benchmark.md). Only for browsers talking
+    # to Tomcat directly: behind a reverse proxy, keep this longer than the proxy's upstream keepalive
+    # timeout, or the proxy will reuse connections Tomcat has just closed and answer 502.
+    keep-alive-timeout: ${TOMCAT_KEEP_ALIVE_TIMEOUT:}
   error:
     include-message: never
     include-stacktrace: never
 
 shortvideo:
+  security:
+    # The OpenAPI document and Swagger UI enumerate every route, /internal/**
+    # admin endpoints included. Closed by default so a deployment cannot leak the
+    # map of its own admin surface by omission; the local profile opens it.
+    public-api-docs: ${PUBLIC_API_DOCS:false}
   jwt:
-    secret: ${JWT_SECRET:local-dev-secret-change-me-at-least-32-bytes-long}
+    # No default: the application must fail to start rather than sign tokens with
+    # a key that is published in this repository. Generate one with
+    # `openssl rand -base64 48`. The local profile supplies a throwaway value.
+    secret: ${JWT_SECRET}
     issuer: ${JWT_ISSUER:short-video-local}
     audience: ${JWT_AUDIENCE:short-video-web}
     ttl: ${JWT_TTL_SECONDS:1800}s
+    # How long a session can last from the login however often it is renewed (ttl above only bounds
+    # an idle gap). Accounts holding a privileged role get the shorter limit.
+    absolute-ttl: ${JWT_ABSOLUTE_TTL:30d}
+    privileged-absolute-ttl: ${JWT_PRIVILEGED_ABSOLUTE_TTL:12h}
+    privileged-roles: ADMIN
     session-cookie-name: ${SESSION_COOKIE_NAME:sv_session}
-    # Local development is plain HTTP. Set true for anything beyond localhost.
-    cookie-secure: false
+    # Secure by default: serving a session cookie over plain HTTP should be an
+    # explicit opt-out, and one variable drives both cookies so they cannot drift.
+    cookie-secure: ${COOKIE_SECURE:true}
+  realtime:
+    # Server-sent "something changed" hints next to polling, which stays the default and the
+    # fallback. Off until enabled; see RealtimeProperties for the limits.
+    enabled: ${REALTIME_ENABLED:false}
+    max-connections: ${REALTIME_MAX_CONNECTIONS:5000}
+  metrics:
+    # Shared secret Prometheus presents as `Authorization: Bearer <token>` to read
+    # /actuator/prometheus (and nothing else). Empty leaves that route admin-only, which
+    # a scraper cannot satisfy. At least 32 characters; see MetricsScrapeFilter.
+    scrape-token: ${METRICS_SCRAPE_TOKEN:}
   minio:
+    # What the backend itself connects to (inside Docker this is the service name).
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-    access-key: ${MINIO_ACCESS_KEY:minioadmin}
-    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    # What the browser is told to POST uploads to. It must be reachable from the user's
+    # browser, which inside Docker is not the service name above. Left empty it falls back
+    # to `endpoint`, so a single-host setup needs no extra configuration.
+    public-endpoint: ${MINIO_PUBLIC_ENDPOINT:}
+    region: ${MINIO_REGION:us-east-1}
+    # The scoped service account, not root: a compromise of this process should
+    # not be able to touch anything outside this one bucket. minio-init mints it.
+    access-key: ${MINIO_APP_ACCESS_KEY:short-video-app}
+    secret-key: ${MINIO_APP_SECRET_KEY:short-video-app-secret}
     bucket: ${MINIO_BUCKET:short-video}
+    # SDK default is 5 minutes each. Kept short so a hung MinIO fails fast (503) instead
+    # of holding request threads and DB connections; read must outlast a server-side copy.
+    connect-timeout: 3s
+    write-timeout: 30s
+    read-timeout: 30s
+    # OkHttp's default is 5 per host, which the SDK's async-backed calls queue behind
+    # invisibly. See MinioConfig.httpClient.
+    max-concurrent-requests: ${MINIO_MAX_CONCURRENT_REQUESTS:64}
+    max-idle-connections: ${MINIO_MAX_IDLE_CONNECTIONS:32}
+  upload:
+    cleanup-interval: 15m
+    create-rate-limit:
+      # Across all accounts, per window. What the object store runs out of is bandwidth and
+      # disk, so this brakes how fast write access is handed out; zero turns it off.
+      global-max-per-window: 600
+      global-window: 1m
   outbox:
     enabled: true
     relay-id: relay-1
@@ -79,7 +156,7 @@ shortvideo:
   playback:
     cookie-name: ${PLAYBACK_COOKIE_NAME:sv_playback}
     ttl: ${PLAYBACK_COOKIE_TTL_SECONDS:300}s
-    cookie-secure: false
+    cookie-secure: ${COOKIE_SECURE:true}
   media:
     stream-buffer-bytes: ${MEDIA_STREAM_BUFFER_BYTES:131072}
     max-concurrent-streams: ${MEDIA_MAX_CONCURRENT_STREAMS:32}
@@ -98,6 +175,9 @@ shortvideo:
     cleanup-interval: 5m
   opensearch:
     endpoint: ${OPENSEARCH_ENDPOINT:http://localhost:9200}
+    # The JDK client has no timeouts of its own; a hung OpenSearch must fail fast (503 / redelivery).
+    connect-timeout: 2s
+    read-timeout: 5s
 
 management:
   endpoints:
@@ -108,7 +188,12 @@ management:
     health:
       probes:
         enabled: true
-      show-details: always
+      # The detailed report names the datasource URL, broker addresses, disk paths
+      # and free space. "always" served all of that to anyone who could reach the
+      # port. Admins still see it; the liveness and readiness probes stay public
+      # and disclose nothing beyond up/down.
+      show-details: when-authorized
+      roles: ADMIN
       group:
         readiness:
           include: db,redis,minio,kafka
@@ -139,4 +224,32 @@ logging:
       console: ecs
   level:
     root: INFO
+    # INFO by default. DEBUG here logged the viewer's account id and object key on
+    # every HLS segment request — a per-segment line carrying a user identifier —
+    # and it was on in every profile, not just locally. The local profile turns it
+    # back on; the correlation id in the ECS output is the identifier to trace by.
+    com.shortvideo: ${LOG_LEVEL_APP:INFO}
+
+---
+# Activated with SPRING_PROFILES_ACTIVE=local. Everything unsafe for a real
+# deployment lives here rather than in the defaults above.
+spring:
+  config:
+    activate:
+      on-profile: local
+
+shortvideo:
+  security:
+    # Browsing the API in Swagger UI is the point of running locally.
+    public-api-docs: true
+  jwt:
+    secret: ${JWT_SECRET:local-dev-secret-change-me-at-least-32-bytes-long}
+    # Permits the published placeholder above; refused in every other profile.
+    allow-insecure-secret: true
+    cookie-secure: false
+  playback:
+    cookie-secure: false
+
+logging:
+  level:
     com.shortvideo: DEBUG

@@ -54,9 +54,31 @@ class ModerationNotificationListener {
                         videoId);
                 case EventTypes.VIDEO_MODERATION_REINSTATED -> notificationService.create(
                         creatorId, "MODERATION_REINSTATED", "Your video was reinstated and is playable again.", videoId);
+                case EventTypes.VIDEO_APPEAL_APPROVED -> notificationService.create(
+                        creatorId, "APPEAL_APPROVED", "Your appeal was approved; your video will be reinstated.", videoId);
                 case EventTypes.VIDEO_APPEAL_DENIED -> notificationService.create(
                         creatorId, "APPEAL_DENIED",
                         "Your appeal was denied" + (reason == null || reason.isBlank() ? "." : ": " + reason), videoId);
+                // Publication events carry the owner under "ownerAccountId" rather than
+                // "creatorId" (PublicationEvents.PublicationStateChanged), unlike every
+                // other case here.
+                case EventTypes.VIDEO_PUBLICATION_PUBLISHED -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "VIDEO_PUBLISHED",
+                        "Your video is published and visible in the feed.", videoId);
+                case EventTypes.VIDEO_PUBLICATION_SUSPENDED -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "VIDEO_SUSPENDED",
+                        "Your video was suspended and is no longer visible in the feed.", videoId);
+                // The uploader may have left the page long before processing ends; their only
+                // other signal is polling on a screen that is no longer open.
+                case EventTypes.VIDEO_PROCESSING_READY -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "PROCESSING_READY",
+                        "Your video is ready. Preview it and publish when you\u2019re happy with it.", videoId);
+                case EventTypes.VIDEO_PROCESSING_FAILED -> notificationService.create(
+                        (String) p.get("ownerAccountId"), "PROCESSING_FAILED",
+                        "TRANSIENT".equals(p.get("failureClass"))
+                                ? "We couldn't process your video. Try uploading it again."
+                                : "We couldn't process your video. Check that it plays locally, then try a different file.",
+                        videoId);
                 default -> { /* not relevant to notifications */ }
             }
         } catch (Exception e) {

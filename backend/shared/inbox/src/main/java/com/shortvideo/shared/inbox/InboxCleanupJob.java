@@ -55,7 +55,7 @@ class InboxCleanupJob {
         this.deletedCounter = Counter.builder("inbox.cleanup.rows_deleted").register(meterRegistry);
     }
 
-    @Scheduled(fixedDelayString = "${shortvideo.inbox.cleanup-interval:1h}", initialDelayString = "1m")
+    @Scheduled(fixedDelayString = "${shortvideo.inbox.cleanup-interval:1h}", initialDelayString = "${shortvideo.inbox.cleanup-initial-delay:1m}")
     void sweep() {
         Instant cutoff = Instant.now().minus(retention);
         int totalDeleted = 0;

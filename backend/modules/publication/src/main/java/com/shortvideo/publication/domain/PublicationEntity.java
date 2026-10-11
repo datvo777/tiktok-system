@@ -72,6 +72,21 @@ public class PublicationEntity {
         return reevaluate();
     }
 
+    /**
+     * The owner taking their video back out of the feed. Publication intent is
+     * one of the prerequisites {@link #reevaluate()} already computes over, so
+     * withdrawing it is the exact inverse of {@link #requestPublish()} and needs
+     * no separate state: with no intent the machine settles on PRIVATE.
+     *
+     * <p>Not a takedown. Moderation approval and processing readiness are left
+     * untouched, so a later re-publish does not have to be reviewed again — and,
+     * unlike {@link #remove()}, this is reversible.
+     */
+    public boolean withdrawPublish() {
+        this.intent = false;
+        return reevaluate();
+    }
+
     public boolean setProcessingReady(boolean ready) {
         this.processingReady = ready;
         return reevaluate();

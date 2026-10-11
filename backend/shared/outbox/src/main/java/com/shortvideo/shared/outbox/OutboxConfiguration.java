@@ -13,6 +13,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 public class OutboxConfiguration {
 
+    /** Always on, independent of the relay: DEAD rows matter even where nothing is publishing. */
+    @Bean
+    public OutboxDeadGauge outboxDeadGauge(OutboxRepository repository) {
+        return new OutboxDeadGauge(repository, java.time.Duration.ofSeconds(30));
+    }
+
     /** One relay process locally. Disable in tests that assert on raw outbox rows. */
     @Bean
     @ConditionalOnProperty(prefix = "shortvideo.outbox", name = "enabled", havingValue = "true", matchIfMissing = true)

@@ -46,7 +46,7 @@ class MediaResultListener {
                     EnvelopeCodec.payloadAs(objectMapper, envelope, MediaEvents.MediaResultCommand.class);
             videoService.applyMediaResult(result);
         } catch (Exception e) {
-            log.warn("Failed to apply media.results.v1; will retry on redelivery", e);
+            log.warn("Failed to apply media.results.v1; will retry then move to DLT if still failing", e);
             throw new RuntimeException(e);
         }
     }

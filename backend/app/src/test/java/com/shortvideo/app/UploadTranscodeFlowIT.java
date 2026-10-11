@@ -75,7 +75,7 @@ class UploadTranscodeFlowIT {
 
     @Container
     @SuppressWarnings("resource")
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.9.0"));
+    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.8.0"));
 
     @Container
     @SuppressWarnings("resource")
@@ -96,6 +96,8 @@ class UploadTranscodeFlowIT {
         registry.add("shortvideo.minio.access-key", () -> "minioadmin");
         registry.add("shortvideo.minio.secret-key", () -> "minioadmin");
         registry.add("shortvideo.minio.bucket", () -> BUCKET);
+        registry.add("shortvideo.lifecycle.transcode-max-attempts", () -> "2");
+        registry.add("shortvideo.lifecycle.transcode-retry-backoff", () -> "300ms");
     }
 
     @BeforeAll
@@ -127,6 +129,7 @@ class UploadTranscodeFlowIT {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void uploadTranscodePreviewFlowEndToEnd() throws Exception {
         register(email, "correct-horse-battery");
         Map<?, ?> login = login(email, "correct-horse-battery").getBody();
@@ -135,16 +138,16 @@ class UploadTranscodeFlowIT {
 
         // 1. Create the upload session; the video draft is created in the same
         // transaction (brief section 7.1).
-        ResponseEntity<Map> created = post("/api/v1/uploads", null, auth);
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), auth);
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String uploadId = (String) created.getBody().get("uploadId");
         String videoId = (String) created.getBody().get("videoId");
         String uploadUrl = (String) created.getBody().get("uploadUrl");
         assertThat(uploadUrl).doesNotContain("processed/"); // never a processed/ read URL (Rule 18)
 
-        // 2. The browser PUTs directly to MinIO.
+        // 2. The browser POSTs the presigned form directly to MinIO.
         byte[] payload = "not a real mp4, only size matters for this test".getBytes(StandardCharsets.UTF_8);
-        putToPresignedUrl(uploadUrl, payload);
+        postToPresignedForm(uploadUrl, (Map<String, String>) created.getBody().get("formFields"), payload);
 
         // 3. Complete the upload; verify it is owner-checked and idempotent.
         ResponseEntity<Map> completed = post("/api/v1/uploads/" + uploadId + "/complete", null, auth);
@@ -215,15 +218,16 @@ class UploadTranscodeFlowIT {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void aTerminalTranscodeFailureMarksTheVideoFailed() throws Exception {
         register(email, "correct-horse-battery");
         HttpHeaders auth = bearer((String) login(email, "correct-horse-battery").getBody().get("token"));
 
-        ResponseEntity<Map> created = post("/api/v1/uploads", null, auth);
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), auth);
         String uploadId = (String) created.getBody().get("uploadId");
         String videoId = (String) created.getBody().get("videoId");
         String uploadUrl = (String) created.getBody().get("uploadUrl");
-        putToPresignedUrl(uploadUrl, "x".getBytes(StandardCharsets.UTF_8));
+        postToPresignedForm(uploadUrl, (Map<String, String>) created.getBody().get("formFields"), "x".getBytes(StandardCharsets.UTF_8));
         post("/api/v1/uploads/" + uploadId + "/complete", null, auth);
 
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
@@ -240,6 +244,52 @@ class UploadTranscodeFlowIT {
 
         ResponseEntity<Map> session = post("/api/v1/videos/" + videoId + "/preview-playback-session", null, auth);
         assertThat(session.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aTransientTranscodeFailureIsRetriedWithTheSameJobUntilTheBudgetIsSpent() throws Exception {
+        register(email, "correct-horse-battery");
+        HttpHeaders auth = bearer((String) login(email, "correct-horse-battery").getBody().get("token"));
+
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), auth);
+        String uploadId = (String) created.getBody().get("uploadId");
+        String videoId = (String) created.getBody().get("videoId");
+        String uploadUrl = (String) created.getBody().get("uploadUrl");
+        postToPresignedForm(uploadUrl, (Map<String, String>) created.getBody().get("formFields"), "x".getBytes(StandardCharsets.UTF_8));
+        post("/api/v1/uploads/" + uploadId + "/complete", null, auth);
+
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
+                        get("/api/v1/videos/" + videoId, auth).getBody().get("processingState"))
+                .isEqualTo("TRANSCODING"));
+
+        publishMediaResult(videoId, 1, "FAILED", null, "TRANSIENT");
+
+        // The same job is dispatched a second time and published once its backoff has passed;
+        // the video is still being worked on, so the uploader is shown no failure.
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            List<Map<String, Object>> dispatches = jdbc.queryForList(
+                    "SELECT payload #>> '{payload,jobId}' AS job_id, published_at FROM platform.outbox_event"
+                            + " WHERE aggregate_id = ? AND event_type = ? ORDER BY aggregate_version",
+                    videoId, EventTypes.MEDIA_JOB_DISPATCHED);
+            assertThat(dispatches).hasSize(2);
+            assertThat(dispatches).extracting(row -> row.get("job_id")).containsOnly(videoId + ":1");
+            assertThat(dispatches.get(1).get("published_at")).isNotNull();
+        });
+        Map<?, ?> retrying = get("/api/v1/videos/" + videoId, auth).getBody();
+        assertThat(retrying.get("processingState")).isEqualTo("TRANSCODING");
+
+        publishMediaResult(videoId, 1, "FAILED", null, "TRANSIENT");
+
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            Map<?, ?> status = get("/api/v1/videos/" + videoId, auth).getBody();
+            assertThat(status.get("processingState")).isEqualTo("FAILED");
+            assertThat(status.get("failureClass")).isEqualTo("TRANSIENT");
+        });
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = ?",
+                        Integer.class, videoId, EventTypes.MEDIA_JOB_DISPATCHED))
+                .isEqualTo(2);
     }
 
     private void stageObject(String objectKey, String content) throws Exception {
@@ -290,11 +340,23 @@ class UploadTranscodeFlowIT {
         }
     }
 
-    private void putToPresignedUrl(String url, byte[] body) {
+    private void postToPresignedForm(String url, Map<String, String> fields, byte[] body) {
+        org.springframework.util.LinkedMultiValueMap<String, Object> form = new org.springframework.util.LinkedMultiValueMap<>();
+        fields.forEach(form::add);
+        // The object store requires the file part to come last.
+        form.add("file", new org.springframework.core.io.ByteArrayResource(body) {
+            @Override
+            public String getFilename() {
+                return "video.mp4";
+            }
+        });
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentLength(body.length);
-        rest.getRestTemplate()
-                .exchange(url, HttpMethod.PUT, new HttpEntity<>(body, headers), Void.class);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        // Buffered, so the request carries a Content-Length: the object store refuses a chunked POST
+        // as an empty body.
+        new org.springframework.web.client.RestTemplate(new org.springframework.http.client.BufferingClientHttpRequestFactory(
+                        new org.springframework.http.client.SimpleClientHttpRequestFactory()))
+                .exchange(url, HttpMethod.POST, new HttpEntity<>(form, headers), Void.class);
     }
 
     private ResponseEntity<Map> register(String address, String password) {
