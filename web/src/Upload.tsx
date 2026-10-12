@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Hls from 'hls.js';
+import { rememberBandwidthEstimate, startingBandwidthEstimate } from './hlsAbr';
 import { useEffect, useRef, useState } from 'react';
 import { useRealtimeConnected } from './realtime';
 import { pollDelayMs } from './videoStatus';
@@ -608,7 +609,15 @@ export function attachHls(
   if (Hls.isSupported()) {
     let hls = activeHlsByElement.get(video);
     if (!hls) {
-      hls = new Hls();
+      hls = new Hls({
+        // Start from what the previous player measured, not hls.js's fixed
+        // 500 kbps guess; see hlsAbr.ts.
+        abrEwmaDefaultEstimate: startingBandwidthEstimate(),
+        // Never fetch a rung larger than the element showing it. Grids and
+        // previews are small, and a 720x1280 rung there is bandwidth for
+        // pixels nobody sees.
+        capLevelToPlayerSize: true,
+      });
       activeHlsByElement.set(video, hls);
       hls.attachMedia(video);
 
@@ -622,6 +631,11 @@ export function attachHls(
       const instance = hls;
       instance.on(Hls.Events.FRAG_LOADED, () => {
         awaitingRecovery = false;
+        rememberBandwidthEstimate(instance.bandwidthEstimate);
+      });
+      instance.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+        // Diagnostic only: shows which rung viewers really get.
+        console.debug('hls.js level switched', data.level, instance.levels[data.level]?.height);
       });
       instance.on(Hls.Events.ERROR, (_event, data) => {
         const authFailure = data.response?.code === 401 || data.response?.code === 403;

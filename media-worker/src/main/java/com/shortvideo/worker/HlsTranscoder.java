@@ -17,9 +17,9 @@ import org.springframework.stereotype.Component;
 /**
  * FFmpeg/FFprobe mechanics (brief section 14). The <em>order</em> these run in
  * lives in {@link TranscodePipeline}; this class knows how to invoke ffmpeg
- * safely and nothing about what a job consists of. One 720p rendition for the
- * first version; the master playlist is hand-written so even a single rendition
- * has a proper master/variant structure.
+ * safely and nothing about what a job consists of. It encodes a bitrate ladder
+ * (see {@link #LADDER}); the master playlist is hand-written because each rung is
+ * a separate ffmpeg invocation.
  *
  * <p>The input bytes are attacker-controlled: a client uploads whatever it likes
  * straight to MinIO, and FFmpeg picks its demuxer from the file's content, not
@@ -87,6 +87,9 @@ class HlsTranscoder {
 
     static final String POSTER_FILENAME = "poster.jpg";
 
+    private static final String CODECS_VIDEO_ONLY = "avc1.640028";
+    private static final String CODECS_WITH_AUDIO = CODECS_VIDEO_ONLY + ",mp4a.40.2";
+
     /** A rung of the ladder: a cap on the long edge plus the bitrates to encode it at. */
     record Rung(String name, int maxEdge, int videoKbps, int audioKbps) {}
 
@@ -107,7 +110,8 @@ class HlsTranscoder {
     }
 
     Variant encodeRung(
-            Path sourceFile, Path outputDir, ProbedSource source, Rung rung, double durationSeconds)
+            Path sourceFile, Path outputDir, ProbedSource source, Rung rung, double durationSeconds,
+            Duration remainingBudget)
             throws IOException {
         Dimensions target = targetResolution(source.width(), source.height(), rung.maxEdge());
         Path variantDir = outputDir.resolve(rung.name());
@@ -123,12 +127,15 @@ class HlsTranscoder {
                 "-f", source.formatName(),
                 "-i", sourceFile.toString(),
                 "-preset", "veryfast",
-                // A keyframe every 2s at 24fps. Segment boundaries can only fall
-                // on keyframes, so this has to divide into -hls_time or the
-                // rungs' segments will not line up and switching between them
-                // stalls.
-                "-g", "48",
-                "-keyint_min", "48",
+                // A keyframe every 2s of *time*, not every N frames: a fixed -g
+                // only means 2s at one frame rate, and at 30fps it put keyframes
+                // 1.6s apart and cut 4.8s/3.2s segments instead of 4s ones.
+                // Segment boundaries can only fall on keyframes, so the interval
+                // has to divide -hls_time, and every rung has to use the same
+                // rule or their segments will not line up and switching between
+                // them stalls. Scene-cut detection is off so nothing else adds
+                // a keyframe.
+                "-force_key_frames", "expr:gte(t,n_forced*2)",
                 "-sc_threshold", "0",
                 "-map", "0:v:0",
                 "-map", "0:a:0?",
@@ -160,7 +167,7 @@ class HlsTranscoder {
                 "-hls_segment_filename", variantDir.resolve("segment_%03d.ts").toString(),
                 variantPlaylist.toString());
 
-        ProcessResult result = run(command, boundedTimeout(durationSeconds), outputDir);
+        ProcessResult result = run(command, boundedTimeout(durationSeconds, remainingBudget, rung), outputDir);
         if (!result.succeeded()) {
             throw new TranscodeFailedException(
                     result.timedOut() ? "TRANSIENT" : "TERMINAL",
@@ -238,7 +245,7 @@ class HlsTranscoder {
      * {@code split} filter with {@code -var_stream_map} cannot express an audio
      * stream that might not be there.
      */
-    Path writeMasterPlaylist(Path outputDir, List<Variant> variants) throws IOException {
+    Path writeMasterPlaylist(Path outputDir, List<Variant> variants, boolean hasAudio) throws IOException {
         StringBuilder master = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n");
         for (Variant variant : variants) {
             // BANDWIDTH is the peak the player must sustain, so it has to include
@@ -251,6 +258,11 @@ class HlsTranscoder {
                     .append(variant.dimensions().width())
                     .append("x")
                     .append(variant.dimensions().height())
+                    // Declared so a player can rule a rung out before fetching
+                    // anything. These are fixed by the encode flags: High profile
+                    // level 4.0 and AAC-LC, and no audio entry when the source
+                    // had none.
+                    .append(",CODECS=\"").append(hasAudio ? CODECS_WITH_AUDIO : CODECS_VIDEO_ONLY).append("\"")
                     .append("\n")
                     .append(variant.relativePlaylistPath())
                     .append("\n");
@@ -326,6 +338,8 @@ class HlsTranscoder {
                     "TERMINAL", "Unsupported source container: " + formatName);
         }
 
+        boolean hasAudio = hasAudioStream(sourceFile);
+
         String duration = fields.get("duration");
         try {
             // Missing width/height (e.g. an audio-only file smuggled past the
@@ -351,10 +365,31 @@ class HlsTranscoder {
                         "TERMINAL",
                         "Source is " + Math.round(durationSeconds) + "s; the limit is " + maxSeconds + "s");
             }
-            return new ProbedSource(durationSeconds, formatName, width, height);
+            return new ProbedSource(durationSeconds, formatName, width, height, hasAudio);
         } catch (NumberFormatException | NullPointerException e) {
             throw new TranscodeFailedException("TERMINAL", "ffprobe returned no duration");
         }
+    }
+
+    /**
+     * Asked separately from the video probe because the first selects {@code v:0}
+     * only. The answer decides whether the master playlist may advertise an audio
+     * codec, and a wrong {@code CODECS} is worse than none.
+     */
+    private boolean hasAudioStream(Path sourceFile) throws IOException {
+        List<String> command = List.of(
+                properties.getFfprobePath(),
+                "-v", "error",
+                PROTOCOL_WHITELIST.get(0), PROTOCOL_WHITELIST.get(1),
+                "-select_streams", "a:0",
+                "-show_entries", "stream=index",
+                "-of", "default=noprint_wrappers=1",
+                sourceFile.toString());
+        ProcessResult result = run(command, properties.getProbeTimeout(), null);
+        if (!result.succeeded()) {
+            throw new TranscodeFailedException("TERMINAL", "ffprobe failed: " + result.stderrTail());
+        }
+        return result.stdoutTail().lines().anyMatch(line -> line.startsWith("index="));
     }
 
     private static int parseIntOrZero(String value) {
@@ -366,7 +401,7 @@ class HlsTranscoder {
     }
 
     /** What the probe established about the source, carried into the transcode. */
-    record ProbedSource(double durationSeconds, String formatName, int width, int height) {}
+    record ProbedSource(double durationSeconds, String formatName, int width, int height, boolean hasAudio) {}
 
     private ProcessResult run(List<String> command, Duration timeout, Path workingDirectory) throws IOException {
         return processRunner.run(command, timeout, workingDirectory);
@@ -378,12 +413,25 @@ class HlsTranscoder {
         }
     }
 
-    /** Derived from probed duration, bounded by the configured job timeout. */
-    private Duration boundedTimeout(double durationSeconds) {
-        Duration floor = Duration.ofSeconds(30);
-        long derivedSeconds = Math.max((long) (durationSeconds * 3), floor.toSeconds());
+    /**
+     * Derived from probed duration, then clamped to what is left of the job's
+     * budget so that the rungs together cannot outlast {@code job-timeout}.
+     *
+     * <p>Running out of budget is TRANSIENT: nothing is wrong with the source,
+     * the worker was simply too slow or too busy, and a retry may fit.
+     */
+    static Duration boundedTimeout(double durationSeconds, Duration remainingBudget) {
+        long derivedSeconds = Math.max((long) (durationSeconds * 3), 30);
         Duration derived = Duration.ofSeconds(derivedSeconds);
-        return derived.compareTo(properties.getJobTimeout()) > 0 ? properties.getJobTimeout() : derived;
+        return derived.compareTo(remainingBudget) > 0 ? remainingBudget : derived;
+    }
+
+    private static Duration boundedTimeout(double durationSeconds, Duration remainingBudget, Rung rung) {
+        if (remainingBudget.compareTo(Duration.ofSeconds(1)) < 0) {
+            throw new TranscodeFailedException(
+                    "TRANSIENT", "job time budget spent before rung " + rung.name() + " could start");
+        }
+        return boundedTimeout(durationSeconds, remainingBudget);
     }
 
     /**

@@ -174,8 +174,17 @@ class UploadTranscodeFlowIT {
         // 5. Play the worker's part: stage the HLS assets it would have promoted,
         // then publish the same media.results.v1 message it would have sent.
         String finalPrefix = "processed/" + videoId + "/1/";
-        stageObject(finalPrefix + "master.m3u8", "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1x1\n720p/index.m3u8\n");
-        stageObject(finalPrefix + "720p/index.m3u8", "#EXTM3U\n#EXT-X-ENDLIST\n");
+        // The worker's ladder: a master over three rungs, each with its own playlist.
+        stageObject(finalPrefix + "master.m3u8",
+                "#EXTM3U\n"
+                + "#EXT-X-STREAM-INF:BANDWIDTH=2112000,RESOLUTION=720x1280,CODECS=\"avc1.640028,mp4a.40.2\"\nhigh/index.m3u8\n"
+                + "#EXT-X-STREAM-INF:BANDWIDTH=1089000,RESOLUTION=480x854,CODECS=\"avc1.640028,mp4a.40.2\"\nmedium/index.m3u8\n"
+                + "#EXT-X-STREAM-INF:BANDWIDTH=510400,RESOLUTION=270x480,CODECS=\"avc1.640028,mp4a.40.2\"\nlow/index.m3u8\n");
+        for (String rung : List.of("high", "medium", "low")) {
+            stageObject(finalPrefix + rung + "/index.m3u8",
+                    "#EXTM3U\n#EXTINF:4.0,\nsegment_000.ts\n#EXT-X-ENDLIST\n");
+        }
+        stageObject(finalPrefix + "low/segment_000.ts", "ts-bytes");
         publishMediaResult(videoId, 1, "COMPLETED", finalPrefix, null);
 
         // 6. The video reaches READY + DURABLE from the worker's result alone.
@@ -209,8 +218,15 @@ class UploadTranscodeFlowIT {
         mediaHeaders.add(HttpHeaders.COOKIE, "sv_session=" + token + "; " + playbackCookie);
         ResponseEntity<String> asset = getString("/media/videos/" + videoId + "/1/master.m3u8", mediaHeaders);
         assertThat(asset.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(asset.getBody()).contains("720p/index.m3u8");
+        assertThat(asset.getBody()).contains("high/index.m3u8", "medium/index.m3u8", "low/index.m3u8");
         assertThat(asset.getHeaders().getCacheControl()).contains("no-store");
+
+        // Every rung sits under the same authorised prefix, so the one playback
+        // cookie covers a variant playlist and its segments without a new check.
+        ResponseEntity<String> rung = getString("/media/videos/" + videoId + "/1/low/index.m3u8", mediaHeaders);
+        assertThat(rung.getStatusCode()).isEqualTo(HttpStatus.OK);
+        ResponseEntity<String> segment = getString("/media/videos/" + videoId + "/1/low/segment_000.ts", mediaHeaders);
+        assertThat(segment.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         // 9. The cookie is scoped to version 1; requesting version 2 is rejected.
         ResponseEntity<String> wrongVersion = getString("/media/videos/" + videoId + "/2/master.m3u8", mediaHeaders);
@@ -312,7 +328,11 @@ class UploadTranscodeFlowIT {
         MediaEvents.Assets assets = finalPrefix == null
                 ? null
                 : new MediaEvents.Assets(
-                        finalPrefix + "master.m3u8", List.of(finalPrefix + "720p/index.m3u8"), 1, 3.0);
+                        finalPrefix + "master.m3u8", List.of(
+                                finalPrefix + "high/index.m3u8",
+                                finalPrefix + "medium/index.m3u8",
+                                finalPrefix + "low/index.m3u8"),
+                        3, 3.0);
         var payload = new MediaEvents.MediaResultCommand(
                 videoId + ":" + processingVersion, videoId, processingVersion, outcome, assets, failureClass);
         var envelope = new EventEnvelope<>(

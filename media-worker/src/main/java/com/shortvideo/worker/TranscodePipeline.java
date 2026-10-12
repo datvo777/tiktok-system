@@ -22,8 +22,10 @@ class TranscodePipeline {
     private static final Logger log = LoggerFactory.getLogger(TranscodePipeline.class);
 
     private final List<TranscodeStep> steps;
+    private final WorkerProperties properties;
 
-    TranscodePipeline(HlsTranscoder transcoder) {
+    TranscodePipeline(HlsTranscoder transcoder, WorkerProperties properties) {
+        this.properties = properties;
         this.steps = List.of(
                 new ProbeStep(transcoder),
                 new EncodeLadderStep(transcoder),
@@ -33,7 +35,7 @@ class TranscodePipeline {
 
     HlsTranscoder.TranscodeOutput run(Path sourceFile, Path outputDir) throws IOException {
         Files.createDirectories(outputDir);
-        TranscodeContext context = new TranscodeContext(sourceFile, outputDir);
+        TranscodeContext context = new TranscodeContext(sourceFile, outputDir, properties.getJobTimeout());
 
         for (TranscodeStep step : steps) {
             long startedAt = System.nanoTime();
@@ -103,7 +105,8 @@ class TranscodePipeline {
             HlsTranscoder.ProbedSource source = context.source();
             for (HlsTranscoder.Rung rung : HlsTranscoder.ladderFor(source.width(), source.height())) {
                 context.addVariant(transcoder.encodeRung(
-                        context.sourceFile(), context.outputDir(), source, rung, source.durationSeconds()));
+                        context.sourceFile(), context.outputDir(), source, rung, source.durationSeconds(),
+                        context.remainingBudget()));
             }
         }
     }
@@ -137,7 +140,8 @@ class TranscodePipeline {
 
         @Override
         public void run(TranscodeContext context) throws IOException {
-            context.setMasterPlaylist(transcoder.writeMasterPlaylist(context.outputDir(), context.variants()));
+            context.setMasterPlaylist(transcoder.writeMasterPlaylist(
+                    context.outputDir(), context.variants(), context.source().hasAudio()));
         }
     }
 }

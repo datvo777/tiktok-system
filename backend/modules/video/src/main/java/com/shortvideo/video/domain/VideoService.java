@@ -50,7 +50,13 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private static final Logger log = LoggerFactory.getLogger(VideoService.class);
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "video";
-    private static final List<String> DEFAULT_RENDITIONS = List.of("720p");
+    /**
+     * The rungs of the worker's bitrate ladder, widest first. Advisory: the worker
+     * picks the rungs it encodes from the source's own size (it never upscales),
+     * so a job asking for all three may come back with fewer. The names are the
+     * worker's directory names, which is what ends up in the asset paths.
+     */
+    private static final List<String> DEFAULT_RENDITIONS = List.of("high", "medium", "low");
     private static final Duration MAX_RETRY_BACKOFF = Duration.ofMinutes(10);
 
     /** Revocation source type for admin lifecycle holds (quarantine/removal — brief section 16). */

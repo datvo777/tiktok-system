@@ -36,7 +36,10 @@ class MinioAssetVerifierTest {
 
     @Test
     void presentObjectsVerify() {
-        assertThat(verifier.verify("processed/v/1/master.m3u8", List.of("processed/v/1/720p/index.m3u8"))).isTrue();
+        assertThat(verifier.verify("processed/v/1/master.m3u8", List.of(
+                "processed/v/1/high/index.m3u8",
+                "processed/v/1/medium/index.m3u8",
+                "processed/v/1/low/index.m3u8"))).isTrue();
     }
 
     @Test
