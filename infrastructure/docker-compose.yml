@@ -174,6 +174,51 @@ services:
       - ./minio/init.sh:/init.sh:ro
     restart: "no"
 
+  # The media worker in a container. Opt-in (`--profile worker`) so the default stack stays what it
+  # was and a worker started from the IDE or `mvn spring-boot:run` does not collide on port 8090.
+  # Plaintext Kafka only: against the authenticated stack (docker-compose.secure.yml) it also needs
+  # the SASL settings from kafka/secure/generated/client-worker.env.
+  media-worker:
+    profiles: ["worker"]
+    build:
+      context: ..
+      dockerfile: media-worker/Dockerfile
+    image: sv-media-worker:local
+    container_name: sv-media-worker
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      # Service names, not localhost: inside the container localhost is the container.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MINIO_APP_ACCESS_KEY: ${MINIO_APP_ACCESS_KEY}
+      MINIO_APP_SECRET_KEY: ${MINIO_APP_SECRET_KEY}
+      WORKER_MAX_CONCURRENT_JOBS: ${WORKER_MAX_CONCURRENT_JOBS:-2}
+    ports:
+      # Loopback only; Prometheus reaches it through host.docker.internal:8090.
+      - "127.0.0.1:8090:8090"
+    # ffmpeg runs outside the JVM heap and uses every core it is given, so a job needs room of its own.
+    # Raise both with WORKER_MAX_CONCURRENT_JOBS.
+    cpus: 2
+    mem_limit: 4g
+    # Nothing is written to the image: a job's source and output go to /tmp, which is a volume
+    # rather than a tmpfs because tmpfs counts against the memory limit and a source can be 500 MB.
+    read_only: true
+    volumes:
+      - worker-tmp:/tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # A job in flight is cut short at shutdown and its command is delivered again (the work is
+    # deterministic, so that is safe); this only has to let the listener stop cleanly.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   # Milestone 7 (brief section 19: "Add OpenSearch only in Milestone 7").
   # Single-node dev config; security plugin disabled the same way Redis/Kafka
   # run without auth locally -- never do this outside a laptop dev stack.
@@ -301,6 +346,7 @@ services:
       - ../admin-web/dist:/usr/share/nginx/html-admin:ro
 
 volumes:
+  worker-tmp:
   postgres-data:
   minio-data:
   opensearch-data:

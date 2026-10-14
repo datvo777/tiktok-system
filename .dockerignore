@@ -1,0 +1,16 @@
+# Build context for media-worker/Dockerfile is the repository root (the worker builds against the
+# shared modules). Keep everything that is not Java source out of it.
+.git
+.github
+.claude
+.env
+.env.*
+node_modules
+web
+admin-web
+tests
+docs
+infrastructure
+**/target
+**/.DS_Store
+*.tar.gz

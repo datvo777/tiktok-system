@@ -56,6 +56,10 @@ mvn -pl backend/app -am spring-boot:run
 
 # 3. Media worker, in a second terminal
 mvn -pl media-worker -am spring-boot:run
+#    ...or in a container instead (needs the dependencies above; do not run both, they share port 8090):
+#    docker compose --env-file .env -f infrastructure/docker-compose.yml --profile worker up -d --build media-worker
+#    WORKER_MAX_CONCURRENT_JOBS (default 2) is how many transcodes run at once; raise it with CPU and
+#    memory to match, since each ffmpeg uses every core it gets.
 
 # 4. Web client, in a third
 cd web && npm install && npm run dev
