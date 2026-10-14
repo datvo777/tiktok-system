@@ -2,6 +2,7 @@ package com.shortvideo.worker;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -10,6 +11,10 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.MediaEvents;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
@@ -24,9 +29,10 @@ class TranscodeJobHandlerTest {
     private final io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
             new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
     private final WorkerProperties properties = new WorkerProperties();
+    private final MinioObjectStore store = mock(MinioObjectStore.class);
+    private final TranscodePipeline pipeline = mock(TranscodePipeline.class);
     private final TranscodeJobHandler handler = new TranscodeJobHandler(
-            mock(MinioObjectStore.class), mock(TranscodePipeline.class), properties, kafka, new ObjectMapper().findAndRegisterModules(),
-            meters);
+            store, pipeline, properties, kafka, new ObjectMapper().findAndRegisterModules(), meters);
 
     private static MediaEvents.MediaJobCommand job(int attempt) {
         return new MediaEvents.MediaJobCommand("v1:4", "v1", 4, "sources/v1/original", List.of("720p"), attempt);
@@ -97,5 +103,106 @@ class TranscodeJobHandlerTest {
 
         assertThat(meters.find("worker.jobs").counters()).isEmpty();
         assertThat(meters.timer("worker.job.duration").count()).isEqualTo(1); // the time was still spent
+    }
+
+    private static final String STAGING = "processing-temp/v1:4/";
+
+    /** Local job directories this handler left in the temp dir (named after the job id). */
+    private static List<Path> localJobDirs() throws IOException {
+        try (var dirs = Files.newDirectoryStream(Path.of(System.getProperty("java.io.tmpdir")), "media-worker-v1-4-*")) {
+            List<Path> found = new ArrayList<>();
+            dirs.forEach(found::add);
+            return found;
+        }
+    }
+
+    /** A source that downloads, and a pipeline that produces a small output tree. */
+    private void sourceDownloadsAndPipelineSucceeds() throws Exception {
+        org.mockito.Mockito.doAnswer(invocation -> {
+            Files.writeString(invocation.getArgument(1), "bytes");
+            return null;
+        }).when(store).downloadTo(anyString(), any(Path.class));
+        when(pipeline.run(any(Path.class), any(Path.class))).thenAnswer(invocation -> {
+            Path out = invocation.getArgument(1);
+            Files.createDirectories(out.resolve("high"));
+            Files.writeString(out.resolve("master.m3u8"), "#EXTM3U");
+            Files.writeString(out.resolve("high/index.m3u8"), "#EXTM3U");
+            return new HlsTranscoder.TranscodeOutput(
+                    out.resolve("master.m3u8"), out.resolve("high/index.m3u8"), "high/index.m3u8", 1, 3.0,
+                    List.of("high/index.m3u8"), null);
+        });
+        when(kafka.send(anyString(), anyString(), anyString())).thenReturn(CompletableFuture.completedFuture(null));
+    }
+
+    @Test
+    void stagingAndTheLocalDirectoryAreRemovedAfterASuccessfulJob() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+
+        handler.handle(job(1), "corr");
+
+        verify(store).deleteAllUnder(STAGING);
+        assertThat(localJobDirs()).isEmpty();
+    }
+
+    @Test
+    void stagingIsRemovedAfterATerminalFailure() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+        when(pipeline.run(any(Path.class), any(Path.class)))
+                .thenThrow(new TranscodeFailedException("TERMINAL", "unsupported"));
+
+        handler.handle(job(1), "corr");
+
+        verify(store).deleteAllUnder(STAGING);
+        assertThat(localJobDirs()).isEmpty();
+    }
+
+    @Test
+    void stagingIsRemovedWhenTheResultCouldNotBePublished() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+        when(kafka.send(anyString(), anyString(), anyString()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("broker down")));
+
+        assertThatThrownBy(() -> handler.handle(job(1), "corr"))
+                .isInstanceOf(TranscodeJobHandler.ResultNotPublishedException.class);
+
+        verify(store).deleteAllUnder(STAGING);
+        assertThat(localJobDirs()).isEmpty();
+    }
+
+    @Test
+    void theLocalDirectoryIsGoneBeforeMinioIsAsked() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+        List<Path> leftWhenMinioWasAsked = new ArrayList<>();
+        when(store.deleteAllUnder(anyString())).thenAnswer(invocation -> {
+            leftWhenMinioWasAsked.addAll(localJobDirs());
+            return 0;
+        });
+
+        handler.handle(job(1), "corr");
+
+        // A slow or unreachable MinIO must not be what keeps a 500 MB source on the disk.
+        assertThat(leftWhenMinioWasAsked).isEmpty();
+    }
+
+    @Test
+    void objectsThatCouldNotBeRemovedAreCountedAndDoNotFailTheJob() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+        when(store.deleteAllUnder(anyString())).thenReturn(2);
+
+        handler.handle(job(1), "corr");
+
+        assertThat(meters.counter("worker.staging.cleanup.failed").count()).isEqualTo(2.0);
+        assertThat(meters.counter("worker.jobs", "outcome", "COMPLETED", "failureClass", "none").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void aStagingPrefixThatCannotBeListedIsCountedAndDoesNotFailTheJob() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+        when(store.deleteAllUnder(anyString())).thenThrow(new IllegalStateException("cannot list"));
+
+        handler.handle(job(1), "corr");
+
+        assertThat(meters.counter("worker.staging.cleanup.failed").count()).isEqualTo(1.0);
+        assertThat(meters.counter("worker.jobs", "outcome", "COMPLETED", "failureClass", "none").count()).isEqualTo(1.0);
     }
 }

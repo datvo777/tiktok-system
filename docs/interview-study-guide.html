@@ -806,7 +806,7 @@
           Local ffmpeg output lands in a temp directory first — nothing touches MinIO until encoding finishes
           locally. If the crash happens before that, nothing exists anywhere and the video stays correctly stuck
           in <code>TRANSCODING</code>. If it happens after staging begins, an orphaned <code>processing-temp/</code>
-          object can exist, and a <code>StartupTempSweeper</code> removes it on the worker's next boot. Either
+          object can exist, and a <code>TempSweeper</code> removes it shortly after the worker's next boot, and then hourly. Either
           way, <code>processed/</code> — the only prefix the gateway will serve — never gets a partial write,
           because it's only reached by a server-side copy after validation. I verified both cases live: killed
           the worker with <code>kill -9</code> mid-encode of a real video (no partial prefix, and the Kafka job

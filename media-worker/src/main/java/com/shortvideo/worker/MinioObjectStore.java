@@ -7,10 +7,12 @@ import io.minio.GetObjectArgs;
 import io.minio.ListObjectsArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
-import io.minio.RemoveObjectArgs;
+import io.minio.RemoveObjectsArgs;
 import io.minio.Result;
 import io.minio.StatObjectArgs;
 import io.minio.errors.ErrorResponseException;
+import io.minio.messages.DeleteError;
+import io.minio.messages.DeleteObject;
 import io.minio.messages.Item;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -176,14 +178,39 @@ class MinioObjectStore {
         }
     }
 
-    void delete(String objectKey) {
+    /** Removes everything under {@code prefix}; see {@link #deleteAll}. */
+    int deleteAllUnder(String prefix) {
+        return deleteAll(listKeysUnder(prefix));
+    }
+
+    /**
+     * Removes the objects in batched requests (S3 takes up to a thousand per call), where a request
+     * per object cost a round trip, and up to three tries, for every segment of every rung. A key that
+     * cannot be removed does not stop the others: MinIO reports each failure and carries on.
+     *
+     * @return how many objects could not be removed; zero when all are gone. A missing key is not a
+     *     failure. The whole call failing counts every key as not removed.
+     */
+    int deleteAll(List<String> keys) {
+        if (keys.isEmpty()) {
+            return 0;
+        }
+        List<DeleteObject> objects = keys.stream().map(DeleteObject::new).toList();
         try {
-            withRetry("delete of " + objectKey, () -> {
-                client.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(objectKey).build());
-                return null;
+            return withRetry("batch delete of " + objects.size() + " objects", () -> {
+                int failed = 0;
+                // The results are only the failures; a clean batch yields none.
+                for (Result<DeleteError> result : client.removeObjects(
+                        RemoveObjectsArgs.builder().bucket(bucket).objects(objects).build())) {
+                    DeleteError error = result.get();
+                    failed++;
+                    log.warn("MinIO did not delete {}: {}", error.objectName(), error.message());
+                }
+                return failed;
             });
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to delete " + objectKey, e);
+            log.warn("Batch delete of {} objects failed: {}", objects.size(), e.toString());
+            return objects.size();
         }
     }
 }

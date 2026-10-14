@@ -79,10 +79,10 @@ esac
 
 # ---------------------------------------------------------------------------
 # Same safety net for the media worker's staging area. A job removes its own processing-temp/
-# objects when it ends, and the worker sweeps old ones at startup, but a worker that is killed
-# mid-promote leaves its staging objects behind, and one that never restarts never sweeps. A job
-# runs for 15 minutes at most, so anything a day old belongs to nobody. processed/ and sources/ are
-# not touched.
+# objects when it ends and the worker sweeps old ones shortly after startup and every hour, but
+# that only runs while a worker is up; a worker killed mid-promote and left down leaves its staging
+# objects behind. A job runs for 15 minutes at most, so anything a day old belongs to nobody.
+# processed/ and sources/ are not touched.
 # ---------------------------------------------------------------------------
 case "$RULES" in
   *processing-temp/*) echo "lifecycle rule for processing-temp/ already present" ;;

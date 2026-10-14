@@ -14,7 +14,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -119,10 +118,12 @@ class TranscodeJobHandler {
         } finally {
             // Whatever way the job ended, its staging objects are of no further use: on success they
             // were copied to processed/, on failure they are partial, and a rerun rewrites them.
-            cleanupPrefix(tempPrefix);
+            // The local directory goes first: it can hold a 500 MB source, and a slow or unreachable
+            // MinIO must not be what keeps the disk full.
             if (workDir != null) {
-                deleteRecursively(workDir);
+                LocalFiles.deleteRecursively(workDir);
             }
+            cleanupStaging(tempPrefix);
         }
     }
 
@@ -140,14 +141,22 @@ class TranscodeJobHandler {
         }
     }
 
-    private void cleanupPrefix(String prefix) {
+    /**
+     * Best-effort, and it never fails the job: the result is what matters, and a leftover object is
+     * reclaimed by the sweeper and the bucket's lifecycle rule. It is not silent, though: leftovers
+     * that nobody hears about pile up, so each one is logged and counted.
+     */
+    private void cleanupStaging(String prefix) {
         try {
-            for (String key : store.listKeysUnder(prefix)) {
-                store.delete(key);
+            int failed = store.deleteAllUnder(prefix);
+            if (failed > 0) {
+                meters.counter("worker.staging.cleanup.failed").increment(failed);
+                log.warn("Left {} staging object(s) under {}; the sweeper will reclaim them", failed, prefix);
             }
         } catch (Exception e) {
-            // Best-effort: an orphaned processing-temp object is swept at startup.
-            log.debug("Failed to clean up staging prefix {}: {}", prefix, e.getMessage());
+            // Could not even list the prefix.
+            meters.counter("worker.staging.cleanup.failed").increment();
+            log.warn("Could not clean up staging prefix {}; the sweeper will reclaim it: {}", prefix, e.getMessage());
         }
     }
 
@@ -207,20 +216,6 @@ class TranscodeJobHandler {
     private List<Path> listFiles(Path root) throws IOException {
         try (Stream<Path> walk = Files.walk(root)) {
             return walk.filter(Files::isRegularFile).toList();
-        }
-    }
-
-    private void deleteRecursively(Path dir) {
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try {
-                    Files.deleteIfExists(p);
-                } catch (IOException ignored) {
-                    // Best-effort local cleanup.
-                }
-            });
-        } catch (IOException ignored) {
-            // Directory may already be gone.
         }
     }
 

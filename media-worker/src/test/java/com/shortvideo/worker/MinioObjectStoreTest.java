@@ -92,4 +92,48 @@ class MinioObjectStoreTest {
                 });
         verify(client, times(1)).getObject(any(GetObjectArgs.class));
     }
+
+    private static io.minio.Result<io.minio.messages.DeleteError> failure(String key) throws Exception {
+        io.minio.messages.DeleteError error = mock(io.minio.messages.DeleteError.class);
+        when(error.objectName()).thenReturn(key);
+        when(error.message()).thenReturn("denied");
+        @SuppressWarnings("unchecked")
+        io.minio.Result<io.minio.messages.DeleteError> result = mock(io.minio.Result.class);
+        when(result.get()).thenReturn(error);
+        return result;
+    }
+
+    @Test
+    void manyObjectsAreRemovedInOneBatchedRequest() throws Exception {
+        when(client.removeObjects(any(io.minio.RemoveObjectsArgs.class))).thenReturn(java.util.List.of());
+
+        int failed = store.deleteAll(java.util.List.of("a", "b", "c", "d"));
+
+        assertThat(failed).isZero();
+        verify(client, times(1)).removeObjects(any(io.minio.RemoveObjectsArgs.class));
+    }
+
+    @Test
+    void anObjectMinioRefusesToDeleteIsCountedAndDoesNotStopTheRest() throws Exception {
+        // MinIO answers a batch with only the failures; the rest of the batch was removed.
+        var refused = failure("c"); // built first: stubbing inside another stubbing is not allowed
+        when(client.removeObjects(any(io.minio.RemoveObjectsArgs.class))).thenReturn(java.util.List.of(refused));
+
+        assertThat(store.deleteAll(java.util.List.of("a", "b", "c", "d", "e"))).isEqualTo(1);
+        verify(client, times(1)).removeObjects(any(io.minio.RemoveObjectsArgs.class));
+    }
+
+    @Test
+    void aBatchThatCannotBeSentCountsEveryObjectAsNotRemovedInsteadOfThrowing() throws Exception {
+        when(client.removeObjects(any(io.minio.RemoveObjectsArgs.class))).thenThrow(new IllegalStateException("connection refused"));
+
+        assertThat(store.deleteAll(java.util.List.of("a", "b", "c"))).isEqualTo(3);
+        verify(client, times(3)).removeObjects(any(io.minio.RemoveObjectsArgs.class)); // the usual three tries
+    }
+
+    @Test
+    void nothingToDeleteSendsNothing() {
+        assertThat(store.deleteAll(java.util.List.of())).isZero();
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
 }
