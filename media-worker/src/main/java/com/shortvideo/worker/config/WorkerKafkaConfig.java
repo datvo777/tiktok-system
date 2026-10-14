@@ -1,5 +1,6 @@
 package com.shortvideo.worker.config;
 
+import com.shortvideo.worker.WorkerProperties;
 import java.util.Map;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -72,11 +73,21 @@ public class WorkerKafkaConfig {
         return handler;
     }
 
+    /**
+     * One consumer thread per concurrent job: a listener runs a whole transcode before it returns
+     * to poll(), so the number of threads is the number of jobs in flight. Without this a container
+     * has a single thread, and {@code max-concurrent-jobs} was read by nothing. Threads beyond the
+     * partition count of {@code media.jobs.v1} (three) would sit idle, since a partition goes to
+     * one consumer at a time.
+     */
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(
-            ConsumerFactory<String, String> consumerFactory, DefaultErrorHandler kafkaErrorHandler) {
+            ConsumerFactory<String, String> consumerFactory,
+            DefaultErrorHandler kafkaErrorHandler,
+            WorkerProperties properties) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
+        factory.setConcurrency(Math.max(1, properties.getMaxConcurrentJobs()));
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
         factory.setCommonErrorHandler(kafkaErrorHandler);
         return factory;

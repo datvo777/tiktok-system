@@ -6,6 +6,8 @@ import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.events.MediaEvents;
 import com.shortvideo.shared.events.Topics;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -44,13 +46,16 @@ class TranscodeJobHandler {
     private final WorkerProperties properties;
     private final KafkaTemplate<String, String> kafka;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meters;
 
     TranscodeJobHandler(
             MinioObjectStore store,
             TranscodePipeline pipeline,
             WorkerProperties properties,
             KafkaTemplate<String, String> kafka,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            MeterRegistry meters) {
+        this.meters = meters;
         this.store = store;
         this.pipeline = pipeline;
         this.properties = properties;
@@ -59,6 +64,15 @@ class TranscodeJobHandler {
     }
 
     void handle(MediaEvents.MediaJobCommand job, String correlationId) {
+        Timer.Sample sample = Timer.start(meters);
+        try {
+            run(job, correlationId);
+        } finally {
+            sample.stop(meters.timer("worker.job.duration"));
+        }
+    }
+
+    private void run(MediaEvents.MediaJobCommand job, String correlationId) {
         Path workDir = null;
         String tempPrefix = "processing-temp/" + job.jobId() + "/";
         try {
@@ -159,6 +173,10 @@ class TranscodeJobHandler {
         try {
             kafka.send(Topics.MEDIA_RESULTS, job.videoId(), objectMapper.writeValueAsString(envelope))
                     .get(properties.getResultAckTimeout().toMillis(), TimeUnit.MILLISECONDS);
+            // Counted once the broker has the result, so a result that is redelivered and reported
+            // again is not counted as two jobs' worth of failures it did not have.
+            meters.counter("worker.jobs", "outcome", outcome, "failureClass", failureClass == null ? "none" : failureClass)
+                    .increment();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ResultNotPublishedException(job.jobId(), e);

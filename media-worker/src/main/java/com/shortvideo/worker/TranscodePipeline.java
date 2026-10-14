@@ -1,9 +1,11 @@
 package com.shortvideo.worker;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -23,9 +25,11 @@ class TranscodePipeline {
 
     private final List<TranscodeStep> steps;
     private final WorkerProperties properties;
+    private final MeterRegistry meters;
 
-    TranscodePipeline(HlsTranscoder transcoder, WorkerProperties properties) {
+    TranscodePipeline(HlsTranscoder transcoder, WorkerProperties properties, MeterRegistry meters) {
         this.properties = properties;
+        this.meters = meters;
         this.steps = List.of(
                 new ProbeStep(transcoder),
                 new EncodeLadderStep(transcoder),
@@ -56,6 +60,10 @@ class TranscodePipeline {
                     throw e;
                 }
                 log.warn("Optional transcode step '{}' failed; continuing: {}", step.name(), e.getMessage());
+            } finally {
+                // Failed steps are timed too: a step that dies after ten minutes is the interesting one.
+                meters.timer("worker.transcode.step.duration", "step", step.name())
+                        .record(System.nanoTime() - startedAt, TimeUnit.NANOSECONDS);
             }
         }
 

@@ -27,7 +27,9 @@ class MinioObjectStoreTest {
 
     private final MinioClient client = mock(MinioClient.class);
     private final MinioConfig.MinioProperties properties = new MinioConfig.MinioProperties();
-    private final MinioObjectStore store = new MinioObjectStore(client, properties, Duration.ofMillis(1));
+    private final io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
+            new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+    private final MinioObjectStore store = new MinioObjectStore(client, properties, Duration.ofMillis(1), meters);
 
     private static ErrorResponseException answer(String code, int httpStatus) {
         ErrorResponse error = mock(ErrorResponse.class);
@@ -51,6 +53,7 @@ class MinioObjectStoreTest {
         store.copy("processing-temp/j/a.ts", "processed/v/1/a.ts");
 
         verify(client, times(3)).copyObject(any(CopyObjectArgs.class));
+        assertThat(meters.counter("worker.minio.retries").count()).isEqualTo(2.0);
     }
 
     @Test
@@ -72,7 +75,7 @@ class MinioObjectStoreTest {
         MinioClient other = mock(MinioClient.class);
         ErrorResponseException accessDenied = answer("AccessDenied", 403);
         when(other.copyObject(any(CopyObjectArgs.class))).thenThrow(accessDenied);
-        MinioObjectStore denied = new MinioObjectStore(other, properties, Duration.ofMillis(1));
+        MinioObjectStore denied = new MinioObjectStore(other, properties, Duration.ofMillis(1), meters);
         assertThatThrownBy(() -> denied.copy("a", "b")).isInstanceOf(ErrorResponseException.class);
         verify(other, times(1)).copyObject(any(CopyObjectArgs.class));
     }

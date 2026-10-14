@@ -1,6 +1,8 @@
 package com.shortvideo.worker;
 
 import io.minio.CopySource;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.minio.GetObjectArgs;
 import io.minio.ListObjectsArgs;
 import io.minio.MinioClient;
@@ -41,17 +43,26 @@ class MinioObjectStore {
     private final MinioClient client;
     private final String bucket;
     private final Duration retryDelay;
+    private final Counter retries;
 
     @Autowired
-    MinioObjectStore(MinioClient client, com.shortvideo.worker.config.MinioConfig.MinioProperties properties) {
-        this(client, properties, Duration.ofMillis(500));
+    MinioObjectStore(
+            MinioClient client,
+            com.shortvideo.worker.config.MinioConfig.MinioProperties properties,
+            MeterRegistry meters) {
+        this(client, properties, Duration.ofMillis(500), meters);
     }
 
     MinioObjectStore(
-            MinioClient client, com.shortvideo.worker.config.MinioConfig.MinioProperties properties, Duration retryDelay) {
+            MinioClient client,
+            com.shortvideo.worker.config.MinioConfig.MinioProperties properties,
+            Duration retryDelay,
+            MeterRegistry meters) {
         this.client = client;
         this.bucket = properties.getBucket();
         this.retryDelay = retryDelay;
+        // Each retry hides a MinIO hiccup from the job, so a rising count is the early sign of trouble.
+        this.retries = Counter.builder("worker.minio.retries").register(meters);
     }
 
     private interface Call<T> {
@@ -66,6 +77,7 @@ class MinioObjectStore {
                 if (attempt >= ATTEMPTS || !worthRetrying(e)) {
                     throw e;
                 }
+                retries.increment();
                 long delayMillis = retryDelay.toMillis() << (attempt - 1);
                 log.warn("MinIO {} failed (attempt {} of {}), retrying in {} ms: {}",
                         what, attempt, ATTEMPTS, delayMillis, e.toString());

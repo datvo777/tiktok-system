@@ -21,9 +21,12 @@ class TranscodeJobHandlerTest {
     @SuppressWarnings("unchecked")
     private final KafkaTemplate<String, String> kafka = mock(KafkaTemplate.class);
 
+    private final io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
+            new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
     private final WorkerProperties properties = new WorkerProperties();
     private final TranscodeJobHandler handler = new TranscodeJobHandler(
-            mock(MinioObjectStore.class), mock(TranscodePipeline.class), properties, kafka, new ObjectMapper().findAndRegisterModules());
+            mock(MinioObjectStore.class), mock(TranscodePipeline.class), properties, kafka, new ObjectMapper().findAndRegisterModules(),
+            meters);
 
     private static MediaEvents.MediaJobCommand job(int attempt) {
         return new MediaEvents.MediaJobCommand("v1:4", "v1", 4, "sources/v1/original", List.of("720p"), attempt);
@@ -73,5 +76,26 @@ class TranscodeJobHandlerTest {
                 .isInstanceOf(TranscodeJobHandler.ResultNotPublishedException.class);
         // One send only: the failure is not reported again as a second, equally doomed result.
         verify(kafka, times(1)).send(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void aReportedFailureIsCountedByOutcomeAndFailureClass() {
+        reportedPayloads(job(1)); // the mocked store downloads nothing: reported as TRANSIENT
+
+        assertThat(meters.counter("worker.jobs", "outcome", "FAILED", "failureClass", "TRANSIENT").count())
+                .isEqualTo(1.0);
+        assertThat(meters.timer("worker.job.duration").count()).isEqualTo(1);
+    }
+
+    @Test
+    void aResultTheBrokerDidNotAcknowledgeIsNotCounted() {
+        when(kafka.send(anyString(), anyString(), anyString()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("broker down")));
+
+        assertThatThrownBy(() -> handler.handle(job(1), "corr"))
+                .isInstanceOf(TranscodeJobHandler.ResultNotPublishedException.class);
+
+        assertThat(meters.find("worker.jobs").counters()).isEmpty();
+        assertThat(meters.timer("worker.job.duration").count()).isEqualTo(1); // the time was still spent
     }
 }

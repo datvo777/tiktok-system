@@ -22,8 +22,10 @@ class HlsTranscoderFfmpegTest {
     private static final WorkerProperties PROPERTIES = new WorkerProperties();
     private static final ProcessRunner RUNNER = new ProcessRunner();
 
+    private final io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
+            new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
     private final TranscodePipeline pipeline =
-            new TranscodePipeline(new HlsTranscoder(RUNNER, PROPERTIES), PROPERTIES);
+            new TranscodePipeline(new HlsTranscoder(RUNNER, PROPERTIES), PROPERTIES, meters);
 
     @BeforeAll
     static void ffmpegIsInstalled() {
@@ -85,6 +87,37 @@ class HlsTranscoderFfmpegTest {
                 .contains("CODECS=\"avc1.640028,mp4a.40.2\"");
     }
 
+    /** 24 and 60 are the other frame rates phones record at; neither divides into 4s the way 30 does. */
+    @Test
+    void everyRungCutsTheSameSegmentsAtTwentyFourFps(@TempDir Path dir) throws IOException {
+        assertRungsAlign(dir, "720x1280", 24);
+    }
+
+    @Test
+    void everyRungCutsTheSameSegmentsAtSixtyFps(@TempDir Path dir) throws IOException {
+        assertRungsAlign(dir, "720x1280", 60);
+    }
+
+    @Test
+    void aLandscapeSourceKeepsItsOrientationAcrossTheLadder(@TempDir Path dir) throws IOException {
+        HlsTranscoder.TranscodeOutput output = pipeline.run(source(dir, "1920x1080", 30, true), dir.resolve("out"));
+
+        assertThat(Files.readString(output.masterPlaylist()))
+                .contains("RESOLUTION=1280x720", "RESOLUTION=854x480", "RESOLUTION=480x270");
+        Path out = output.masterPlaylist().getParent();
+        assertThat(segmentDurations(out.resolve("medium"))).isEqualTo(segmentDurations(out.resolve("high")));
+    }
+
+    private void assertRungsAlign(Path dir, String size, int fps) throws IOException {
+        HlsTranscoder.TranscodeOutput output = pipeline.run(source(dir, size, fps, true), dir.resolve("out"));
+        Path out = output.masterPlaylist().getParent();
+
+        List<String> high = segmentDurations(out.resolve("high"));
+        assertThat(high).hasSize(3);
+        assertThat(segmentDurations(out.resolve("medium"))).isEqualTo(high);
+        assertThat(segmentDurations(out.resolve("low"))).isEqualTo(high);
+    }
+
     @Test
     void aSourceWithoutAudioProducesRungsWithoutAudioAndSaysSo(@TempDir Path dir) throws IOException {
         HlsTranscoder.TranscodeOutput output = pipeline.run(source(dir, "720x1280", 25, false), dir.resolve("out"));
@@ -102,6 +135,9 @@ class HlsTranscoderFfmpegTest {
         HlsTranscoder.TranscodeOutput output = pipeline.run(source(dir, "360x640", 30, true), dir.resolve("out"));
 
         assertThat(output.variantRelativePaths()).containsExactly("low/index.m3u8");
+        // Every step of the run was timed.
+        assertThat(meters.timer("worker.transcode.step.duration", "step", "probe").count()).isEqualTo(1);
+        assertThat(meters.timer("worker.transcode.step.duration", "step", "encode-ladder").count()).isEqualTo(1);
         assertThat(Files.readString(output.masterPlaylist())).contains("RESOLUTION=270x480");
     }
 }

@@ -93,6 +93,28 @@ class WorkerKafkaConfigTest {
         }
     }
 
+    @Test
+    void theListenerRunsAsManyConsumerThreadsAsConcurrentJobsAreAllowed() {
+        var properties = new com.shortvideo.worker.WorkerProperties();
+        properties.setMaxConcurrentJobs(3);
+
+        var factory = new WorkerKafkaConfig().kafkaListenerContainerFactory(
+                mock(org.springframework.kafka.core.ConsumerFactory.class), handler, properties);
+
+        assertThat(org.springframework.test.util.ReflectionTestUtils.getField(factory, "concurrency")).isEqualTo(3);
+    }
+
+    @Test
+    void aNonsensicalJobLimitStillLeavesOneConsumer() {
+        var properties = new com.shortvideo.worker.WorkerProperties();
+        properties.setMaxConcurrentJobs(0);
+
+        var factory = new WorkerKafkaConfig().kafkaListenerContainerFactory(
+                mock(org.springframework.kafka.core.ConsumerFactory.class), handler, properties);
+
+        assertThat(org.springframework.test.util.ReflectionTestUtils.getField(factory, "concurrency")).isEqualTo(1);
+    }
+
     private ProducerRecord<String, String> sentToDeadLetter() {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<ProducerRecord<String, String>> sent = ArgumentCaptor.forClass(ProducerRecord.class);
