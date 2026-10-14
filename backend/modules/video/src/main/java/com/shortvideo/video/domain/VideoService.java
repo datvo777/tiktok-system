@@ -88,7 +88,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             EligibilityDirectory eligibilityDirectory,
             PlatformTransactionManager transactionManager) {
         this(repository, supersededAssetRepository, outboxWriter, assetVerifier, revocationWriter,
-                auditRecorder, eligibilityDirectory, transactionManager, 3, Duration.ofSeconds(30),
+                auditRecorder, eligibilityDirectory, transactionManager, 5, Duration.ofSeconds(30),
                 new SimpleMeterRegistry());
     }
 
@@ -102,7 +102,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             AdminActionRecorder auditRecorder,
             EligibilityDirectory eligibilityDirectory,
             PlatformTransactionManager transactionManager,
-            @Value("${shortvideo.lifecycle.transcode-max-attempts:3}") int transcodeMaxAttempts,
+            @Value("${shortvideo.lifecycle.transcode-max-attempts:5}") int transcodeMaxAttempts,
             @Value("${shortvideo.lifecycle.transcode-retry-backoff:30s}") Duration transcodeRetryBackoff,
             MeterRegistry meters) {
         this.transcodeMaxAttempts = transcodeMaxAttempts;
@@ -260,7 +260,13 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     }
 
     /**
-     * A TRANSIENT failure with budget left (brief section 11.1): the video stays TRANSCODING and
+     * A TRANSIENT failure with budget left (brief section 11.1). Five tries with a 30s base wait
+     * 30s, 1m, 2m and 4m between them: about eight minutes in all, which is meant to outlast a
+     * MinIO or broker restart. A shorter window fails every video in flight at once during one, and
+     * each then needs a manual reprocess. The wait before the last try plus a full job
+     * (15 minutes) stays well inside the watchdog's 30 minutes.
+     *
+     * <p>The video stays TRANSCODING and
      * the same jobId is dispatched again, so the worker re-derives the same prefixes. The command
      * is held back by an exponential backoff (base, 2x base, 4x base, capped at ten minutes, then
      * spread by +/-20% so videos that failed together do not retry together) through the outbox's
@@ -514,8 +520,12 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         if (video.getProcessingState() == ProcessingState.TRANSCODING) {
             return; // a job is already in flight — redelivery/duplicate-click no-op
         }
+        // What it is being reprocessed from, so the audit shows a retry of a TERMINAL failure (which
+        // will usually fail the same way unless its cause was fixed) apart from a routine re-run.
+        String from = video.getProcessingState()
+                + (video.getFailureClass() == null ? "" : "/" + video.getFailureClass());
         auditRecorder.record(AdminAction.of(
-                actorAccountId, AuditActions.VIDEO_REPROCESSED, AuditTargets.VIDEO, videoId));
+                actorAccountId, AuditActions.VIDEO_REPROCESSED, AuditTargets.VIDEO, videoId, "from " + from));
 
         Integer previousVersion = video.getProcessingVersion();
         String previousMaster = video.getMasterPlaylistKey();

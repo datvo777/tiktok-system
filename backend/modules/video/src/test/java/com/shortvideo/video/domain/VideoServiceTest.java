@@ -142,6 +142,33 @@ class VideoServiceTest {
     }
 
     @Test
+    void reprocessingAFailedVideoRecordsWhatItFailedWithInTheAudit() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var audit = mock(com.shortvideo.shared.audit.AdminActionRecorder.class);
+        VideoService service = new VideoService(
+                repository,
+                mock(SupersededAssetJpaRepository.class),
+                mock(com.shortvideo.shared.outbox.OutboxWriter.class),
+                mock(MinioAssetVerifier.class),
+                mock(com.shortvideo.shared.revocation.DurableRevocationWriter.class),
+                audit,
+                null,
+                mock(org.springframework.transaction.PlatformTransactionManager.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        video.dispatchProcessing("sources/" + videoId + "/original");
+        video.markFailed("TERMINAL");
+        when(repository.findForUpdate(videoId)).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        service.reprocess(videoId.toString(), UUID.randomUUID().toString());
+
+        var action = org.mockito.ArgumentCaptor.forClass(com.shortvideo.shared.audit.AdminAction.class);
+        org.mockito.Mockito.verify(audit).record(action.capture());
+        assertThat(action.getValue().reason()).isEqualTo("from FAILED/TERMINAL");
+    }
+
+    @Test
     void anExpiredDraftHasItsSourceScheduledForPurge() {
         VideoJpaRepository repository = mock(VideoJpaRepository.class);
         SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
