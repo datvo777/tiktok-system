@@ -32,6 +32,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
@@ -192,15 +193,38 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     }
 
     /**
+     * Checks that the assets a COMPLETED result names are really in the store. Meant to run before
+     * the transaction that calls {@link #applyMediaResult} opens: it stats every playlist and lists
+     * the segments, and doing that with a database connection checked out, and the inbox row
+     * uncommitted, ties both up for as long as the object store takes to answer.
+     *
+     * @return the verdict, or null for a result with no assets to check (a FAILED one)
+     * @throws VideoExceptions.AssetStoreUnavailable if MinIO could not be asked, which decides nothing
+     */
+    Boolean verifyAssets(MediaEvents.MediaResultCommand result) {
+        if (!"COMPLETED".equals(result.outcome()) || result.assets() == null) {
+            return null;
+        }
+        return assetVerifier.verify(
+                result.assets().masterPlaylist(),
+                result.assets().variantPlaylists(),
+                result.assets().segmentCount());
+    }
+
+    /**
      * Consumes {@code media.results.v1} (brief section 11.1). A stale
      * processingVersion, or a video already terminal for the current version, is a
      * silent no-op — the worker's redelivered command produces exactly one durable
-     * transition.
+     * transition. Not silent to the metrics: each ignored result is counted by reason.
+     *
+     * @param assetsValid what {@link #verifyAssets} said for this result
      */
     @Transactional
-    void applyMediaResult(MediaEvents.MediaResultCommand result) {
+    void applyMediaResult(MediaEvents.MediaResultCommand result, Boolean assetsValid) {
         VideoEntity video = repository.findById(UUID.fromString(result.videoId())).orElse(null);
         if (video == null) {
+            ignored("unknown_video");
+            log.warn("Transcode result for unknown video {} ignored", result.videoId());
             return;
         }
         if (video.isRemoved()) {
@@ -210,9 +234,11 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             // already-purged prefix is not an error.
             supersededAssetRepository.saveAndFlush(
                     new SupersededAssetEntity(video.getVideoId(), result.processingVersion(), null, List.of()));
+            ignored("removed");
             return;
         }
         if (video.getProcessingVersion() == null || video.getProcessingVersion() != result.processingVersion()) {
+            ignored("stale_version");
             return; // stale processingVersion — ignore
         }
         if (video.getProcessingState() != ProcessingState.TRANSCODING) {
@@ -223,14 +249,12 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 // writes a new version. So it is storage to reclaim, the same as for a removed video.
                 schedulePartialOutputPurge(video);
             }
+            ignored("already_terminal");
             return; // already terminal for this version — idempotent no-op
         }
 
         if ("COMPLETED".equals(result.outcome()) && result.assets() != null
-                && assetVerifier.verify(
-                        result.assets().masterPlaylist(),
-                        result.assets().variantPlaylists(),
-                        result.assets().segmentCount())) {
+                && Objects.requireNonNull(assetsValid, "verifyAssets must run before applyMediaResult")) {
             video.markReady(
                     result.assets().masterPlaylist(),
                     result.assets().variantPlaylists(),
@@ -639,6 +663,10 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 video.getDescription(),
                 video.getAggregateVersion());
         append(video, EventTypes.VIDEO_METADATA_SET, payload);
+    }
+
+    private void ignored(String reason) {
+        meters.counter("video.transcode.result.ignored", "reason", reason).increment();
     }
 
     private void appendReadyEvent(VideoEntity video) {

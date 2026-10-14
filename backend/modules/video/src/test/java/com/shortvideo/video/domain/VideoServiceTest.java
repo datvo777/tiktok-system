@@ -101,7 +101,7 @@ class VideoServiceTest {
                 new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
                 null);
 
-        service.applyMediaResult(result);
+        apply(service, result);
 
         // Still TRANSCODING: never marked READY, and no event announcing it.
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
@@ -200,6 +200,11 @@ class VideoServiceTest {
         org.mockito.Mockito.verify(superseded, org.mockito.Mockito.never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
     }
 
+    /** What the listener does: verify first, outside any transaction, then apply. */
+    private static void apply(VideoService service, com.shortvideo.shared.events.MediaEvents.MediaResultCommand result) {
+        service.applyMediaResult(result, service.verifyAssets(result));
+    }
+
     private static com.shortvideo.shared.events.MediaEvents.MediaResultCommand failedResult(
             UUID videoId, int version, String failureClass) {
         return new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
@@ -218,7 +223,7 @@ class VideoServiceTest {
         when(repository.saveAndFlush(video)).thenReturn(video);
 
         java.time.Instant before = java.time.Instant.now();
-        service.applyMediaResult(failedResult(videoId, version, "TRANSIENT"));
+        apply(service, failedResult(videoId, version, "TRANSIENT"));
 
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
         assertThat(video.getTranscodeAttempt()).isEqualTo(2);
@@ -246,7 +251,7 @@ class VideoServiceTest {
         when(repository.saveAndFlush(video)).thenReturn(video);
 
         java.time.Instant before = java.time.Instant.now();
-        service.applyMediaResult(failedResult(videoId, version, "TRANSIENT"));
+        apply(service, failedResult(videoId, version, "TRANSIENT"));
 
         var availableAt = org.mockito.ArgumentCaptor.forClass(java.time.Instant.class);
         org.mockito.Mockito.verify(outbox).append(org.mockito.ArgumentMatchers.any(), availableAt.capture());
@@ -266,7 +271,7 @@ class VideoServiceTest {
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
         when(repository.saveAndFlush(video)).thenReturn(video);
 
-        service.applyMediaResult(failedResult(videoId, version, "TRANSIENT"));
+        apply(service, failedResult(videoId, version, "TRANSIENT"));
 
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.FAILED);
         assertThat(video.getFailureClass()).isEqualTo("TRANSIENT");
@@ -312,8 +317,8 @@ class VideoServiceTest {
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
         when(repository.saveAndFlush(video)).thenReturn(video);
 
-        service.applyMediaResult(failedResult(videoId, version, "TRANSIENT")); // retried
-        service.applyMediaResult(failedResult(videoId, version, "TRANSIENT")); // budget spent
+        apply(service, failedResult(videoId, version, "TRANSIENT")); // retried
+        apply(service, failedResult(videoId, version, "TRANSIENT")); // budget spent
 
         assertThat(meters.counter("video.transcode.retried").count()).isEqualTo(1.0);
         assertThat(meters.counter("video.transcode.failed", "failureClass", "TRANSIENT").count()).isEqualTo(1.0);
@@ -367,7 +372,7 @@ class VideoServiceTest {
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
         when(repository.saveAndFlush(video)).thenReturn(video);
 
-        service.applyMediaResult(completedResult(videoId, version));
+        apply(service, completedResult(videoId, version));
 
         // The worker said it was done but the objects are not there: not READY, and tried again.
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
@@ -391,8 +396,8 @@ class VideoServiceTest {
         video.dispatchReprocessing("sources/" + videoId + "/original"); // now version 2, TRANSCODING
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
 
-        service.applyMediaResult(failedResult(videoId, firstVersion, "TERMINAL"));
-        service.applyMediaResult(completedResult(videoId, firstVersion));
+        apply(service, failedResult(videoId, firstVersion, "TERMINAL"));
+        apply(service, completedResult(videoId, firstVersion));
 
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
         org.mockito.Mockito.verifyNoInteractions(outbox, superseded);
@@ -430,7 +435,7 @@ class VideoServiceTest {
         video.markFailed("TRANSIENT"); // the watchdog got there first
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
 
-        service.applyMediaResult(completedResult(videoId, version));
+        apply(service, completedResult(videoId, version));
 
         // The worker wrote under processed/ after the purge scheduled at failure time; nothing serves it.
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.FAILED);
@@ -452,7 +457,7 @@ class VideoServiceTest {
         video.markReady("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0);
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
 
-        service.applyMediaResult(completedResult(videoId, version));
+        apply(service, completedResult(videoId, version));
 
         // Those objects are the live ones.
         org.mockito.Mockito.verifyNoInteractions(superseded);
@@ -470,7 +475,7 @@ class VideoServiceTest {
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
         when(repository.saveAndFlush(video)).thenReturn(video);
 
-        service.applyMediaResult(failedResult(videoId, version, "TERMINAL"));
+        apply(service, failedResult(videoId, version, "TERMINAL"));
 
         // Reported before anything was promoted, so there is no output to reclaim.
         org.mockito.Mockito.verifyNoInteractions(superseded);
@@ -533,12 +538,68 @@ class VideoServiceTest {
                 new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
                 null);
 
-        assertThat(catchThrowable(() -> service.applyMediaResult(result)))
+        assertThat(catchThrowable(() -> apply(service, result)))
                 .isInstanceOf(VideoExceptions.AssetStoreUnavailable.class);
 
         // Not failed and not retried as a transcode: nothing was decided, so the delivery is retried.
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
         assertThat(video.getTranscodeAttempt()).isEqualTo(1);
         org.mockito.Mockito.verifyNoInteractions(outbox);
+    }
+
+    private double ignoredCount(String reason) {
+        return METERS.counter("video.transcode.result.ignored", "reason", reason).count();
+    }
+
+    @Test
+    void everyKindOfIgnoredResultIsCountedByReason() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        VideoService service = serviceWithVerifier(
+                repository, mock(com.shortvideo.shared.outbox.OutboxWriter.class), mock(SupersededAssetJpaRepository.class),
+                mock(MinioAssetVerifier.class), mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        double unknown = ignoredCount("unknown_video");
+        double stale = ignoredCount("stale_version");
+        double terminal = ignoredCount("already_terminal");
+        double removed = ignoredCount("removed");
+
+        UUID missing = UUID.randomUUID();
+        when(repository.findById(missing)).thenReturn(Optional.empty());
+        apply(service, failedResult(missing, 1, "TERMINAL"));
+
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        apply(service, failedResult(videoId, version + 1, "TERMINAL")); // not the current version
+        video.markFailed("TERMINAL");
+        apply(service, failedResult(videoId, version, "TERMINAL")); // already decided
+
+        UUID goneId = UUID.randomUUID();
+        VideoEntity gone = new VideoEntity(goneId, UUID.randomUUID(), "title", "desc");
+        int goneVersion = gone.dispatchProcessing("sources/" + goneId + "/original");
+        gone.scheduleForDeletion();
+        when(repository.findById(goneId)).thenReturn(Optional.of(gone));
+        apply(service, failedResult(goneId, goneVersion, "TERMINAL"));
+
+        assertThat(ignoredCount("unknown_video") - unknown).isEqualTo(1.0);
+        assertThat(ignoredCount("stale_version") - stale).isEqualTo(1.0);
+        assertThat(ignoredCount("already_terminal") - terminal).isEqualTo(1.0);
+        assertThat(ignoredCount("removed") - removed).isEqualTo(1.0);
+    }
+
+    @Test
+    void aResultAppliedWithoutHavingBeenVerifiedIsAProgrammingError() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        VideoService service = serviceWithVerifier(
+                repository, mock(com.shortvideo.shared.outbox.OutboxWriter.class), mock(SupersededAssetJpaRepository.class),
+                mock(MinioAssetVerifier.class), mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+
+        assertThat(catchThrowable(() -> service.applyMediaResult(completedResult(videoId, version), null)))
+                .isInstanceOf(NullPointerException.class);
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
     }
 }

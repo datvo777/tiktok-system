@@ -1,5 +1,6 @@
 package com.shortvideo.app.config;
 
+import com.shortvideo.video.domain.VideoExceptions;
 import java.util.Map;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
@@ -86,11 +87,34 @@ public class KafkaConfig {
         backoff.setMaxInterval(30_000L);
 
         DefaultErrorHandler handler = new DefaultErrorHandler(recoverer, backoff);
+        // A MinIO that cannot be asked is not a bad record: the transcode result is good and the
+        // object store will be back. The default ~31 seconds is shorter than a restart or a blip of
+        // any size, and a record that lands in the DLT then has to be replayed by hand while the
+        // watchdog counts down on the video. Give those a longer run, still inside max.poll.interval.
+        handler.setBackOffFunction((record, exception) -> isStoreOutage(exception) ? storeOutageBackoff() : null);
         // These never succeed on retry (malformed payload, bad envelope shape) — send
         // straight to the DLT instead of burning the retry budget on a fixed outcome.
         handler.addNotRetryableExceptions(
                 com.fasterxml.jackson.core.JsonProcessingException.class, IllegalArgumentException.class);
         return handler;
+    }
+
+    /** 1, 2, 4, 8, 16, then 30 seconds, nine retries: about 2.5 minutes against the 5-minute poll interval. */
+    static ExponentialBackOffWithMaxRetries storeOutageBackoff() {
+        ExponentialBackOffWithMaxRetries backoff = new ExponentialBackOffWithMaxRetries(9);
+        backoff.setInitialInterval(1_000L);
+        backoff.setMultiplier(2.0);
+        backoff.setMaxInterval(30_000L);
+        return backoff;
+    }
+
+    private static boolean isStoreOutage(Throwable failure) {
+        for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof VideoExceptions.AssetStoreUnavailable) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
