@@ -76,3 +76,15 @@ case "$RULES" in
   *uploads/*) echo "lifecycle rule for uploads/ already present" ;;
   *) mc ilm rule add --prefix "uploads/" --expire-days "1" "local/$MINIO_BUCKET" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# Same safety net for the media worker's staging area. A job removes its own processing-temp/
+# objects when it ends, and the worker sweeps old ones at startup, but a worker that is killed
+# mid-promote leaves its staging objects behind, and one that never restarts never sweeps. A job
+# runs for 15 minutes at most, so anything a day old belongs to nobody. processed/ and sources/ are
+# not touched.
+# ---------------------------------------------------------------------------
+case "$RULES" in
+  *processing-temp/*) echo "lifecycle rule for processing-temp/ already present" ;;
+  *) mc ilm rule add --prefix "processing-temp/" --expire-days "1" "local/$MINIO_BUCKET" ;;
+esac
