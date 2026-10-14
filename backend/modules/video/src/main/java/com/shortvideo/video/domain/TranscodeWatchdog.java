@@ -20,9 +20,13 @@ import org.springframework.stereotype.Component;
  * reporting; either way nothing else moves the video, and the uploader's page polls for ten
  * minutes and then gives up with no explanation.
  *
- * <p>{@code stuck-after} has to exceed the worker's job timeout plus any wait for a free worker
- * slot, or a healthy job would be failed under the worker. The video row is re-read under its lock
- * before it is failed, so a result that lands while this runs wins.
+ * <p>{@code stuck-after} is measured from the video's last update, which is when its command was
+ * queued, not when a worker picked it up. It therefore has to cover the longest retry wait (under
+ * five minutes), the wait for a free worker slot, and one full job (15 minutes), or a healthy job
+ * queued behind others would be failed while it waits. 60 minutes leaves about 40 minutes for the
+ * queue; a video that waits longer than that is a capacity problem worth the alert. The video row
+ * is re-read under its lock before it is failed, so a result that lands while this runs wins.
+ * One that lands afterwards is ignored, and its output is purged ({@code applyMediaResult}).
  */
 @Component
 class TranscodeWatchdog {
@@ -38,7 +42,7 @@ class TranscodeWatchdog {
     TranscodeWatchdog(
             VideoJpaRepository videos,
             VideoService videoService,
-            @Value("${shortvideo.lifecycle.transcode-stuck-after:30m}") Duration stuckAfter,
+            @Value("${shortvideo.lifecycle.transcode-stuck-after:60m}") Duration stuckAfter,
             MeterRegistry meters) {
         this.videos = videos;
         this.videoService = videoService;

@@ -152,6 +152,9 @@ class ModerationPublicationFlowIT {
             stageObject(finalPrefix + rung + "/index.m3u8",
                     "#EXTM3U\n#EXTINF:4.0,\nsegment_000.ts\n#EXT-X-ENDLIST\n");
         }
+        // One segment per rung: the result below declares three, and verification counts them.
+        stageObject(finalPrefix + "high/segment_000.ts", "ts-bytes");
+        stageObject(finalPrefix + "medium/segment_000.ts", "ts-bytes");
         stageObject(finalPrefix + "low/segment_000.ts", "ts-bytes");
         publishMediaResult(videoId, 1, "COMPLETED", finalPrefix);
 

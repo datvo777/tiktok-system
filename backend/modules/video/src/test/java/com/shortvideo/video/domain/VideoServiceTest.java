@@ -320,6 +320,144 @@ class VideoServiceTest {
         assertThat(meters.counter("video.transcode.failed", "failureClass", "TERMINAL").count()).isZero();
     }
 
+    private static com.shortvideo.shared.events.MediaEvents.MediaResultCommand completedResult(
+            UUID videoId, int version) {
+        return new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
+                videoId + ":" + version,
+                videoId.toString(),
+                version,
+                "COMPLETED",
+                new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
+                null);
+    }
+
+    private static VideoService serviceWithVerifier(
+            VideoJpaRepository repository,
+            com.shortvideo.shared.outbox.OutboxWriter outbox,
+            SupersededAssetJpaRepository superseded,
+            MinioAssetVerifier verifier,
+            com.shortvideo.shared.audit.AdminActionRecorder audit) {
+        return new VideoService(
+                repository,
+                superseded,
+                outbox,
+                verifier,
+                mock(com.shortvideo.shared.revocation.DurableRevocationWriter.class),
+                audit,
+                null,
+                mock(org.springframework.transaction.PlatformTransactionManager.class),
+                3,
+                java.time.Duration.ofSeconds(30),
+                METERS);
+    }
+
+    @Test
+    void aCompletedResultWhoseAssetsFailVerificationIsRetriedAsTransient() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        MinioAssetVerifier verifier = mock(MinioAssetVerifier.class);
+        when(verifier.verify(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(false);
+        VideoService service = serviceWithVerifier(
+                repository, outbox, mock(SupersededAssetJpaRepository.class), verifier,
+                mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        service.applyMediaResult(completedResult(videoId, version));
+
+        // The worker said it was done but the objects are not there: not READY, and tried again.
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        assertThat(video.getTranscodeAttempt()).isEqualTo(2);
+        org.mockito.Mockito.verify(outbox).append(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(java.time.Instant.class));
+    }
+
+    @Test
+    void aResultForAnOlderProcessingVersionChangesNothing() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        var superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWithVerifier(
+                repository, outbox, superseded, mock(MinioAssetVerifier.class),
+                mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int firstVersion = video.dispatchProcessing("sources/" + videoId + "/original");
+        video.markFailed("TERMINAL");
+        video.dispatchReprocessing("sources/" + videoId + "/original"); // now version 2, TRANSCODING
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+
+        service.applyMediaResult(failedResult(videoId, firstVersion, "TERMINAL"));
+        service.applyMediaResult(completedResult(videoId, firstVersion));
+
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        org.mockito.Mockito.verifyNoInteractions(outbox, superseded);
+    }
+
+    @Test
+    void reprocessingAVideoThatIsAlreadyTranscodingDoesNothing() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        var audit = mock(com.shortvideo.shared.audit.AdminActionRecorder.class);
+        VideoService service = serviceWithVerifier(
+                repository, outbox, mock(SupersededAssetJpaRepository.class), mock(MinioAssetVerifier.class), audit);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findForUpdate(videoId)).thenReturn(Optional.of(video));
+
+        service.reprocess(videoId.toString(), UUID.randomUUID().toString());
+
+        // A duplicate click or a redelivered request: no second job, no audit row, same version.
+        assertThat(video.getProcessingVersion()).isEqualTo(version);
+        org.mockito.Mockito.verifyNoInteractions(outbox, audit);
+    }
+
+    @Test
+    void aCompletedResultThatArrivesAfterTheVideoWasFailedHasItsOutputPurged() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWithVerifier(
+                repository, mock(com.shortvideo.shared.outbox.OutboxWriter.class), superseded,
+                mock(MinioAssetVerifier.class), mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        video.markFailed("TRANSIENT"); // the watchdog got there first
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+
+        service.applyMediaResult(completedResult(videoId, version));
+
+        // The worker wrote under processed/ after the purge scheduled at failure time; nothing serves it.
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.FAILED);
+        var rows = org.mockito.ArgumentCaptor.forClass(SupersededAssetEntity.class);
+        org.mockito.Mockito.verify(superseded).saveAndFlush(rows.capture());
+        assertThat(rows.getValue().prefix()).isEqualTo("processed/" + videoId + "/" + version + "/");
+    }
+
+    @Test
+    void aDuplicateCompletedResultForAReadyVideoPurgesNothing() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWithVerifier(
+                repository, mock(com.shortvideo.shared.outbox.OutboxWriter.class), superseded,
+                mock(MinioAssetVerifier.class), mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        video.markReady("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0);
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+
+        service.applyMediaResult(completedResult(videoId, version));
+
+        // Those objects are the live ones.
+        org.mockito.Mockito.verifyNoInteractions(superseded);
+    }
+
     @Test
     void aTerminalFailureIsNeverRetried() {
         VideoJpaRepository repository = mock(VideoJpaRepository.class);
@@ -385,7 +523,7 @@ class VideoServiceTest {
         VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
         int version = video.dispatchProcessing("sources/" + videoId + "/original");
         when(repository.findById(videoId)).thenReturn(Optional.of(video));
-        when(verifier.verify(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList()))
+        when(verifier.verify(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.anyInt()))
                 .thenThrow(new VideoExceptions.AssetStoreUnavailable("MinIO down", new RuntimeException()));
         var result = new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
                 videoId + ":" + version,

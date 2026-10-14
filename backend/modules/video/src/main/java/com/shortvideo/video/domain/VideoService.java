@@ -216,11 +216,21 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             return; // stale processingVersion — ignore
         }
         if (video.getProcessingState() != ProcessingState.TRANSCODING) {
+            if (video.getProcessingState() == ProcessingState.FAILED && "COMPLETED".equals(result.outcome())) {
+                // The watchdog (or an exhausted retry) failed this version before the worker finished.
+                // The worker has now written its output, after the purge that was scheduled when the
+                // video failed, and nothing serves it: a FAILED video is not READY, and a reprocess
+                // writes a new version. So it is storage to reclaim, the same as for a removed video.
+                schedulePartialOutputPurge(video);
+            }
             return; // already terminal for this version — idempotent no-op
         }
 
         if ("COMPLETED".equals(result.outcome()) && result.assets() != null
-                && assetVerifier.verify(result.assets().masterPlaylist(), result.assets().variantPlaylists())) {
+                && assetVerifier.verify(
+                        result.assets().masterPlaylist(),
+                        result.assets().variantPlaylists(),
+                        result.assets().segmentCount())) {
             video.markReady(
                     result.assets().masterPlaylist(),
                     result.assets().variantPlaylists(),
@@ -264,7 +274,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * 30s, 1m, 2m and 4m between them: about eight minutes in all, which is meant to outlast a
      * MinIO or broker restart. A shorter window fails every video in flight at once during one, and
      * each then needs a manual reprocess. The wait before the last try plus a full job
-     * (15 minutes) stays well inside the watchdog's 30 minutes.
+     * (15 minutes) stays well inside the watchdog's 60 minutes.
      *
      * <p>The video stays TRANSCODING and
      * the same jobId is dispatched again, so the worker re-derives the same prefixes. The command
@@ -368,7 +378,10 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         // Outside the transaction: verify() stats every asset in MinIO, and holding
         // a pooled connection across that network I/O is what turns a slow object
         // store into connection-pool exhaustion. See restoreFromQuarantine.
-        boolean assetsValid = assetVerifier.verify(video.getMasterPlaylistKey(), video.getVariantPlaylists());
+        boolean assetsValid = assetVerifier.verify(
+                video.getMasterPlaylistKey(),
+                video.getVariantPlaylists(),
+                video.getSegmentCount() == null ? 0 : video.getSegmentCount());
 
         transactions.executeWithoutResult(status -> {
             VideoEntity fresh = repository.findById(UUID.fromString(videoId)).orElse(null);
@@ -410,7 +423,10 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         VideoEntity video = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
-        boolean assetsValid = assetVerifier.verify(video.getMasterPlaylistKey(), video.getVariantPlaylists());
+        boolean assetsValid = assetVerifier.verify(
+                video.getMasterPlaylistKey(),
+                video.getVariantPlaylists(),
+                video.getSegmentCount() == null ? 0 : video.getSegmentCount());
 
         transactions.executeWithoutResult(status -> {
             VideoEntity fresh = repository
