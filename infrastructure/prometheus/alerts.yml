@@ -75,3 +75,21 @@ groups:
         annotations:
           summary: Videos were failed after producing no transcode result
           description: Check the media-worker and the media.jobs.v1 / media.results.v1 topics and their DLTs.
+
+      - alert: VideoTranscodeRetriesExhausted
+        # A TRANSIENT failure survived every retry; the video is FAILED until an admin reprocesses it.
+        expr: increase(video_transcode_failed_total{failureClass="TRANSIENT"}[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Videos failed after spending their transcode retry budget
+          description: Check MinIO, the media-worker's resources (OOM kills, timeouts) and its logs, then reprocess.
+
+      - alert: VideoTranscodeRetrying
+        # Retries hide trouble: each one is a TRANSIENT failure that the budget absorbed.
+        expr: increase(video_transcode_retried_total[15m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: Transcodes are failing transiently and being retried
+          description: Likely MinIO, Kafka or worker resource trouble; the retries will exhaust if it persists.

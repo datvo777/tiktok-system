@@ -49,4 +49,40 @@ class HlsTranscoderProbeTest {
 
         assertThat(transcoder.probeSource(Path.of("source")).width()).isEqualTo(16000);
     }
+
+    private static HlsTranscoder transcoderWhoseProbeEnds(ProcessResult result) throws IOException {
+        ProcessRunner runner = mock(ProcessRunner.class);
+        when(runner.run(any(), any(), any())).thenReturn(result);
+        return new HlsTranscoder(runner, new WorkerProperties());
+    }
+
+    @Test
+    void aProbeThatTimesOutIsTransientBecauseTheMachineNotTheSourceFailed() throws IOException {
+        HlsTranscoder transcoder = transcoderWhoseProbeEnds(new ProcessResult(-1, "", "", true));
+
+        assertThatThrownBy(() -> transcoder.probeSource(Path.of("source")))
+                .isInstanceOfSatisfying(TranscodeFailedException.class,
+                        e -> assertThat(e.failureClass()).isEqualTo("TRANSIENT"));
+    }
+
+    @Test
+    void aProbeKilledBySignalIsTransient() throws IOException {
+        HlsTranscoder transcoder = transcoderWhoseProbeEnds(new ProcessResult(137, "", "", false));
+
+        assertThatThrownBy(() -> transcoder.probeSource(Path.of("source")))
+                .isInstanceOfSatisfying(TranscodeFailedException.class,
+                        e -> assertThat(e.failureClass()).isEqualTo("TRANSIENT"));
+    }
+
+    @Test
+    void aProbeThatRejectsTheFileOnItsOwnIsTerminal() throws IOException {
+        HlsTranscoder transcoder =
+                transcoderWhoseProbeEnds(new ProcessResult(1, "", "Invalid data found when processing input", false));
+
+        assertThatThrownBy(() -> transcoder.probeSource(Path.of("source")))
+                .isInstanceOfSatisfying(TranscodeFailedException.class, e -> {
+                    assertThat(e.failureClass()).isEqualTo("TERMINAL");
+                    assertThat(e.getMessage()).contains("Invalid data");
+                });
+    }
 }

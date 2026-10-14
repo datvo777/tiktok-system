@@ -19,6 +19,9 @@ import org.junit.jupiter.api.Test;
  */
 class VideoServiceTest {
 
+    private static final io.micrometer.core.instrument.simple.SimpleMeterRegistry METERS =
+            new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+
     @Test
     void nonOwnerAndMissingVideoProduceTheIdenticalNotFoundResponse() {
         VideoJpaRepository repository = mock(VideoJpaRepository.class);
@@ -199,7 +202,8 @@ class VideoServiceTest {
                 .isEqualTo(com.shortvideo.shared.events.EventTypes.MEDIA_JOB_DISPATCHED);
         assertThat(((com.shortvideo.shared.events.MediaEvents.MediaJobCommand) envelope.getValue().payload()).jobId())
                 .isEqualTo(videoId + ":" + version);
-        assertThat(availableAt.getValue()).isAfterOrEqualTo(before.plusSeconds(30));
+        // 30s base, spread over +/-20%
+        assertThat(availableAt.getValue()).isBetween(before.plusSeconds(24), java.time.Instant.now().plusSeconds(36));
     }
 
     @Test
@@ -219,7 +223,7 @@ class VideoServiceTest {
 
         var availableAt = org.mockito.ArgumentCaptor.forClass(java.time.Instant.class);
         org.mockito.Mockito.verify(outbox).append(org.mockito.ArgumentMatchers.any(), availableAt.capture());
-        assertThat(availableAt.getValue()).isAfterOrEqualTo(before.plusSeconds(60));
+        assertThat(availableAt.getValue()).isBetween(before.plusSeconds(48), java.time.Instant.now().plusSeconds(72));
     }
 
     @Test
@@ -247,6 +251,46 @@ class VideoServiceTest {
         var rows = org.mockito.ArgumentCaptor.forClass(SupersededAssetEntity.class);
         org.mockito.Mockito.verify(superseded).saveAndFlush(rows.capture());
         assertThat(rows.getValue().prefix()).isEqualTo("processed/" + videoId + "/" + version + "/");
+    }
+
+    @Test
+    void theRetryDelayIsSpreadOverTwentyPercentEitherSideOfTheBackoff() {
+        java.time.Duration base = java.time.Duration.ofSeconds(60);
+
+        assertThat(VideoService.jittered(base, 0.0)).isEqualTo(java.time.Duration.ofSeconds(48));
+        assertThat(VideoService.jittered(base, 0.5)).isEqualTo(java.time.Duration.ofSeconds(60));
+        assertThat(VideoService.jittered(base, 0.999)).isBetween(
+                java.time.Duration.ofMillis(71_900), java.time.Duration.ofSeconds(72));
+    }
+
+    @Test
+    void retriesAndExhaustedFailuresAreCountedByFailureClass() {
+        var meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        VideoService service = new VideoService(
+                repository,
+                mock(SupersededAssetJpaRepository.class),
+                mock(com.shortvideo.shared.outbox.OutboxWriter.class),
+                mock(MinioAssetVerifier.class),
+                mock(com.shortvideo.shared.revocation.DurableRevocationWriter.class),
+                mock(com.shortvideo.shared.audit.AdminActionRecorder.class),
+                null,
+                mock(org.springframework.transaction.PlatformTransactionManager.class),
+                2,
+                java.time.Duration.ofSeconds(30),
+                meters);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        service.applyMediaResult(failedResult(videoId, version, "TRANSIENT")); // retried
+        service.applyMediaResult(failedResult(videoId, version, "TRANSIENT")); // budget spent
+
+        assertThat(meters.counter("video.transcode.retried").count()).isEqualTo(1.0);
+        assertThat(meters.counter("video.transcode.failed", "failureClass", "TRANSIENT").count()).isEqualTo(1.0);
+        assertThat(meters.counter("video.transcode.failed", "failureClass", "TERMINAL").count()).isZero();
     }
 
     @Test
@@ -292,7 +336,8 @@ class VideoServiceTest {
                 null,
                 mock(org.springframework.transaction.PlatformTransactionManager.class),
                 maxAttempts,
-                java.time.Duration.ofSeconds(30));
+                java.time.Duration.ofSeconds(30),
+                METERS);
     }
 
     @Test

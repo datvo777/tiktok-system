@@ -25,12 +25,15 @@ import com.shortvideo.video.api.VideoPlaybackView;
 import com.shortvideo.video.api.VideoSummaryPage;
 import com.shortvideo.video.api.VideoSummaryView;
 import com.shortvideo.video.api.VideoView;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,6 +76,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private final TransactionTemplate transactions;
     private final int transcodeMaxAttempts;
     private final Duration transcodeRetryBackoff;
+    private final MeterRegistry meters;
 
     public VideoService(
             VideoJpaRepository repository,
@@ -84,7 +88,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             EligibilityDirectory eligibilityDirectory,
             PlatformTransactionManager transactionManager) {
         this(repository, supersededAssetRepository, outboxWriter, assetVerifier, revocationWriter,
-                auditRecorder, eligibilityDirectory, transactionManager, 3, Duration.ofSeconds(30));
+                auditRecorder, eligibilityDirectory, transactionManager, 3, Duration.ofSeconds(30),
+                new SimpleMeterRegistry());
     }
 
     @Autowired
@@ -98,9 +103,11 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             EligibilityDirectory eligibilityDirectory,
             PlatformTransactionManager transactionManager,
             @Value("${shortvideo.lifecycle.transcode-max-attempts:3}") int transcodeMaxAttempts,
-            @Value("${shortvideo.lifecycle.transcode-retry-backoff:30s}") Duration transcodeRetryBackoff) {
+            @Value("${shortvideo.lifecycle.transcode-retry-backoff:30s}") Duration transcodeRetryBackoff,
+            MeterRegistry meters) {
         this.transcodeMaxAttempts = transcodeMaxAttempts;
         this.transcodeRetryBackoff = transcodeRetryBackoff;
+        this.meters = meters;
         this.repository = repository;
         this.supersededAssetRepository = supersededAssetRepository;
         this.outboxWriter = outboxWriter;
@@ -231,6 +238,9 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
             video.markFailed(failureClass);
             VideoEntity saved = repository.saveAndFlush(video);
             appendFailedEvent(saved);
+            // Counted once the video is actually FAILED, so a TRANSIENT here means the retry budget
+            // is spent; the tries that were absorbed are video.transcode.retried.
+            meters.counter("video.transcode.failed", "failureClass", failureClass).increment();
             if ("TRANSIENT".equals(failureClass)) {
                 schedulePartialOutputPurge(saved);
             }
@@ -252,8 +262,9 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     /**
      * A TRANSIENT failure with budget left (brief section 11.1): the video stays TRANSCODING and
      * the same jobId is dispatched again, so the worker re-derives the same prefixes. The command
-     * is held back by an exponential backoff (base, 2x base, 4x base, capped at ten minutes) through
-     * the outbox's availability time. No {@code video.processing.failed} goes out until the budget
+     * is held back by an exponential backoff (base, 2x base, 4x base, capped at ten minutes, then
+     * spread by +/-20% so videos that failed together do not retry together) through the outbox's
+     * availability time. No {@code video.processing.failed} goes out until the budget
      * is spent, so the uploader is not told about a failure that is still being retried.
      */
     private void retryTranscode(VideoEntity video) {
@@ -265,6 +276,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         if (delay.compareTo(MAX_RETRY_BACKOFF) > 0) {
             delay = MAX_RETRY_BACKOFF;
         }
+        delay = jittered(delay, ThreadLocalRandom.current().nextDouble());
         Instant now = Instant.now();
         var payload = new MediaEvents.MediaJobCommand(
                 saved.getVideoId() + ":" + saved.getProcessingVersion(),
@@ -288,8 +300,18 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                         null,
                         payload),
                 now.plus(delay));
+        meters.counter("video.transcode.retried").increment();
         log.warn("Transcode of video {} failed transiently (attempt {} of {}); retrying in {}",
                 saved.getVideoId(), failedAttempt, transcodeMaxAttempts, delay);
+    }
+
+    /**
+     * Spreads a delay over 80%..120% of itself. A MinIO or broker outage fails every job in flight
+     * at about the same moment, and identical backoffs would send them all back at the same moment
+     * as well. {@code unit} is a uniform draw from [0, 1), passed in so the spread can be tested.
+     */
+    static Duration jittered(Duration delay, double unit) {
+        return Duration.ofMillis(Math.round(delay.toMillis() * (0.8 + 0.4 * unit)));
     }
 
     /**

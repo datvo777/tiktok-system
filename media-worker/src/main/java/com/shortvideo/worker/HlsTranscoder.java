@@ -170,7 +170,7 @@ class HlsTranscoder {
         ProcessResult result = run(command, boundedTimeout(durationSeconds, remainingBudget, rung), outputDir);
         if (!result.succeeded()) {
             throw new TranscodeFailedException(
-                    result.timedOut() ? "TRANSIENT" : "TERMINAL",
+                    failureClassOf(result),
                     "ffmpeg exited " + result.exitCode() + " for rung " + rung.name() + ": " + result.stderrTail());
         }
         if (!Files.exists(variantPlaylist)) {
@@ -304,6 +304,19 @@ class HlsTranscoder {
     record Dimensions(int width, int height) {}
 
     /**
+     * A process that ran out of time or was killed by a signal (an OOM kill is exit 137) says
+     * nothing about the source, only about the machine, so a retry can succeed: TRANSIENT. A
+     * process that ran to its own non-zero exit rejected the bytes, and would again: TERMINAL.
+     */
+    static String failureClassOf(ProcessResult result) {
+        return result.timedOut() || result.exitCode() > 128 ? "TRANSIENT" : "TERMINAL";
+    }
+
+    private static String probeOutcome(ProcessResult result) {
+        return result.timedOut() ? "timed out" : "exit " + result.exitCode() + ": " + result.stderrTail();
+    }
+
+    /**
      * Establishes both facts the transcode needs from the source — how long it is
      * and what container it actually is — in one pass, and refuses anything
      * outside {@link #ALLOWED_FORMATS} before FFmpeg is ever pointed at it.
@@ -322,7 +335,7 @@ class HlsTranscoder {
                 sourceFile.toString());
         ProcessResult result = run(command, properties.getProbeTimeout(), null);
         if (!result.succeeded()) {
-            throw new TranscodeFailedException("TERMINAL", "ffprobe failed: " + result.stderrTail());
+            throw new TranscodeFailedException(failureClassOf(result), "ffprobe failed: " + probeOutcome(result));
         }
 
         Map<String, String> fields = result.stdoutTail().lines()
@@ -387,7 +400,7 @@ class HlsTranscoder {
                 sourceFile.toString());
         ProcessResult result = run(command, properties.getProbeTimeout(), null);
         if (!result.succeeded()) {
-            throw new TranscodeFailedException("TERMINAL", "ffprobe failed: " + result.stderrTail());
+            throw new TranscodeFailedException(failureClassOf(result), "ffprobe failed: " + probeOutcome(result));
         }
         return result.stdoutTail().lines().anyMatch(line -> line.startsWith("index="));
     }
