@@ -15,11 +15,14 @@ sasl.mechanism=SCRAM-SHA-512
 sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="${KAFKA_ADMIN_PASSWORD}";
 CFGEOF
 
+# retention.ms is the broker default (7 days), written down because the inbox's retention
+# (shortvideo.inbox.retention, 10 days) must stay longer than it: InboxRetentionVersusTopicsTest.
 DOMAIN="video.events.v1 account.events.v1 social.events.v1 media.jobs.v1 media.results.v1 notification.events.v1"
 
 for t in $DOMAIN; do
   $BIN/kafka-topics.sh --bootstrap-server $BS --command-config $CFG \
-    --create --if-not-exists --topic "$t" --partitions 3 --replication-factor 1
+    --create --if-not-exists --topic "$t" --partitions 3 --replication-factor 1 \
+    --config retention.ms=604800000
 done
 for t in $DOMAIN; do
   $BIN/kafka-topics.sh --bootstrap-server $BS --command-config $CFG \
