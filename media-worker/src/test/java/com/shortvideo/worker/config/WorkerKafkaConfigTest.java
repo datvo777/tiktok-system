@@ -115,6 +115,15 @@ class WorkerKafkaConfigTest {
         assertThat(org.springframework.test.util.ReflectionTestUtils.getField(factory, "concurrency")).isEqualTo(1);
     }
 
+    @Test
+    void aPollHandsOverOneCommandSoABacklogOfLongJobsCannotOutlastThePollInterval() {
+        var yaml = new org.springframework.beans.factory.config.YamlPropertiesFactoryBean();
+        yaml.setResources(new org.springframework.core.io.ClassPathResource("application.yml"));
+        var props = yaml.getObject();
+
+        assertThat(props.getProperty("spring.kafka.consumer.max-poll-records")).isEqualTo("1");
+    }
+
     private ProducerRecord<String, String> sentToDeadLetter() {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<ProducerRecord<String, String>> sent = ArgumentCaptor.forClass(ProducerRecord.class);
