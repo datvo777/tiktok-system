@@ -99,4 +99,19 @@ class MediaResultListenerTest {
         verify(transactionManager).rollback(any());
         verify(transactionManager, never()).commit(any());
     }
+
+    @Test
+    void aResultWrittenBeforeFailureReasonExistedStillDecodesAndIsApplied() throws Exception {
+        var tree = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(payload());
+        ((com.fasterxml.jackson.databind.node.ObjectNode) tree.get("payload")).remove("failureReason");
+        when(videoService.verifyAssets(any())).thenReturn(true);
+        when(inbox.claim(any(), any())).thenReturn(true);
+
+        listener.onMediaResult(mapper.writeValueAsString(tree));
+
+        var applied = org.mockito.ArgumentCaptor.forClass(MediaEvents.MediaResultCommand.class);
+        verify(videoService).applyMediaResult(applied.capture(), any());
+        assertThat(applied.getValue().failureReason()).isNull();
+        assertThat(applied.getValue().jobId()).isEqualTo("v1:1");
+    }
 }

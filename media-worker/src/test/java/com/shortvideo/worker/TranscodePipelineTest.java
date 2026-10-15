@@ -131,4 +131,21 @@ class TranscodePipelineTest {
 
         assertThat(ran).isEmpty();
     }
+
+    /** Unlike the tests above, this goes through the real {@link TranscodePipeline#run}. */
+    @Test
+    void aTimeoutKeepsItsReasonWhenThePipelineNamesTheStepThatFailed(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws IOException {
+        HlsTranscoder transcoder = org.mockito.Mockito.mock(HlsTranscoder.class);
+        org.mockito.Mockito.when(transcoder.probeSource(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new TranscodeFailedException("TRANSIENT", "ffprobe failed: timed out", "TIMEOUT"));
+        var pipeline = new TranscodePipeline(
+                transcoder, new WorkerProperties(), new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+
+        assertThatThrownBy(() -> pipeline.run(dir.resolve("source"), dir.resolve("out")))
+                .isInstanceOfSatisfying(TranscodeFailedException.class, e -> {
+                    assertThat(e.failureClass()).isEqualTo("TRANSIENT");
+                    assertThat(e.reason()).isEqualTo("TIMEOUT");
+                    assertThat(e.getMessage()).startsWith("step 'probe'");
+                });
+    }
 }

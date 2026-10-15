@@ -52,7 +52,7 @@ class TranscodePipeline {
                     // which part of the job broke rather than only that ffmpeg
                     // exited non-zero.
                     throw new TranscodeFailedException(
-                            e.failureClass(), "step '" + step.name() + "': " + e.getMessage());
+                            e.failureClass(), "step '" + step.name() + "': " + e.getMessage(), e.reason());
                 }
                 log.warn("Optional transcode step '{}' failed; continuing: {}", step.name(), e.getMessage());
             } catch (IOException | RuntimeException e) {

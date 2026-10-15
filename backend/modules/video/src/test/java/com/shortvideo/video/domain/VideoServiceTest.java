@@ -98,7 +98,7 @@ class VideoServiceTest {
                 videoId.toString(),
                 version,
                 "COMPLETED",
-                new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
+                assetsOf(videoId, version),
                 null);
 
         apply(service, result);
@@ -325,6 +325,12 @@ class VideoServiceTest {
         assertThat(meters.counter("video.transcode.failed", "failureClass", "TERMINAL").count()).isZero();
     }
 
+    private static com.shortvideo.shared.events.MediaEvents.Assets assetsOf(UUID videoId, int version) {
+        String prefix = "processed/" + videoId + "/" + version + "/";
+        return new com.shortvideo.shared.events.MediaEvents.Assets(
+                prefix + "master.m3u8", List.of(prefix + "high/index.m3u8"), 3, 4.0);
+    }
+
     private static com.shortvideo.shared.events.MediaEvents.MediaResultCommand completedResult(
             UUID videoId, int version) {
         return new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
@@ -332,7 +338,7 @@ class VideoServiceTest {
                 videoId.toString(),
                 version,
                 "COMPLETED",
-                new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
+                assetsOf(videoId, version),
                 null);
     }
 
@@ -379,6 +385,34 @@ class VideoServiceTest {
         assertThat(video.getTranscodeAttempt()).isEqualTo(2);
         org.mockito.Mockito.verify(outbox).append(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(java.time.Instant.class));
+    }
+
+    @Test
+    void aCompletedResultNamingAnotherVideosObjectsIsNotDurableAndNeverReachesTheStore() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        MinioAssetVerifier verifier = mock(MinioAssetVerifier.class);
+        VideoService service = serviceWithVerifier(
+                repository, mock(com.shortvideo.shared.outbox.OutboxWriter.class),
+                mock(SupersededAssetJpaRepository.class), verifier,
+                mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        String other = "processed/" + UUID.randomUUID() + "/" + version + "/";
+        var result = new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
+                videoId + ":" + version, videoId.toString(), version, "COMPLETED",
+                new com.shortvideo.shared.events.MediaEvents.Assets(
+                        other + "master.m3u8", List.of(other + "high/index.m3u8"), 3, 4.0),
+                null);
+        var escaping = new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
+                videoId + ":" + version, videoId.toString(), version, "COMPLETED",
+                new com.shortvideo.shared.events.MediaEvents.Assets(
+                        "processed/" + videoId + "/" + version + "/../x/master.m3u8", List.of(), 3, 4.0),
+                null);
+
+        assertThat(service.verifyAssets(result)).isFalse();
+        assertThat(service.verifyAssets(escaping)).isFalse();
+        org.mockito.Mockito.verifyNoInteractions(verifier);
     }
 
     @Test
@@ -463,6 +497,67 @@ class VideoServiceTest {
         org.mockito.Mockito.verifyNoInteractions(superseded);
     }
 
+    private static com.shortvideo.shared.events.MediaEvents.MediaResultCommand timedOutResult(UUID videoId, int version) {
+        return new com.shortvideo.shared.events.MediaEvents.MediaResultCommand(
+                videoId + ":" + version, videoId.toString(), version, "FAILED", null, "TRANSIENT",
+                com.shortvideo.shared.events.MediaEvents.MediaResultCommand.TIMEOUT);
+    }
+
+    @Test
+    void aVideoThatKeepsTimingOutGetsTwoTriesNotTheWholeBudget() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        VideoService service = serviceWithOutbox(repository, outbox, 5); // a budget of five for anything else
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        apply(service, timedOutResult(videoId, version)); // first try timed out: one more allowed
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        assertThat(video.getTranscodeAttempt()).isEqualTo(2);
+
+        apply(service, timedOutResult(videoId, version)); // second timed out: no third
+
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.FAILED);
+        assertThat(video.getFailureClass()).isEqualTo("TRANSIENT");
+    }
+
+    @Test
+    void aTimeoutNeverGetsMoreTriesThanTheConfiguredBudget() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        VideoService service = serviceWithOutbox(repository, outbox, 1);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        when(repository.findById(videoId)).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        apply(service, timedOutResult(videoId, version));
+
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.FAILED);
+    }
+
+    @Test
+    void aTransientFailureWithoutAReasonKeepsTheFullBudget() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        VideoService service = serviceWithOutbox(repository, outbox, 5);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        video.retryTranscode();
+        when(repository.findById(videoId)).thenReturn(Optional.of(video)); // already on its second try
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        apply(service, failedResult(videoId, version, "TRANSIENT"));
+
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        assertThat(video.getTranscodeAttempt()).isEqualTo(3);
+    }
+
     @Test
     void aTerminalFailureIsNeverRetried() {
         VideoJpaRepository repository = mock(VideoJpaRepository.class);
@@ -535,7 +630,7 @@ class VideoServiceTest {
                 videoId.toString(),
                 version,
                 "COMPLETED",
-                new com.shortvideo.shared.events.MediaEvents.Assets("processed/m.m3u8", List.of("processed/v.m3u8"), 3, 4.0),
+                assetsOf(videoId, version),
                 null);
 
         assertThat(catchThrowable(() -> apply(service, result)))

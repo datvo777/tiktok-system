@@ -1,5 +1,6 @@
 package com.shortvideo.worker;
 
+import com.shortvideo.shared.events.MediaEvents;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -171,7 +172,8 @@ class HlsTranscoder {
         if (!result.succeeded()) {
             throw new TranscodeFailedException(
                     failureClassOf(result),
-                    "ffmpeg exited " + result.exitCode() + " for rung " + rung.name() + ": " + result.stderrTail());
+                    "ffmpeg exited " + result.exitCode() + " for rung " + rung.name() + ": " + result.stderrTail(),
+                    reasonOf(result));
         }
         if (!Files.exists(variantPlaylist)) {
             throw new TranscodeFailedException(
@@ -312,6 +314,11 @@ class HlsTranscoder {
         return result.timedOut() || result.exitCode() > 128 ? "TRANSIENT" : "TERMINAL";
     }
 
+    /** Running out of time is reported as such: a heavy video times out again, so it is retried less. */
+    static String reasonOf(ProcessResult result) {
+        return result.timedOut() ? MediaEvents.MediaResultCommand.TIMEOUT : null;
+    }
+
     private static String probeOutcome(ProcessResult result) {
         return result.timedOut() ? "timed out" : "exit " + result.exitCode() + ": " + result.stderrTail();
     }
@@ -335,7 +342,8 @@ class HlsTranscoder {
                 sourceFile.toString());
         ProcessResult result = run(command, properties.getProbeTimeout(), null);
         if (!result.succeeded()) {
-            throw new TranscodeFailedException(failureClassOf(result), "ffprobe failed: " + probeOutcome(result));
+            throw new TranscodeFailedException(
+                    failureClassOf(result), "ffprobe failed: " + probeOutcome(result), reasonOf(result));
         }
 
         Map<String, String> fields = result.stdoutTail().lines()
@@ -400,7 +408,8 @@ class HlsTranscoder {
                 sourceFile.toString());
         ProcessResult result = run(command, properties.getProbeTimeout(), null);
         if (!result.succeeded()) {
-            throw new TranscodeFailedException(failureClassOf(result), "ffprobe failed: " + probeOutcome(result));
+            throw new TranscodeFailedException(
+                    failureClassOf(result), "ffprobe failed: " + probeOutcome(result), reasonOf(result));
         }
         return result.stdoutTail().lines().anyMatch(line -> line.startsWith("index="));
     }
@@ -442,7 +451,9 @@ class HlsTranscoder {
     private static Duration boundedTimeout(double durationSeconds, Duration remainingBudget, Rung rung) {
         if (remainingBudget.compareTo(Duration.ofSeconds(1)) < 0) {
             throw new TranscodeFailedException(
-                    "TRANSIENT", "job time budget spent before rung " + rung.name() + " could start");
+                    "TRANSIENT",
+                    "job time budget spent before rung " + rung.name() + " could start",
+                    MediaEvents.MediaResultCommand.TIMEOUT);
         }
         return boundedTimeout(durationSeconds, remainingBudget);
     }

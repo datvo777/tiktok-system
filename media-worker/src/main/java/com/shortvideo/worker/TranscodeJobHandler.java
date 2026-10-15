@@ -80,7 +80,7 @@ class TranscodeJobHandler {
             store.downloadTo(job.sourceObjectKey(), sourceFile);
 
             if (Files.size(sourceFile) > properties.getMaxSourceBytes()) {
-                report(job, "FAILED", null, "TERMINAL", correlationId);
+                report(job, "FAILED", null, "TERMINAL", null, correlationId);
                 return;
             }
 
@@ -89,7 +89,7 @@ class TranscodeJobHandler {
                 output = pipeline.run(sourceFile, workDir.resolve("output"));
             } catch (TranscodeFailedException e) {
                 log.warn("Transcode failed for job {}: {}", job.jobId(), e.getMessage());
-                report(job, "FAILED", null, e.failureClass(), correlationId);
+                report(job, "FAILED", null, e.failureClass(), e.reason(), correlationId);
                 return;
             }
 
@@ -102,7 +102,7 @@ class TranscodeJobHandler {
                     output.variantRelativePaths().stream().map(path -> finalPrefix + path).toList(),
                     output.segmentCount(),
                     output.durationSeconds());
-            report(job, "COMPLETED", assets, null, correlationId);
+            report(job, "COMPLETED", assets, null, null, correlationId);
         } catch (ResultNotPublishedException e) {
             // The job itself ran; it is the report that did not get through. Reporting a failure
             // here would be a second send that can fail the same way, so let the listener's error
@@ -111,10 +111,10 @@ class TranscodeJobHandler {
         } catch (TranscodeFailedException e) {
             // Raised outside the pipeline, e.g. a source object that does not exist.
             log.warn("Job {} failed: {}", job.jobId(), e.getMessage());
-            report(job, "FAILED", null, e.failureClass(), correlationId);
+            report(job, "FAILED", null, e.failureClass(), e.reason(), correlationId);
         } catch (Exception e) {
             log.error("Transient failure handling job {}", job.jobId(), e);
-            report(job, "FAILED", null, "TRANSIENT", correlationId);
+            report(job, "FAILED", null, "TRANSIENT", null, correlationId);
         } finally {
             // Whatever way the job ended, its staging objects are of no further use: on success they
             // were copied to processed/, on failure they are partial, and a rerun rewrites them.
@@ -162,9 +162,9 @@ class TranscodeJobHandler {
 
     private void report(
             MediaEvents.MediaJobCommand job, String outcome, MediaEvents.Assets assets, String failureClass,
-            String correlationId) {
+            String failureReason, String correlationId) {
         var payload = new MediaEvents.MediaResultCommand(
-                job.jobId(), job.videoId(), job.processingVersion(), outcome, assets, failureClass);
+                job.jobId(), job.videoId(), job.processingVersion(), outcome, assets, failureClass, failureReason);
 
         var envelope = new EventEnvelope<>(
                 resultEventId(job, outcome, failureClass),

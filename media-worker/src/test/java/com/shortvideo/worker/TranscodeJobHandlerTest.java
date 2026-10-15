@@ -205,4 +205,30 @@ class TranscodeJobHandlerTest {
         assertThat(meters.counter("worker.staging.cleanup.failed").count()).isEqualTo(1.0);
         assertThat(meters.counter("worker.jobs", "outcome", "COMPLETED", "failureClass", "none").count()).isEqualTo(1.0);
     }
+
+    @Test
+    void aTimedOutJobReportsTheReasonSoTheVideoModuleCanRetryItLess() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+        when(pipeline.run(any(Path.class), any(Path.class)))
+                .thenThrow(new TranscodeFailedException("TRANSIENT", "ffmpeg timed out", "TIMEOUT"));
+
+        handler.handle(job(1), "corr");
+
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        verify(kafka).send(anyString(), anyString(), payload.capture());
+        assertThat(payload.getValue()).contains("\"failureClass\":\"TRANSIENT\"", "\"failureReason\":\"TIMEOUT\"");
+    }
+
+    @Test
+    void aFailureThatWasNotATimeoutCarriesNoReason() throws Exception {
+        sourceDownloadsAndPipelineSucceeds();
+        when(pipeline.run(any(Path.class), any(Path.class)))
+                .thenThrow(new TranscodeFailedException("TERMINAL", "unsupported"));
+
+        handler.handle(job(1), "corr");
+
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        verify(kafka).send(anyString(), anyString(), payload.capture());
+        assertThat(payload.getValue()).contains("\"failureReason\":null");
+    }
 }

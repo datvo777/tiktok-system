@@ -31,13 +31,29 @@ public final class MediaEvents {
         }
     }
 
+    /**
+     * {@code failureReason} narrows a {@code failureClass} for the Video module's retry decision; it
+     * is optional and absent (null) from results written before it existed. Today the one value is
+     * {@link #TIMEOUT}: the job ran out of time, which a retry rarely cures when the video is simply
+     * too heavy, so it is given fewer tries than a failure that was the machine's fault.
+     */
     public record MediaResultCommand(
             String jobId,
             String videoId,
             int processingVersion,
             String outcome,
             Assets assets,
-            String failureClass) {}
+            String failureClass,
+            String failureReason) {
+
+        public static final String TIMEOUT = "TIMEOUT";
+
+        /** A result with no reason. */
+        public MediaResultCommand(
+                String jobId, String videoId, int processingVersion, String outcome, Assets assets, String failureClass) {
+            this(jobId, videoId, processingVersion, outcome, assets, failureClass, null);
+        }
+    }
 
     public record Assets(
             String masterPlaylist,

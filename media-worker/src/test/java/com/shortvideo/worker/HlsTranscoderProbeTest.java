@@ -61,8 +61,10 @@ class HlsTranscoderProbeTest {
         HlsTranscoder transcoder = transcoderWhoseProbeEnds(new ProcessResult(-1, "", "", true));
 
         assertThatThrownBy(() -> transcoder.probeSource(Path.of("source")))
-                .isInstanceOfSatisfying(TranscodeFailedException.class,
-                        e -> assertThat(e.failureClass()).isEqualTo("TRANSIENT"));
+                .isInstanceOfSatisfying(TranscodeFailedException.class, e -> {
+                    assertThat(e.failureClass()).isEqualTo("TRANSIENT");
+                    assertThat(e.reason()).isEqualTo("TIMEOUT");
+                });
     }
 
     @Test
@@ -70,8 +72,11 @@ class HlsTranscoderProbeTest {
         HlsTranscoder transcoder = transcoderWhoseProbeEnds(new ProcessResult(137, "", "", false));
 
         assertThatThrownBy(() -> transcoder.probeSource(Path.of("source")))
-                .isInstanceOfSatisfying(TranscodeFailedException.class,
-                        e -> assertThat(e.failureClass()).isEqualTo("TRANSIENT"));
+                .isInstanceOfSatisfying(TranscodeFailedException.class, e -> {
+                    assertThat(e.failureClass()).isEqualTo("TRANSIENT");
+                    // Killed, not timed out: the machine's fault, so it keeps the full retry budget.
+                    assertThat(e.reason()).isNull();
+                });
     }
 
     @Test

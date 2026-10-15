@@ -62,6 +62,12 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      */
     private static final List<String> DEFAULT_RENDITIONS = List.of("high", "medium", "low");
     private static final Duration MAX_RETRY_BACKOFF = Duration.ofMinutes(10);
+    /**
+     * Tries a video gets when its transcode keeps running out of time. A failure that was the
+     * machine's fault (MinIO, a killed process) is worth the full budget; a timeout usually means the
+     * video is simply heavy, and each further try would hold a worker for the whole job timeout.
+     */
+    private static final int MAX_TIMEOUT_ATTEMPTS = 2;
 
     /** Revocation source type for admin lifecycle holds (quarantine/removal — brief section 16). */
     public static final String LIFECYCLE_SOURCE = "LIFECYCLE";
@@ -198,17 +204,31 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * the segments, and doing that with a database connection checked out, and the inbox row
      * uncommitted, ties both up for as long as the object store takes to answer.
      *
-     * @return the verdict, or null for a result with no assets to check (a FAILED one)
+     * @return the verdict (false as well when a key lies outside {@code processed/{videoId}/{version}/}),
+     *         or null for a result with no assets to check (a FAILED one)
      * @throws VideoExceptions.AssetStoreUnavailable if MinIO could not be asked, which decides nothing
      */
     Boolean verifyAssets(MediaEvents.MediaResultCommand result) {
         if (!"COMPLETED".equals(result.outcome()) || result.assets() == null) {
             return null;
         }
+        String prefix = "processed/" + result.videoId() + "/" + result.processingVersion() + "/";
+        if (!underPrefix(prefix, result.assets().masterPlaylist())
+                || !result.assets().variantPlaylists().stream().allMatch(key -> underPrefix(prefix, key))) {
+            // The result is not authoritative (Rule 16): a key outside this video's own version could
+            // point at another video's objects, which would pass the existence check below.
+            log.warn("Transcode result for video {} names assets outside {}; treated as not durable",
+                    result.videoId(), prefix);
+            return false;
+        }
         return assetVerifier.verify(
                 result.assets().masterPlaylist(),
                 result.assets().variantPlaylists(),
                 result.assets().segmentCount());
+    }
+
+    private static boolean underPrefix(String prefix, String key) {
+        return key != null && key.startsWith(prefix) && !key.contains("..");
     }
 
     /**
@@ -265,8 +285,11 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         } else {
             String failureClass = "COMPLETED".equals(result.outcome()) ? "TRANSIENT" : result.failureClass();
             failureClass = failureClass == null ? "TERMINAL" : failureClass;
-            if ("TRANSIENT".equals(failureClass) && video.getTranscodeAttempt() < transcodeMaxAttempts) {
-                retryTranscode(video);
+            int budget = MediaEvents.MediaResultCommand.TIMEOUT.equals(result.failureReason())
+                    ? Math.min(transcodeMaxAttempts, MAX_TIMEOUT_ATTEMPTS)
+                    : transcodeMaxAttempts;
+            if ("TRANSIENT".equals(failureClass) && video.getTranscodeAttempt() < budget) {
+                retryTranscode(video, budget);
                 return;
             }
             video.markFailed(failureClass);
@@ -297,7 +320,8 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * A TRANSIENT failure with budget left (brief section 11.1). Five tries with a 30s base wait
      * 30s, 1m, 2m and 4m between them: about eight minutes in all, which is meant to outlast a
      * MinIO or broker restart. A shorter window fails every video in flight at once during one, and
-     * each then needs a manual reprocess. The wait before the last try plus a full job
+     * each then needs a manual reprocess. A failure the worker reports as a timeout gets two tries
+     * at most, since a heavy video times out again. The wait before the last try plus a full job
      * (15 minutes) stays well inside the watchdog's 60 minutes.
      *
      * <p>The video stays TRANSCODING and
@@ -307,7 +331,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
      * availability time. No {@code video.processing.failed} goes out until the budget
      * is spent, so the uploader is not told about a failure that is still being retried.
      */
-    private void retryTranscode(VideoEntity video) {
+    private void retryTranscode(VideoEntity video, int budget) {
         long failedAttempt = video.getTranscodeAttempt();
         video.retryTranscode();
         VideoEntity saved = repository.saveAndFlush(video);
@@ -342,7 +366,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                 now.plus(delay));
         meters.counter("video.transcode.retried").increment();
         log.warn("Transcode of video {} failed transiently (attempt {} of {}); retrying in {}",
-                saved.getVideoId(), failedAttempt, transcodeMaxAttempts, delay);
+                saved.getVideoId(), failedAttempt, budget, delay);
     }
 
     /**
