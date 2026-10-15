@@ -14,6 +14,15 @@ public class WorkerProperties {
 
     /** How long to wait for the broker to acknowledge a result before treating it as not sent. */
     private Duration resultAckTimeout = Duration.ofSeconds(30);
+
+    /**
+     * Sends of one result before giving up on it. A result the broker did not acknowledge fails the
+     * command, and its redelivery runs the whole job again (download, transcode, upload), so a blip
+     * of a few seconds is worth riding out here, where nothing has to be redone. The sends carry the
+     * same event id, which the Video module's inbox absorbs if an earlier one did land after all.
+     */
+    private int resultPublishAttempts = 3;
+    private Duration resultPublishRetryDelay = Duration.ofSeconds(2);
     private String ffmpegPath = "ffmpeg";
     private String ffprobePath = "ffprobe";
     private long maxSourceBytes = 500L * 1024 * 1024;
@@ -44,6 +53,10 @@ public class WorkerProperties {
     public void setKillGrace(Duration killGrace) { this.killGrace = killGrace; }
     public Duration getResultAckTimeout() { return resultAckTimeout; }
     public void setResultAckTimeout(Duration resultAckTimeout) { this.resultAckTimeout = resultAckTimeout; }
+    public int getResultPublishAttempts() { return resultPublishAttempts; }
+    public void setResultPublishAttempts(int resultPublishAttempts) { this.resultPublishAttempts = resultPublishAttempts; }
+    public Duration getResultPublishRetryDelay() { return resultPublishRetryDelay; }
+    public void setResultPublishRetryDelay(Duration resultPublishRetryDelay) { this.resultPublishRetryDelay = resultPublishRetryDelay; }
     public String getFfmpegPath() { return ffmpegPath; }
     public void setFfmpegPath(String ffmpegPath) { this.ffmpegPath = ffmpegPath; }
     public String getFfprobePath() { return ffprobePath; }

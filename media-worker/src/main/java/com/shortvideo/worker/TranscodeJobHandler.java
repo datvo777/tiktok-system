@@ -179,19 +179,43 @@ class TranscodeJobHandler {
                 correlationId,
                 null,
                 payload);
+        String json;
         try {
-            kafka.send(Topics.MEDIA_RESULTS, job.videoId(), objectMapper.writeValueAsString(envelope))
-                    .get(properties.getResultAckTimeout().toMillis(), TimeUnit.MILLISECONDS);
-            // Counted once the broker has the result, so a result that is redelivered and reported
-            // again is not counted as two jobs' worth of failures it did not have.
-            meters.counter("worker.jobs", "outcome", outcome, "failureClass", failureClass == null ? "none" : failureClass)
-                    .increment();
+            json = objectMapper.writeValueAsString(envelope);
+        } catch (Exception e) {
+            throw new ResultNotPublishedException(job.jobId(), e);
+        }
+        int attempts = Math.max(1, properties.getResultPublishAttempts());
+        for (int attempt = 1; ; attempt++) {
+            try {
+                kafka.send(Topics.MEDIA_RESULTS, job.videoId(), json)
+                        .get(properties.getResultAckTimeout().toMillis(), TimeUnit.MILLISECONDS);
+                break;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ResultNotPublishedException(job.jobId(), e);
+            } catch (Exception e) {
+                if (attempt >= attempts) {
+                    log.error("Failed to publish media.results.v1 for job {}", job.jobId(), e);
+                    throw new ResultNotPublishedException(job.jobId(), e);
+                }
+                log.warn("media.results.v1 for job {} not acknowledged (send {} of {}); sending again",
+                        job.jobId(), attempt, attempts, e);
+                pause(properties.getResultPublishRetryDelay().multipliedBy(attempt), job.jobId());
+            }
+        }
+        // Counted once the broker has the result, so a result that is redelivered and reported
+        // again is not counted as two jobs' worth of failures it did not have.
+        meters.counter("worker.jobs", "outcome", outcome, "failureClass", failureClass == null ? "none" : failureClass)
+                .increment();
+    }
+
+    private static void pause(java.time.Duration delay, String jobId) {
+        try {
+            Thread.sleep(delay.toMillis());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new ResultNotPublishedException(job.jobId(), e);
-        } catch (Exception e) {
-            log.error("Failed to publish media.results.v1 for job {}", job.jobId(), e);
-            throw new ResultNotPublishedException(job.jobId(), e);
+            throw new ResultNotPublishedException(jobId, e);
         }
     }
 

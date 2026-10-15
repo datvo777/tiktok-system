@@ -29,6 +29,10 @@ class TranscodeJobHandlerTest {
     private final io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
             new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
     private final WorkerProperties properties = new WorkerProperties();
+
+    {
+        properties.setResultPublishRetryDelay(java.time.Duration.ZERO);
+    }
     private final MinioObjectStore store = mock(MinioObjectStore.class);
     private final TranscodePipeline pipeline = mock(TranscodePipeline.class);
     private final TranscodeJobHandler handler = new TranscodeJobHandler(
@@ -80,8 +84,24 @@ class TranscodeJobHandlerTest {
 
         assertThatThrownBy(() -> handler.handle(job(1), "corr"))
                 .isInstanceOf(TranscodeJobHandler.ResultNotPublishedException.class);
-        // One send only: the failure is not reported again as a second, equally doomed result.
-        verify(kafka, times(1)).send(anyString(), anyString(), anyString());
+        // The same result is sent again, up to the limit; a failure is never reported as a second,
+        // different result that is equally doomed.
+        verify(kafka, times(properties.getResultPublishAttempts())).send(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void aBrokerThatAnswersOnTheSecondSendDoesNotCostTheJobARerun() {
+        when(kafka.send(anyString(), anyString(), anyString()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("leader election")))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        handler.handle(job(1), "corr");
+
+        var payload = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(kafka, times(2)).send(anyString(), anyString(), payload.capture());
+        // The same bytes both times, so the inbox sees one event whichever of them landed.
+        assertThat(payload.getAllValues().get(0)).isEqualTo(payload.getAllValues().get(1));
+        assertThat(meters.find("worker.jobs").counters().stream().mapToDouble(c -> c.count()).sum()).isEqualTo(1.0);
     }
 
     @Test
