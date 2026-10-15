@@ -77,8 +77,14 @@ class FailedSourceCleanupIT {
 
         assertThat(processing(overdue)).containsExactly("FAILED", "TRANSIENT");
         assertThat(processing(recent)).containsExactly("TRANSCODING", null);
-        assertThat(processing(removed)).containsExactly("TRANSCODING", null);
+        // Closed without a word: the uploader is not told about a video that was removed.
+        assertThat(processing(removed)).containsExactly("FAILED", "TRANSIENT");
         assertThat(processing(alreadyDone)).containsExactly("READY", null);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = 'video.processing.failed'",
+                        Integer.class,
+                        removed))
+                .isZero();
         // One failure event, not one per sweep: the second pass found nothing to do.
         assertThat(jdbc.queryForObject(
                         "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = 'video.processing.failed'",

@@ -57,4 +57,17 @@ interface VideoJpaRepository extends JpaRepository<VideoEntity, UUID> {
             @Param("cutoff") Instant cutoff,
             @Param("removed") java.util.Collection<com.shortvideo.video.api.AssetLifecycleState> removed,
             Pageable pageable);
+
+    /** The removed counterpart of {@link #findStuckInState}: videos taken down while still in {@code state}. */
+    @Query("""
+            SELECT v FROM VideoEntity v
+            WHERE v.processingState = :state AND v.updatedAt < :cutoff
+              AND v.assetLifecycleState IN :removed
+            ORDER BY v.updatedAt ASC
+            """)
+    List<VideoEntity> findRemovedStuckInState(
+            @Param("state") ProcessingState state,
+            @Param("cutoff") Instant cutoff,
+            @Param("removed") java.util.Collection<com.shortvideo.video.api.AssetLifecycleState> removed,
+            Pageable pageable);
 }

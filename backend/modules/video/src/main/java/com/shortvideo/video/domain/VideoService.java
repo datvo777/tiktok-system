@@ -402,6 +402,30 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
         return true;
     }
 
+    /**
+     * The watchdog's counterpart for a video removed while it was transcoding. Removal purged
+     * {@code processed/{videoId}/{version}/} within minutes, which can be before the worker wrote
+     * anything; the late result schedules the purge again, but a result that never arrives (the
+     * worker died after promoting, or the record was dead-lettered) would leave the output in the
+     * store for good. Past the cutoff no worker can still be writing, so the prefix is purged once
+     * more and the video is closed so the sweep does not find it again. Nothing is announced: the
+     * video is gone, and a {@code video.processing.failed} for it would tell the uploader about a
+     * video they or an admin removed.
+     */
+    @Transactional
+    boolean reclaimRemovedIfStillTranscoding(String videoId, Instant cutoff) {
+        VideoEntity video = repository.findForUpdate(UUID.fromString(videoId)).orElse(null);
+        if (video == null
+                || !video.isRemoved()
+                || video.getProcessingState() != ProcessingState.TRANSCODING
+                || !video.getUpdatedAt().isBefore(cutoff)) {
+            return false;
+        }
+        video.markFailed("TRANSIENT");
+        schedulePartialOutputPurge(repository.saveAndFlush(video));
+        return true;
+    }
+
     /** Reacts to {@code video.moderation.rejected} (brief section 18, Milestone 6). */
     @Transactional
     void retainAsRejected(String videoId) {

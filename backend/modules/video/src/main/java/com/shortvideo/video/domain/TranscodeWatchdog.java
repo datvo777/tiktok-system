@@ -27,6 +27,10 @@ import org.springframework.stereotype.Component;
  * queue; a video that waits longer than that is a capacity problem worth the alert. The video row
  * is re-read under its lock before it is failed, so a result that lands while this runs wins.
  * One that lands afterwards is ignored, and its output is purged ({@code applyMediaResult}).
+ *
+ * <p>A video removed while transcoding is not failed, but past the same cutoff its processed prefix
+ * is purged once more and the video is closed, for the case where no result ever arrives
+ * ({@link VideoService#reclaimRemovedIfStillTranscoding}).
  */
 @Component
 class TranscodeWatchdog {
@@ -38,6 +42,7 @@ class TranscodeWatchdog {
     private final VideoService videoService;
     private final Duration stuckAfter;
     private final Counter timedOut;
+    private final Counter removedReclaimed;
 
     TranscodeWatchdog(
             VideoJpaRepository videos,
@@ -48,19 +53,18 @@ class TranscodeWatchdog {
         this.videoService = videoService;
         this.stuckAfter = stuckAfter;
         this.timedOut = Counter.builder("video.transcode.timed_out").register(meters);
+        this.removedReclaimed = Counter.builder("video.transcode.removed_reclaimed").register(meters);
     }
 
     @Scheduled(fixedDelayString = "${shortvideo.lifecycle.transcode-watchdog-interval:5m}", initialDelayString = "1m")
     public void sweep() {
         Instant cutoff = Instant.now().minus(stuckAfter);
+        List<AssetLifecycleState> removed = List.of(
+                AssetLifecycleState.DELETE_SCHEDULED,
+                AssetLifecycleState.DELETION_IN_PROGRESS,
+                AssetLifecycleState.DELETED);
         List<VideoEntity> stuck = videos.findStuckInState(
-                ProcessingState.TRANSCODING,
-                cutoff,
-                List.of(
-                        AssetLifecycleState.DELETE_SCHEDULED,
-                        AssetLifecycleState.DELETION_IN_PROGRESS,
-                        AssetLifecycleState.DELETED),
-                PageRequest.of(0, SWEEP_LIMIT));
+                ProcessingState.TRANSCODING, cutoff, removed, PageRequest.of(0, SWEEP_LIMIT));
         for (VideoEntity candidate : stuck) {
             // One bad row must not abort the rest; the next sweep finds it again.
             try {
@@ -71,6 +75,20 @@ class TranscodeWatchdog {
                 }
             } catch (RuntimeException e) {
                 log.warn("Could not time out transcode for video {}: {}", candidate.getVideoId(), e.getMessage());
+            }
+        }
+        // A video removed mid-transcode is not failed (nobody is told), but its output is reclaimed
+        // in case the result that would have scheduled that never arrived.
+        for (VideoEntity candidate : videos.findRemovedStuckInState(
+                ProcessingState.TRANSCODING, cutoff, removed, PageRequest.of(0, SWEEP_LIMIT))) {
+            try {
+                if (videoService.reclaimRemovedIfStillTranscoding(candidate.getVideoId().toString(), cutoff)) {
+                    removedReclaimed.increment();
+                    log.warn("Removed video {} was still TRANSCODING after {}; its output is scheduled for purge",
+                            candidate.getVideoId(), stuckAfter);
+                }
+            } catch (RuntimeException e) {
+                log.warn("Could not reclaim removed video {}: {}", candidate.getVideoId(), e.getMessage());
             }
         }
     }

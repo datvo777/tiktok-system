@@ -112,6 +112,55 @@ class VideoServiceTest {
     }
 
     @Test
+    void aVideoRemovedMidTranscodeWhoseResultNeverCameIsClosedAndItsOutputPurgedAgain() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWith(repository, superseded);
+        UUID videoId = UUID.randomUUID();
+        VideoEntity video = new VideoEntity(videoId, UUID.randomUUID(), "title", "desc");
+        int version = video.dispatchProcessing("sources/" + videoId + "/original");
+        video.scheduleForDeletion();
+        when(repository.findForUpdate(videoId)).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+
+        boolean closed = service.reclaimRemovedIfStillTranscoding(
+                videoId.toString(), java.time.Instant.now().plusSeconds(1));
+
+        assertThat(closed).isTrue();
+        assertThat(video.getProcessingState()).isEqualTo(ProcessingState.FAILED);
+        var rows = org.mockito.ArgumentCaptor.forClass(SupersededAssetEntity.class);
+        org.mockito.Mockito.verify(superseded).saveAndFlush(rows.capture());
+        assertThat(rows.getValue().prefix()).isEqualTo("processed/" + videoId + "/" + version + "/");
+    }
+
+    @Test
+    void aRemovedVideoStillInsideTheWindowOrALiveOneIsLeftToTheWatchdog() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        SupersededAssetJpaRepository superseded = mock(SupersededAssetJpaRepository.class);
+        VideoService service = serviceWith(repository, superseded);
+        UUID removedId = UUID.randomUUID();
+        VideoEntity removed = new VideoEntity(removedId, UUID.randomUUID(), "title", "desc");
+        removed.dispatchProcessing("sources/" + removedId + "/original");
+        removed.scheduleForDeletion();
+        UUID liveId = UUID.randomUUID();
+        VideoEntity live = new VideoEntity(liveId, UUID.randomUUID(), "title", "desc");
+        live.dispatchProcessing("sources/" + liveId + "/original");
+        when(repository.findForUpdate(removedId)).thenReturn(Optional.of(removed));
+        when(repository.findForUpdate(liveId)).thenReturn(Optional.of(live));
+        java.time.Instant longAgo = java.time.Instant.now().minusSeconds(3600);
+        java.time.Instant later = java.time.Instant.now().plusSeconds(1);
+
+        // A worker may still be writing, so the removed video is not touched yet.
+        assertThat(service.reclaimRemovedIfStillTranscoding(removedId.toString(), longAgo)).isFalse();
+        // Failing a live video is the watchdog's job, with an event the uploader sees.
+        assertThat(service.reclaimRemovedIfStillTranscoding(liveId.toString(), later)).isFalse();
+
+        assertThat(removed.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        assertThat(live.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
+        org.mockito.Mockito.verifyNoInteractions(superseded);
+    }
+
+    @Test
     void aRemovedVideoCannotBeReprocessed() {
         VideoJpaRepository repository = mock(VideoJpaRepository.class);
         VideoService service = serviceWith(repository, mock(SupersededAssetJpaRepository.class));
