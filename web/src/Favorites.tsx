@@ -183,7 +183,10 @@ function CollectionRow({ collection, onOpen }: { collection: FavoriteCollection;
   return (
     <div className="collection-row">
       <button type="button" className="collection-open" onClick={onOpen}>
-        <span className="collection-glyph" style={{ '--h': avatarHue(collection.collectionId) } as React.CSSProperties}>
+        <span
+          className="collection-glyph"
+          style={{ '--h': avatarHue(collection.collectionId) } as React.CSSProperties}
+        >
           <FolderIcon size={18} />
         </span>
         <span className="collection-text">
@@ -197,7 +200,12 @@ function CollectionRow({ collection, onOpen }: { collection: FavoriteCollection;
       </button>
 
       <div className="collection-actions">
-        <button type="button" className="icon-btn" onClick={() => setRenaming(true)} aria-label={`Rename ${collection.name}`}>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => setRenaming(true)}
+          aria-label={`Rename ${collection.name}`}
+        >
           <PencilIcon size={16} />
         </button>
         {/* Deleting throws away a list the viewer built by hand, and the rows
@@ -232,7 +240,10 @@ function CollectionDetail({ collectionId, onBack }: { collectionId: string; onBa
   const queryClient = useQueryClient();
   const [openItem, setOpenItem] = useState<SavedVideo | null>(null);
 
-  const detail = useQuery({ queryKey: ['collection', collectionId], queryFn: () => getCollection(collectionId) });
+  const detail = useQuery({
+    queryKey: ['collection', collectionId],
+    queryFn: () => getCollection(collectionId),
+  });
 
   const remove = useMutation({
     mutationFn: (videoId: string) => unsaveVideo(collectionId, videoId),
@@ -330,7 +341,9 @@ function SavedVideoPlayer({ item }: { item: SavedVideo }) {
     mutationFn: () => createPublicSession(item.videoId),
     onSuccess: (result) => {
       setError(null);
-      attachHls(videoRef.current, item.videoId, result.processingVersion, setError);
+      attachHls(videoRef.current, item.videoId, result.processingVersion, setError, () =>
+        createPublicSession(item.videoId),
+      );
       videoRef.current?.play().catch(() => {});
     },
     onError: (err) => setError((err as Error).message),
@@ -507,7 +520,9 @@ export function SaveToCollection({ videoId, onClose }: { videoId: string; onClos
                     {collection.itemCount} {collection.itemCount === 1 ? 'video' : 'videos'}
                   </span>
                 </span>
-                <span className="collection-check">{collection.containsVideo && <CheckIcon size={15} />}</span>
+                <span className="collection-check">
+                  {collection.containsVideo && <CheckIcon size={15} />}
+                </span>
               </button>
             </li>
           ))}

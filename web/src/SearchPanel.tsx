@@ -24,7 +24,9 @@ const DEBOUNCE_MS = 280;
 function readRecents(): string[] {
   try {
     const raw = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]');
-    return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string').slice(0, RECENT_MAX) : [];
+    return Array.isArray(raw)
+      ? raw.filter((v): v is string => typeof v === 'string').slice(0, RECENT_MAX)
+      : [];
   } catch {
     // A corrupt or unavailable store is not worth failing the panel over.
     return [];
@@ -124,15 +126,16 @@ export function SearchPanel() {
 
   // Follow the keyboard cursor when it walks past the fold.
   useEffect(() => {
-    listRef.current
-      ?.querySelector('[data-active="true"]')
-      ?.scrollIntoView({ block: 'nearest' });
+    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [active]);
 
   function remember(value: string) {
     const trimmed = value.trim();
     if (!trimmed) return;
-    const next = [trimmed, ...recents.filter((r) => r.toLowerCase() !== trimmed.toLowerCase())].slice(0, RECENT_MAX);
+    const next = [trimmed, ...recents.filter((r) => r.toLowerCase() !== trimmed.toLowerCase())].slice(
+      0,
+      RECENT_MAX,
+    );
     setRecents(next);
     writeRecents(next);
   }
@@ -211,7 +214,13 @@ export function SearchPanel() {
 
         {settled && hits.length > 0 && (
           <div className="search-filters" role="tablist" aria-label="Result type">
-            <FilterTab id="all" tab={tab} onSelect={setTab} label="All" count={creators.length + hits.length} />
+            <FilterTab
+              id="all"
+              tab={tab}
+              onSelect={setTab}
+              label="All"
+              count={creators.length + hits.length}
+            />
             <FilterTab id="videos" tab={tab} onSelect={setTab} label="Videos" count={hits.length} />
             <FilterTab id="creators" tab={tab} onSelect={setTab} label="Creators" count={creators.length} />
           </div>
@@ -424,7 +433,11 @@ export function VideoThumb({ hit }: { hit: SearchHit }) {
   const [failed, setFailed] = useState(false);
 
   return (
-    <span className="search-thumb" style={{ '--h': avatarHue(hit.videoId) } as React.CSSProperties} aria-hidden="true">
+    <span
+      className="search-thumb"
+      style={{ '--h': avatarHue(hit.videoId) } as React.CSSProperties}
+      aria-hidden="true"
+    >
       <PlayIcon size={16} />
       {!failed && (
         <img
@@ -487,7 +500,9 @@ export function SearchHitPlayer({ hit }: { hit: SearchHit }) {
     mutationFn: () => createPublicSession(hit.videoId),
     onSuccess: (result) => {
       setError(null);
-      attachHls(videoRef.current, hit.videoId, result.processingVersion, setError);
+      attachHls(videoRef.current, hit.videoId, result.processingVersion, setError, () =>
+        createPublicSession(hit.videoId),
+      );
       videoRef.current?.play().catch(() => {});
     },
     onError: (err) => setError((err as Error).message),
