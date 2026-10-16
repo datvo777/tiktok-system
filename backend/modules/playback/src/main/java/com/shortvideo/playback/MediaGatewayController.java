@@ -68,8 +68,9 @@ public class MediaGatewayController {
             response.header(HttpHeaders.CONTENT_RANGE, prepared.contentRange());
         }
 
+        // viewer is null for a signed-out viewer, who is identified by the device cookie instead.
         log.debug("Streaming {} bytes ({}) for viewer {} on {}",
-                prepared.contentLength(), status, viewer.accountId(), key.objectKey());
+                prepared.contentLength(), status, viewer == null ? "device" : viewer.accountId(), key.objectKey());
         return response.body(prepared.body());
     }
 
