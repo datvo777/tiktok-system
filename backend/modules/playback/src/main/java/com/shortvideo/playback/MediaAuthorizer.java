@@ -10,6 +10,7 @@ import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.DeviceIdentity;
 import com.shortvideo.shared.security.InvalidTokenException;
+import com.shortvideo.shared.security.JwtAuthenticationFilter;
 import com.shortvideo.shared.security.PlaybackClaims;
 import com.shortvideo.shared.security.PlaybackMode;
 import com.shortvideo.shared.security.PlaybackTokenService;
@@ -167,6 +168,12 @@ class MediaAuthorizer {
             return;
         }
 
+        if (viewer == null && request.getAttribute(JwtAuthenticationFilter.AUTH_STATE_UNAVAILABLE) != null) {
+            // The session was refused only because Redis or the database could not answer, and /media is
+            // permitAll so nothing else turns that into a 503. A 401 here would tell the player its session
+            // is gone and make it mint a new one while the store is struggling.
+            throw new MediaAuthorizationException.Unavailable("Session state is unavailable", null);
+        }
         if (viewer == null || !claims.viewerId().equals(viewer.accountId())) {
             throw new MediaAuthorizationException.Unauthorized("Session and playback token disagree on viewer identity");
         }
