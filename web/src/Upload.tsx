@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import { rememberBandwidthEstimate, startingBandwidthEstimate } from './hlsAbr';
 import { useEffect, useRef, useState } from 'react';
 import { useRealtimeConnected } from './realtime';
-import { pollDelayMs } from './videoStatus';
+import { isProcessingInFlight, isProcessingTerminal, pollDelayMs } from './videoStatus';
 import { CheckIcon, FlagIcon, PlayIcon, UploadCloudIcon } from './icons';
 import {
   completeUploadWithRetry,
@@ -94,7 +94,15 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
   const streamConnected = useRealtimeConnected();
 
   const upload = useMutation({
-    mutationFn: async ({ selected, title, description }: { selected: File; title: string; description: string }) => {
+    mutationFn: async ({
+      selected,
+      title,
+      description,
+    }: {
+      selected: File;
+      title: string;
+      description: string;
+    }) => {
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -153,7 +161,9 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
         setLog('Upload cancelled.');
       } else if (error instanceof FinishFailed) {
         // The file is stored; the button now resumes from `complete`.
-        setLog(`Your file is uploaded, but we couldn't finish processing it (${error.lastError.message}). Try again.`);
+        setLog(
+          `Your file is uploaded, but we couldn't finish processing it (${error.lastError.message}). Try again.`,
+        );
       } else {
         setLog(`Upload failed: ${(error as Error).message}`);
       }
@@ -174,14 +184,49 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
     refetchInterval: (query) => {
       if (!startedAt || Date.now() - startedAt > GIVE_UP_AFTER_MS) return false;
       const data = query.state.data;
-      if (!data || data.processingState === 'FAILED') return false;
+      // No data means the first fetch failed: nothing here can restart the poll, so the
+      // "Check again" button below does (a repeated 4xx should not be hammered).
+      if (!data || isProcessingTerminal(data.processingState)) return false;
       if (data.processingState === 'READY') return POST_READY_POLL_MS;
       return pollDelayMs(data.pollAfterMs, Date.now() - startedAt, streamConnected);
     },
   });
 
+  // Date.now() inside refetchInterval stops the poll but cannot re-render, so the badge would sit on
+  // its last state as if processing were still going. A timer turns "gave up" into something to show.
+  const [gaveUp, setGaveUp] = useState(false);
   useEffect(() => {
-    if (status.data?.processingState === 'FAILED') {
+    setGaveUp(false);
+    if (!startedAt) return;
+    const timer = setTimeout(() => setGaveUp(true), Math.max(0, startedAt + GIVE_UP_AFTER_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [startedAt]);
+
+  const processingState = status.data?.processingState;
+  const staleWhileProcessing =
+    gaveUp && processingState !== undefined && isProcessingInFlight(processingState);
+  const statusUnavailable = videoId !== null && status.isError && !status.data;
+
+  function checkAgain() {
+    setLog('Checking again…');
+    setStartedAt(Date.now());
+    void status.refetch();
+  }
+
+  useEffect(() => {
+    if (statusUnavailable) {
+      setLog("We couldn't check on your video. Check your connection and try again.");
+    } else if (staleWhileProcessing) {
+      setLog(
+        'This is taking longer than expected, so we stopped checking. Check again, or find it under My videos.',
+      );
+    }
+  }, [statusUnavailable, staleWhileProcessing]);
+
+  useEffect(() => {
+    if (status.data?.processingState === 'EXPIRED') {
+      setLog('This upload expired before it finished. Please upload it again.');
+    } else if (status.data?.processingState === 'FAILED') {
       // failureClass is an internal taxonomy (TERMINAL/TRANSIENT and friends);
       // what the uploader needs is whether trying again is worth their time.
       setLog(
@@ -195,7 +240,12 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
   }, [status.data?.processingState, status.data?.failureClass]);
 
   const badge = status.data ? STATE_BADGE[status.data.processingState] : null;
-  const isFailure = upload.isError || status.data?.processingState === 'FAILED';
+  const isFailure =
+    upload.isError ||
+    statusUnavailable ||
+    staleWhileProcessing ||
+    status.data?.processingState === 'FAILED' ||
+    status.data?.processingState === 'EXPIRED';
 
   // Shared by the file input and the drop target: the same validation has to
   // run either way, since a dropped file never passes through `accept`.
@@ -282,6 +332,12 @@ export function Upload({ onDone }: { onDone?: (() => void) | undefined } = {}) {
       )}
 
       <div className={`status-line${isFailure ? ' is-error' : ''}`}>{log}</div>
+
+      {(statusUnavailable || staleWhileProcessing) && (
+        <button className="btn-sm" onClick={checkAgain} disabled={status.isFetching}>
+          Check again
+        </button>
+      )}
 
       {videoId && status.data?.processingState === 'READY' && (
         <>
@@ -556,7 +612,10 @@ function PublishButton({
           state code to go on -- spell out what happens next and give them a way out
           instead of leaving them staring at "PUBLISH_PENDING". */}
       {guidance && (
-        <div className={`callout${guidance.settled ? '' : ' callout-warning'}`} style={{ marginTop: '0.85rem' }}>
+        <div
+          className={`callout${guidance.settled ? '' : ' callout-warning'}`}
+          style={{ marginTop: '0.85rem' }}
+        >
           <p style={{ marginTop: 0 }}>{guidance.text}</p>
           {onDone && (
             <button className="btn-ghost btn-sm" style={{ marginTop: '0.6rem' }} onClick={onDone}>

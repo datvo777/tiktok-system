@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { VideoSummary } from '../api';
-import { SAFETY_NET_POLL_MS, hasVideoInFlight, listPollMs, pollDelayMs, statusBadge } from '../videoStatus';
+import {
+  SAFETY_NET_POLL_MS,
+  hasVideoInFlight,
+  isProcessingInFlight,
+  isProcessingTerminal,
+  listPollMs,
+  pollDelayMs,
+  statusBadge,
+} from '../videoStatus';
 
 const NOW = Date.parse('2026-10-08T12:00:00Z');
 
@@ -79,5 +87,23 @@ describe('with the realtime stream up', () => {
   it('is unchanged without it', () => {
     expect(pollDelayMs(2000, 5_000, false)).toBe(2000);
     expect(listPollMs(false)).toBeLessThan(SAFETY_NET_POLL_MS);
+  });
+});
+
+describe('processing state classes', () => {
+  it('stops polling on FAILED and EXPIRED, which nothing moves on from', () => {
+    expect(isProcessingTerminal('FAILED')).toBe(true);
+    expect(isProcessingTerminal('EXPIRED')).toBe(true);
+    expect(isProcessingTerminal('TRANSCODING')).toBe(false);
+    expect(isProcessingTerminal('READY')).toBe(false);
+  });
+
+  it('counts only the states on the way to READY as in flight', () => {
+    for (const state of ['CREATED', 'UPLOADING', 'UPLOADED', 'TRANSCODING']) {
+      expect(isProcessingInFlight(state)).toBe(true);
+    }
+    for (const state of ['READY', 'FAILED', 'EXPIRED']) {
+      expect(isProcessingInFlight(state)).toBe(false);
+    }
   });
 });

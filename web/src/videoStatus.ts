@@ -72,6 +72,19 @@ export function statusBadge(video: VideoSummary): { variant: string; label: stri
   }
 }
 
+/** Processing states nothing will move on from: polling for them only costs requests. */
+export function isProcessingTerminal(state: string): boolean {
+  return state === 'FAILED' || state === 'EXPIRED';
+}
+
+/**
+ * States where the video is still on its way to READY. Used to tell "we stopped asking" from "it
+ * finished": a poll that gave up on one of these leaves a badge that no longer reflects reality.
+ */
+export function isProcessingInFlight(state: string): boolean {
+  return state === 'CREATED' || state === 'UPLOADING' || state === 'UPLOADED' || state === 'TRANSCODING';
+}
+
 const DEFAULT_POLL_MS = 2000;
 const MAX_POLL_MS = 10_000;
 
