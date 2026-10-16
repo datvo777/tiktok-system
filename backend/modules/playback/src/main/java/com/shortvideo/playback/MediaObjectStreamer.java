@@ -9,6 +9,7 @@ import io.minio.errors.ErrorResponseException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -73,15 +74,24 @@ class MediaObjectStreamer {
             throw new MediaStreamsExhaustedException("Too many concurrent media streams");
         }
 
+        // The slot is held from here until the body finishes, but the body only runs if the caller gets
+        // as far as returning the response. Idempotent so the body and the caller's failure path can both
+        // call it without freeing the slot twice.
+        AtomicBoolean released = new AtomicBoolean();
+        Runnable release = () -> {
+            if (released.compareAndSet(false, true)) {
+                concurrencyLimiter.release();
+            }
+        };
         StreamingResponseBody body = out -> {
             try {
                 streamRange(key.objectKey(), offset, length, out);
             } finally {
-                concurrencyLimiter.release();
+                release.run();
             }
         };
         String contentRange = partial ? "bytes " + offset + "-" + (offset + length - 1) + "/" + totalSize : null;
-        return new PreparedStream(body, length, partial, contentRange);
+        return new PreparedStream(body, length, partial, contentRange, release);
     }
 
     private void streamRange(String objectKey, long offset, long length, OutputStream out) throws IOException {
@@ -168,5 +178,10 @@ class MediaObjectStreamer {
         }
     }
 
-    record PreparedStream(StreamingResponseBody body, long contentLength, boolean partial, String contentRange) {}
+    /**
+     * @param release gives back the concurrency slot taken by {@code prepare}; the body does it when it
+     *     finishes, so a caller that fails before returning the body must call it instead
+     */
+    record PreparedStream(
+            StreamingResponseBody body, long contentLength, boolean partial, String contentRange, Runnable release) {}
 }
