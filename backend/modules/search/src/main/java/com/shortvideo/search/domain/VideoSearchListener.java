@@ -2,6 +2,8 @@ package com.shortvideo.search.domain;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.account.api.AccountDirectory;
+import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -12,7 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Indexes published videos and removes ones that stop being public (brief
@@ -31,44 +33,77 @@ class VideoSearchListener {
     private final InboxGuard inbox;
     private final SearchIndexService indexService;
     private final AccountDirectory accountDirectory;
+    private final EligibilityDirectory eligibilityDirectory;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transaction;
 
     VideoSearchListener(
-            InboxGuard inbox, SearchIndexService indexService, AccountDirectory accountDirectory, ObjectMapper objectMapper) {
+            InboxGuard inbox,
+            SearchIndexService indexService,
+            AccountDirectory accountDirectory,
+            EligibilityDirectory eligibilityDirectory,
+            ObjectMapper objectMapper,
+            TransactionTemplate transaction) {
         this.inbox = inbox;
         this.indexService = indexService;
         this.accountDirectory = accountDirectory;
+        this.eligibilityDirectory = eligibilityDirectory;
         this.objectMapper = objectMapper;
+        this.transaction = transaction;
     }
 
+    /**
+     * Not {@code @Transactional}: the index write is a call to OpenSearch, and holding a database
+     * connection while it answers lets a slow search cluster use up the pool. The write is
+     * version-guarded (an older version cannot overwrite a newer one), so doing it before the claim
+     * is safe: a redelivery repeats a write that is rejected as stale, and the claim, in its own
+     * short transaction, is made only once the write has not failed. A write that throws is not
+     * claimed, so it is redelivered.
+     */
     @KafkaListener(topics = Topics.VIDEO_EVENTS, groupId = "search-video-indexer")
-    @Transactional
     public void onVideoEvent(String payload) {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
-            if (!inbox.claim(CONSUMER, envelope.eventId())) {
-                return;
-            }
             if (envelope.aggregateVersion() == null) {
-                return; // no version to guard the OpenSearch write with
+                // No version to guard the OpenSearch write with, so nothing to apply; claimed all the
+                // same, so that the same event is not looked at again.
+                claim(envelope);
+                return;
             }
             Map<String, Object> p = envelope.payload();
             String videoId = (String) p.get("videoId");
             switch (envelope.eventType()) {
                 case EventTypes.VIDEO_PUBLICATION_PUBLISHED -> {
                     String creatorId = (String) p.get("ownerAccountId");
-                    String displayName = accountDirectory.find(creatorId).map(a -> a.displayName()).orElse("");
+                    var creator = accountDirectory.find(creatorId);
+                    String displayName = creator.map(a -> a.displayName()).orElse("");
+                    String handle = creator.map(a -> a.handle()).orElse("");
+                    VideoEligibilityView eligibility = eligibilityDirectory.findVideoEligibility(videoId).orElse(null);
+                    String title = eligibility == null ? null : eligibility.title();
+                    String description = eligibility == null ? null : eligibility.description();
                     indexService.indexVideo(
-                            videoId, creatorId, displayName, envelope.occurredAt().toString(), envelope.aggregateVersion());
+                            videoId,
+                            creatorId,
+                            displayName,
+                            handle,
+                            title,
+                            description,
+                            envelope.occurredAt().toString(),
+                            envelope.aggregateVersion());
                 }
                 case EventTypes.VIDEO_PUBLICATION_SUSPENDED,
                      EventTypes.VIDEO_PUBLICATION_PRIVATE,
                      EventTypes.VIDEO_PUBLICATION_REMOVED -> indexService.removeVideo(videoId, envelope.aggregateVersion());
                 default -> { /* not relevant to search */ }
             }
+            claim(envelope);
         } catch (Exception e) {
             log.warn("Failed to apply video event to the search index; will retry on redelivery", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private void claim(EventEnvelope<Map<String, Object>> envelope) {
+        transaction.executeWithoutResult(status -> inbox.claim(CONSUMER, envelope.eventId()));
     }
 }

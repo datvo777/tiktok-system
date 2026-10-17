@@ -995,7 +995,7 @@ Command — `media.jobs.v1`, emitted by the Video module's outbox:
   "videoId": "video-123",
   "processingVersion": 4,
   "sourceObjectKey": "uploads/account-456/upload-789/original",
-  "renditions": ["720p"]
+  "renditions": ["high", "medium", "low"]
 }
 ```
 
@@ -1014,7 +1014,11 @@ Result — `media.results.v1`, emitted by the worker with a `producer` of
   "outcome": "COMPLETED",
   "assets": {
     "masterPlaylist": "processed/video-123/4/master.m3u8",
-    "variantPlaylists": ["processed/video-123/4/720p/index.m3u8"],
+    "variantPlaylists": [
+      "processed/video-123/4/high/index.m3u8",
+      "processed/video-123/4/medium/index.m3u8",
+      "processed/video-123/4/low/index.m3u8"
+    ],
     "segmentCount": 37,
     "durationSeconds": 148.2
   },
@@ -1350,7 +1354,20 @@ ffmpeg -i input.mp4 \
   index.m3u8
 ```
 
-For the first version, create one 720p rendition.
+Encode a bitrate ladder: `high` (1280px long edge, 1800 kbps), `medium` (854px,
+900 kbps) and `low` (480px, 400 kbps). Rungs are capped on the **long** edge, not
+on a height, because most video here is vertical. The worker never upscales: it
+encodes only the rungs the source is at least as large as, and always at least
+`low`. The `renditions` field of the command is advisory; the worker chooses the
+rungs from the probed source.
+
+Every rung must use the same keyframe rule and segment length so that a player can
+switch between them at a segment boundary: keyframes are forced every 2 seconds of
+time (`-force_key_frames "expr:gte(t,n_forced*2)"`, not a frame count, which only
+means 2 seconds at one frame rate) with scene-cut detection off. The master
+playlist declares `BANDWIDTH`, `RESOLUTION` and `CODECS` for each variant, and
+omits the audio codec when the source has no audio. The whole job, all rungs
+together, runs within one `job-timeout` budget.
 
 Write output to `processing-temp/{jobId}/` and reference the final
 `processed/{videoId}/{processingVersion}/` prefix only after the manifest,
@@ -1394,14 +1411,8 @@ validation, so an interrupted job leaves no half-published asset.
 laptop), constrain FFmpeg threads explicitly, and reject source files above the
 configured size before spawning anything.
 
-Later add:
-
-```text
-360p
-540p
-720p
-1080p
-```
+The example command above shows one rung. The `-g 48` it uses assumes 24 fps;
+the worker uses forced time-based keyframes instead (see above).
 
 ---
 
