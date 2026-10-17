@@ -8,14 +8,41 @@ import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 /** Package-private by convention: only the upload module uses it. */
 interface UploadJpaRepository extends JpaRepository<UploadSessionEntity, UUID> {
 
-    List<UploadSessionEntity> findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(
-            UploadStatus status, Instant cutoff, Pageable page);
+    /**
+     * Expired sessions the cleanup job may try now, oldest first. A session that failed to reap
+     * is hidden until its {@code next_reap_at}, so repeated failures cannot hold the head of the
+     * queue and starve newer sessions.
+     */
+    @Query("""
+            SELECT s FROM UploadSessionEntity s
+            WHERE s.status = :status AND s.expiresAt < :cutoff
+              AND (s.nextReapAt IS NULL OR s.nextReapAt <= :now)
+            ORDER BY s.expiresAt ASC
+            """)
+    List<UploadSessionEntity> findReapable(
+            @Param("status") UploadStatus status,
+            @Param("cutoff") Instant cutoff,
+            @Param("now") Instant now,
+            Pageable page);
+
+    /**
+     * Counts a failed reap and schedules the next try. A bulk update, so it neither loads the
+     * row nor bumps its version, and it skips a session that was completed in the meantime.
+     */
+    @Modifying
+    @Query("""
+            UPDATE UploadSessionEntity s
+            SET s.reapAttempts = s.reapAttempts + 1, s.nextReapAt = :nextReapAt
+            WHERE s.uploadId = :uploadId AND s.status = com.shortvideo.upload.domain.UploadStatus.PENDING
+            """)
+    int recordReapFailure(@Param("uploadId") UUID uploadId, @Param("nextReapAt") Instant nextReapAt);
 
     /**
      * Sessions this account has open and still writable. Expired ones are excluded

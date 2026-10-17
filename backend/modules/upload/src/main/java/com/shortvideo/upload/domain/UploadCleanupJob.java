@@ -41,6 +41,11 @@ class UploadCleanupJob {
      */
     static final java.time.Duration REAP_AFTER = UploadSessionEntity.COMPLETION_GRACE.plus(java.time.Duration.ofMinutes(2));
 
+    // A retry sooner than the sweep interval (15m by default) would only be picked up by the
+    // next sweep anyway, so the base is two intervals.
+    private static final java.time.Duration BASE_BACKOFF = java.time.Duration.ofMinutes(30);
+    private static final java.time.Duration MAX_BACKOFF = java.time.Duration.ofHours(6);
+
     private final UploadJpaRepository repository;
     private final MinioClient minioClient;
     private final VideoDraftRegistrar videoDraftRegistrar;
@@ -77,22 +82,27 @@ class UploadCleanupJob {
         // Past expiry plus the completion grace, so a slow upload that started in time is
         // not reaped while it is still arriving or about to be completed.
         // Bounded in the query, not after it: a backlog must never be loaded whole.
-        List<UploadSessionEntity> due = repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(
-                UploadStatus.PENDING, Instant.now().minus(REAP_AFTER), PageRequest.of(0, SWEEP_LIMIT));
+        Instant now = Instant.now();
+        List<UploadSessionEntity> due = repository.findReapable(
+                UploadStatus.PENDING, now.minus(REAP_AFTER), now, PageRequest.of(0, SWEEP_LIMIT));
         int reaped = 0;
         int failed = 0;
         for (UploadSessionEntity session : due) {
             // One bad session must not abort the rest of the batch; it stays PENDING-and-expired
-            // and the next sweep retries it.
+            // and is retried once its backoff has passed.
             try {
                 switch (reapOne(session)) {
                     case REAPED -> reaped++;
-                    case FAILED -> failed++;
+                    case FAILED -> {
+                        failed++;
+                        recordFailure(session, now);
+                    }
                     case SKIPPED -> { }
                 }
             } catch (RuntimeException e) {
                 failed++;
                 log.warn("Failed to reap expired upload session {}: {}", session.getUploadId(), e.getMessage());
+                recordFailure(session, now);
             }
         }
         reapedCounter.increment(reaped);
@@ -101,10 +111,33 @@ class UploadCleanupJob {
             log.info("Upload cleanup reaped {} expired session{}", reaped, reaped == 1 ? "" : "s");
         }
         if (reaped == 0 && failed == due.size() && due.size() == SWEEP_LIMIT) {
-            // The query takes the oldest first, so a full batch that all failed means newer
-            // sessions are not being reached at all.
+            // Failed sessions back off, so this means a whole batch of different sessions failed
+            // at once, typically the object store being down, rather than a few bad ones.
             log.error("Upload cleanup made no progress on a full batch of {} expired sessions", SWEEP_LIMIT);
         }
+    }
+
+    /**
+     * Pushes a failed session's next try out, doubling per failure up to {@link #MAX_BACKOFF}, so
+     * it stops occupying the head of the oldest-first sweep. It is retried indefinitely: a
+     * session stuck for days costs one attempt per {@code MAX_BACKOFF} and clears itself once the
+     * cause does, while the failed counter keeps rising for an alert to catch. Never throws; a
+     * failure to record just means the session is tried again next sweep.
+     */
+    private void recordFailure(UploadSessionEntity session, Instant now) {
+        try {
+            Instant next = now.plus(backoff(session.getReapAttempts() + 1));
+            transaction.execute(status -> repository.recordReapFailure(session.getUploadId(), next));
+        } catch (RuntimeException e) {
+            log.warn("Could not record reap failure for upload session {}: {}", session.getUploadId(), e.getMessage());
+        }
+    }
+
+    /** Delay before retry number {@code attempt} (1-based): base, 2x, 4x, ... capped. */
+    static java.time.Duration backoff(int attempt) {
+        // The shift is bounded so a large attempt count cannot overflow before the cap applies.
+        java.time.Duration delay = BASE_BACKOFF.multipliedBy(1L << Math.min(Math.max(attempt - 1, 0), 10));
+        return delay.compareTo(MAX_BACKOFF) > 0 ? MAX_BACKOFF : delay;
     }
 
     /**

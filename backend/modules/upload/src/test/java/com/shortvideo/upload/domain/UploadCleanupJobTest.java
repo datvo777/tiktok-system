@@ -27,7 +27,7 @@ class UploadCleanupJobTest {
     @Test
     void sessionsAreNotReapedUntilTheCompletionGraceHasPassedAfterExpiry() {
         UploadJpaRepository repository = mock(UploadJpaRepository.class);
-        when(repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(any(), any(), any(Pageable.class)))
+        when(repository.findReapable(any(), any(), any(), any(Pageable.class)))
                 .thenReturn(List.of());
         UploadCleanupJob job = new UploadCleanupJob(
                 repository, mock(MinioClient.class), mock(VideoDraftRegistrar.class), mock(TransactionTemplate.class), "bucket", new SimpleMeterRegistry());
@@ -37,7 +37,7 @@ class UploadCleanupJobTest {
         Instant after = Instant.now();
 
         ArgumentCaptor<Instant> cutoff = ArgumentCaptor.forClass(Instant.class);
-        verify(repository).findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(any(), cutoff.capture(), any(Pageable.class));
+        verify(repository).findReapable(any(), cutoff.capture(), any(), any(Pageable.class));
         // A session that expired a minute ago is inside the grace and must not be selected.
         assertThat(cutoff.getValue())
                 .isBetween(
@@ -57,7 +57,7 @@ class UploadCleanupJobTest {
 
     private static UploadJpaRepository repositoryReturning(List<UploadSessionEntity> due) {
         UploadJpaRepository repository = mock(UploadJpaRepository.class);
-        when(repository.findByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(any(), any(), any(Pageable.class)))
+        when(repository.findReapable(any(), any(), any(), any(Pageable.class)))
                 .thenReturn(due);
         due.forEach(session -> when(repository.findById(session.getUploadId())).thenReturn(Optional.of(session)));
         return repository;
@@ -145,5 +145,79 @@ class UploadCleanupJobTest {
 
         assertThat(meters.get("upload.cleanup.reaped").counter().count()).isEqualTo(1.0);
         assertThat(meters.get("upload.cleanup.failed").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void aSessionThatFailsToReapIsBackedOffSoItStopsHoldingTheHeadOfTheQueue() throws Exception {
+        UploadSessionEntity stuck = session("uploads/stuck");
+        when(stuck.getReapAttempts()).thenReturn(2);
+        UploadJpaRepository repository = repositoryReturning(List.of(stuck));
+        MinioClient minio = mock(MinioClient.class);
+        doThrow(new IllegalStateException("minio down")).when(minio).removeObject(any());
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, minio, mock(VideoDraftRegistrar.class), new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket", new SimpleMeterRegistry());
+
+        Instant before = Instant.now();
+        job.sweep();
+        Instant after = Instant.now();
+
+        // Third failure: the delay is 30m * 2^2.
+        ArgumentCaptor<Instant> next = ArgumentCaptor.forClass(Instant.class);
+        verify(repository).recordReapFailure(org.mockito.ArgumentMatchers.eq(stuck.getUploadId()), next.capture());
+        assertThat(next.getValue())
+                .isBetween(before.plus(UploadCleanupJob.backoff(3)), after.plus(UploadCleanupJob.backoff(3)));
+    }
+
+    @Test
+    void aFailureInTheDatabaseStepIsBackedOffToo() {
+        UploadSessionEntity broken = session("uploads/broken");
+        UploadJpaRepository repository = repositoryReturning(List.of(broken));
+        VideoDraftRegistrar registrar = mock(VideoDraftRegistrar.class);
+        String brokenVideoId = broken.getVideoId().toString();
+        doThrow(new IllegalStateException("db down")).when(registrar).expireDraft(brokenVideoId);
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, mock(MinioClient.class), registrar, new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket", new SimpleMeterRegistry());
+
+        job.sweep();
+
+        verify(repository).recordReapFailure(org.mockito.ArgumentMatchers.eq(broken.getUploadId()), any());
+    }
+
+    @Test
+    void reapedAndSkippedSessionsAreNotBackedOff() {
+        UploadSessionEntity healthy = session("uploads/healthy");
+        UploadJpaRepository repository = repositoryReturning(List.of(healthy));
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, mock(MinioClient.class), mock(VideoDraftRegistrar.class), new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket", new SimpleMeterRegistry());
+
+        job.sweep();
+
+        verify(repository, never()).recordReapFailure(any(), any());
+    }
+
+    @Test
+    void aFailureRecordingErrorDoesNotAbortTheRestOfTheBatch() throws Exception {
+        UploadSessionEntity stuck = session("uploads/stuck");
+        UploadSessionEntity healthy = session("uploads/healthy");
+        UploadJpaRepository repository = repositoryReturning(List.of(stuck, healthy));
+        when(repository.recordReapFailure(any(), any())).thenThrow(new IllegalStateException("db down"));
+        MinioClient minio = mock(MinioClient.class);
+        doThrow(new IllegalStateException("minio down")).when(minio).removeObject(argThat(args -> "uploads/stuck".equals(args.object())));
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, minio, mock(VideoDraftRegistrar.class), new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket", new SimpleMeterRegistry());
+
+        job.sweep();
+
+        verify(repository).delete(healthy);
+    }
+
+    @Test
+    void theBackoffDoublesFromThirtyMinutesAndStopsAtSixHours() {
+        assertThat(UploadCleanupJob.backoff(1)).isEqualTo(java.time.Duration.ofMinutes(30));
+        assertThat(UploadCleanupJob.backoff(2)).isEqualTo(java.time.Duration.ofHours(1));
+        assertThat(UploadCleanupJob.backoff(3)).isEqualTo(java.time.Duration.ofHours(2));
+        assertThat(UploadCleanupJob.backoff(4)).isEqualTo(java.time.Duration.ofHours(4));
+        assertThat(UploadCleanupJob.backoff(5)).isEqualTo(java.time.Duration.ofHours(6));
+        assertThat(UploadCleanupJob.backoff(1_000)).isEqualTo(java.time.Duration.ofHours(6));
     }
 }

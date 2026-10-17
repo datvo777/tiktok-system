@@ -61,6 +61,16 @@ public class UploadSessionEntity {
     private Instant updatedAt;
 
     /**
+     * Cleanup retry state, written only by {@link UploadJpaRepository#recordReapFailure} so a
+     * stale entity save can never overwrite it; hence read-only here.
+     */
+    @Column(name = "reap_attempts", nullable = false, insertable = false, updatable = false)
+    private int reapAttempts;
+
+    @Column(name = "next_reap_at", insertable = false, updatable = false)
+    private Instant nextReapAt;
+
+    /**
      * The presigned policy's expiry is checked when the store starts receiving the form,
      * not when the last byte arrives, so a large upload begun just before it can finish
      * well after it. Completing, and reaping, therefore both wait this long past
@@ -123,4 +133,6 @@ public class UploadSessionEntity {
     public long getAggregateVersion() { return aggregateVersion; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public int getReapAttempts() { return reapAttempts; }
+    public Instant getNextReapAt() { return nextReapAt; }
 }
