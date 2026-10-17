@@ -59,7 +59,7 @@ class UploadCleanupJobTest {
         UploadJpaRepository repository = mock(UploadJpaRepository.class);
         when(repository.findReapable(any(), any(), any(), any(Pageable.class)))
                 .thenReturn(due);
-        due.forEach(session -> when(repository.findById(session.getUploadId())).thenReturn(Optional.of(session)));
+        due.forEach(session -> when(repository.findForReap(session.getUploadId())).thenReturn(Optional.of(session)));
         return repository;
     }
 
@@ -106,7 +106,7 @@ class UploadCleanupJobTest {
         UploadJpaRepository repository = repositoryReturning(List.of(listed));
         UploadSessionEntity completedMeanwhile = mock(UploadSessionEntity.class);
         when(completedMeanwhile.getStatus()).thenReturn(UploadStatus.COMPLETED);
-        when(repository.findById(listed.getUploadId())).thenReturn(Optional.of(completedMeanwhile));
+        when(repository.findForReap(listed.getUploadId())).thenReturn(Optional.of(completedMeanwhile));
         VideoDraftRegistrar registrar = mock(VideoDraftRegistrar.class);
         UploadCleanupJob job = new UploadCleanupJob(
                 repository,
@@ -129,7 +129,7 @@ class UploadCleanupJobTest {
         UploadJpaRepository repository = repositoryReturning(List.of(healthy, stuck, raced));
         UploadSessionEntity completedMeanwhile = mock(UploadSessionEntity.class);
         when(completedMeanwhile.getStatus()).thenReturn(UploadStatus.COMPLETED);
-        when(repository.findById(raced.getUploadId())).thenReturn(Optional.of(completedMeanwhile));
+        when(repository.findForReap(raced.getUploadId())).thenReturn(Optional.of(completedMeanwhile));
         MinioClient minio = mock(MinioClient.class);
         doThrow(new IllegalStateException("minio down")).when(minio).removeObject(argThat(args -> "uploads/stuck".equals(args.object())));
         SimpleMeterRegistry meters = new SimpleMeterRegistry();
@@ -219,5 +219,78 @@ class UploadCleanupJobTest {
         assertThat(UploadCleanupJob.backoff(4)).isEqualTo(java.time.Duration.ofHours(4));
         assertThat(UploadCleanupJob.backoff(5)).isEqualTo(java.time.Duration.ofHours(6));
         assertThat(UploadCleanupJob.backoff(1_000)).isEqualTo(java.time.Duration.ofHours(6));
+    }
+
+    @Test
+    void theSweepStopsAfterConsecutiveFailuresInsteadOfWaitingOutEverySession() throws Exception {
+        List<UploadSessionEntity> due = new java.util.ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            due.add(session("uploads/s" + i));
+        }
+        UploadJpaRepository repository = repositoryReturning(due);
+        MinioClient minio = mock(MinioClient.class);
+        doThrow(new IllegalStateException("minio down")).when(minio).removeObject(any());
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, minio, mock(VideoDraftRegistrar.class), new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket", meters);
+
+        job.sweep();
+
+        // The rest stay untouched (and so untried) for the next sweep.
+        verify(minio, org.mockito.Mockito.times(5)).removeObject(any());
+        assertThat(meters.get("upload.cleanup.failed").counter().count()).isEqualTo(5.0);
+    }
+
+    @Test
+    void aSuccessBetweenFailuresResetsTheConsecutiveFailureCount() throws Exception {
+        List<UploadSessionEntity> due = new java.util.ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            due.add(session("uploads/s" + i));
+        }
+        UploadJpaRepository repository = repositoryReturning(due);
+        MinioClient minio = mock(MinioClient.class);
+        // Every third object fails: never five in a row.
+        for (int i = 0; i < 12; i += 3) {
+            String key = "uploads/s" + i;
+            doThrow(new IllegalStateException("flaky")).when(minio).removeObject(argThat(args -> key.equals(args.object())));
+        }
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, minio, mock(VideoDraftRegistrar.class), new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket", new SimpleMeterRegistry());
+
+        job.sweep();
+
+        verify(minio, org.mockito.Mockito.times(12)).removeObject(any());
+    }
+
+    @Test
+    void theSweepStopsOnceItsTimeBudgetIsSpent() throws Exception {
+        List<UploadSessionEntity> due = List.of(session("uploads/a"), session("uploads/b"));
+        UploadJpaRepository repository = repositoryReturning(due);
+        MinioClient minio = mock(MinioClient.class);
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, minio, mock(VideoDraftRegistrar.class), new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket",
+                new SimpleMeterRegistry(), java.time.Duration.ZERO);
+
+        job.sweep();
+
+        verify(minio, never()).removeObject(any());
+    }
+
+    @Test
+    void aSessionWhoseRowIsLockedByACompletionIsSkippedNotCountedAsAFailure() {
+        UploadSessionEntity listed = session("uploads/completing");
+        UploadJpaRepository repository = repositoryReturning(List.of(listed));
+        // The completion holds the row lock, so the skip-locked read comes back empty.
+        when(repository.findForReap(listed.getUploadId())).thenReturn(Optional.empty());
+        VideoDraftRegistrar registrar = mock(VideoDraftRegistrar.class);
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        UploadCleanupJob job = new UploadCleanupJob(
+                repository, mock(MinioClient.class), registrar, new TransactionTemplate(mock(PlatformTransactionManager.class)), "bucket", meters);
+
+        job.sweep();
+
+        verify(registrar, never()).expireDraft(any());
+        verify(repository, never()).delete(any());
+        assertThat(meters.get("upload.cleanup.failed").counter().count()).isZero();
     }
 }

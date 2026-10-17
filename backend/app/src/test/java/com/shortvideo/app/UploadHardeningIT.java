@@ -185,6 +185,93 @@ class UploadHardeningIT {
         assertThat(heldIntoTheFuture).isTrue();
     }
 
+    /** An open session already past expiry plus the reaper's grace, so the next sweep may reap it. */
+    private String reapableSession() {
+        String uploadId = (String) create(null).getBody().get("uploadId");
+        jdbc.update("UPDATE upload.upload_session SET expires_at = now() - interval '2 hours' WHERE upload_id = ?::uuid", uploadId);
+        return uploadId;
+    }
+
+    /**
+     * Expires the scheduler lock a previous sweep left behind (lockAtLeastFor), which would
+     * otherwise make the next sweep a silent no-op. Updated rather than deleted: ShedLock
+     * remembers the row exists and would only ever UPDATE it, matching nothing.
+     */
+    private void expireSchedulerLock() {
+        jdbc.update("UPDATE upload.shedlock SET lock_until = (now() AT TIME ZONE 'UTC') - interval '1 hour'");
+    }
+
+    private void invokeCleanupSweep() {
+        Object job = context.getBean("uploadCleanupJob");
+        var sweep = ReflectionUtils.findMethod(job.getClass(), "sweep");
+        ReflectionUtils.makeAccessible(sweep);
+        ReflectionUtils.invokeMethod(sweep, job);
+    }
+
+    private void runCleanupSweep() {
+        expireSchedulerLock();
+        invokeCleanupSweep();
+    }
+
+    private boolean sessionExists(String uploadId) {
+        return jdbc.queryForObject("SELECT count(*) FROM upload.upload_session WHERE upload_id = ?::uuid", Integer.class, uploadId) == 1;
+    }
+
+    @Test
+    void aSessionThatFailedToReapIsSkippedUntilItsBackoffHasPassed() throws Exception {
+        String uploadId = reapableSession();
+        Class<?> repositoryType = Class.forName("com.shortvideo.upload.domain.UploadJpaRepository");
+        Object repository = context.getBean(repositoryType);
+        var record = ReflectionUtils.findMethod(repositoryType, "recordReapFailure", UUID.class, java.time.Instant.class);
+        ReflectionUtils.makeAccessible(record);
+        new TransactionTemplate(transactionManager).execute(status ->
+                ReflectionUtils.invokeMethod(record, repository, UUID.fromString(uploadId), java.time.Instant.now().plusSeconds(3600)));
+        assertThat(jdbc.queryForObject("SELECT reap_attempts FROM upload.upload_session WHERE upload_id = ?::uuid", Integer.class, uploadId))
+                .isEqualTo(1);
+
+        runCleanupSweep();
+        assertThat(sessionExists(uploadId)).as("hidden while backing off").isTrue();
+
+        jdbc.update("UPDATE upload.upload_session SET next_reap_at = now() - interval '1 minute' WHERE upload_id = ?::uuid", uploadId);
+        runCleanupSweep();
+        assertThat(sessionExists(uploadId)).as("reaped once the backoff has passed").isFalse();
+    }
+
+    @Test
+    void aSessionBeingCompletedIsLeftForALaterSweepInsteadOfWaitedOn() throws Exception {
+        String uploadId = reapableSession();
+        expireSchedulerLock();
+
+        // Stands in for a completion in flight: another thread holds the session's row lock. It
+        // must be another thread, or the sweep would join its transaction and not be blocked.
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService holder = Executors.newSingleThreadExecutor();
+        Future<?> held = holder.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            jdbc.queryForList("SELECT 1 FROM upload.upload_session WHERE upload_id = ?::uuid FOR UPDATE", uploadId);
+            locked.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        assertThat(locked.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        long start = System.nanoTime();
+        invokeCleanupSweep();
+        long tookMillis = (System.nanoTime() - start) / 1_000_000;
+        release.countDown();
+        held.get();
+        holder.shutdown();
+
+        assertThat(sessionExists(uploadId)).as("not reaped from under the lock holder").isTrue();
+        assertThat(tookMillis).as("skipped, not waited on").isLessThan(4_000);
+
+        runCleanupSweep();
+        assertThat(sessionExists(uploadId)).as("reaped once nothing holds the lock").isFalse();
+    }
+
     @Test
     void theDeclaredSizeBecomesTheCapTheSessionIsIssuedWith() {
         ResponseEntity<Map> created = create(null, SMALL_FILE);

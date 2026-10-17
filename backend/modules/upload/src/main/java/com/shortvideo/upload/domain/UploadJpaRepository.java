@@ -1,6 +1,7 @@
 package com.shortvideo.upload.domain;
 
 import jakarta.persistence.LockModeType;
+import jakarta.persistence.QueryHint;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -10,6 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
 
 /** Package-private by convention: only the upload module uses it. */
@@ -67,6 +69,16 @@ interface UploadJpaRepository extends JpaRepository<UploadSessionEntity, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM UploadSessionEntity s WHERE s.uploadId = :uploadId")
     Optional<UploadSessionEntity> findForUpdate(@Param("uploadId") UUID uploadId);
+
+    /**
+     * Takes the row lock like {@link #findForUpdate}, but skips a row already locked instead of
+     * waiting: a locked session has a completion in flight, so the reaper leaves it alone and a
+     * later sweep decides. Empty means gone or locked.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "-2"))
+    @Query("SELECT s FROM UploadSessionEntity s WHERE s.uploadId = :uploadId")
+    Optional<UploadSessionEntity> findForReap(@Param("uploadId") UUID uploadId);
 
     /** Reconciliation scan: completed sessions in a time window, paged by id. */
     @Query("""

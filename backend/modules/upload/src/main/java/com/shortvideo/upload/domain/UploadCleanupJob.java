@@ -10,6 +10,7 @@ import java.util.List;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -34,6 +35,20 @@ class UploadCleanupJob {
     private static final int SWEEP_LIMIT = 200;
 
     /**
+     * Wall-clock cap on one sweep, under the 10 minute lock so the lock cannot expire while the
+     * sweep is still deleting (another instance would then start the same batch). One object
+     * call can take 30s when the store hangs, so 200 sequential ones could run for over an hour.
+     */
+    private static final java.time.Duration SWEEP_BUDGET = java.time.Duration.ofMinutes(7);
+
+    /**
+     * Consecutive failures after which the sweep stops: the object store is most likely down, and
+     * trying the other sessions would only wait out a timeout on each. Sessions not reached stay
+     * due and are picked up by the next sweep.
+     */
+    private static final int MAX_CONSECUTIVE_FAILURES = 5;
+
+    /**
      * How long past expiry plus the completion grace a session must be before it is reaped. A
      * completion accepted just inside the grace can still be copying for a minute or so (the
      * object-store timeouts are 30s per call), and the reaper must not delete the object out
@@ -53,7 +68,9 @@ class UploadCleanupJob {
     private final String bucket;
     private final Counter reapedCounter;
     private final Counter failedCounter;
+    private final java.time.Duration sweepBudget;
 
+    @Autowired
     UploadCleanupJob(
             UploadJpaRepository repository,
             MinioClient minioClient,
@@ -61,6 +78,18 @@ class UploadCleanupJob {
             TransactionTemplate transaction,
             @Value("${shortvideo.minio.bucket}") String bucket,
             MeterRegistry meters) {
+        this(repository, minioClient, videoDraftRegistrar, transaction, bucket, meters, SWEEP_BUDGET);
+    }
+
+    UploadCleanupJob(
+            UploadJpaRepository repository,
+            MinioClient minioClient,
+            VideoDraftRegistrar videoDraftRegistrar,
+            TransactionTemplate transaction,
+            String bucket,
+            MeterRegistry meters,
+            java.time.Duration sweepBudget) {
+        this.sweepBudget = sweepBudget;
         this.repository = repository;
         this.minioClient = minioClient;
         this.videoDraftRegistrar = videoDraftRegistrar;
@@ -87,33 +116,43 @@ class UploadCleanupJob {
                 UploadStatus.PENDING, now.minus(REAP_AFTER), now, PageRequest.of(0, SWEEP_LIMIT));
         int reaped = 0;
         int failed = 0;
+        int consecutiveFailures = 0;
+        long deadline = System.nanoTime() + sweepBudget.toNanos();
         for (UploadSessionEntity session : due) {
+            if (System.nanoTime() - deadline > 0) {
+                log.warn("Upload cleanup ran out of its {} budget with sessions left; the next sweep continues", sweepBudget);
+                break;
+            }
             // One bad session must not abort the rest of the batch; it stays PENDING-and-expired
             // and is retried once its backoff has passed.
+            boolean ok = true;
             try {
                 switch (reapOne(session)) {
                     case REAPED -> reaped++;
                     case FAILED -> {
                         failed++;
+                        ok = false;
                         recordFailure(session, now);
                     }
                     case SKIPPED -> { }
                 }
             } catch (RuntimeException e) {
                 failed++;
+                ok = false;
                 log.warn("Failed to reap expired upload session {}: {}", session.getUploadId(), e.getMessage());
                 recordFailure(session, now);
+            }
+            consecutiveFailures = ok ? 0 : consecutiveFailures + 1;
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                log.error("Upload cleanup stopped after {} consecutive failures; the object store may be down",
+                        consecutiveFailures);
+                break;
             }
         }
         reapedCounter.increment(reaped);
         failedCounter.increment(failed);
         if (reaped > 0) {
             log.info("Upload cleanup reaped {} expired session{}", reaped, reaped == 1 ? "" : "s");
-        }
-        if (reaped == 0 && failed == due.size() && due.size() == SWEEP_LIMIT) {
-            // Failed sessions back off, so this means a whole batch of different sessions failed
-            // at once, typically the object store being down, rather than a few bad ones.
-            log.error("Upload cleanup made no progress on a full batch of {} expired sessions", SWEEP_LIMIT);
         }
     }
 
@@ -150,7 +189,7 @@ class UploadCleanupJob {
      * gone is safe: removing an absent object succeeds on the retry.
      *
      * @return what happened; {@link Outcome#SKIPPED} is not a failure, it means the session
-     *     was completed or already removed while this ran
+     *     was completed, being completed, or already removed while this ran
      */
     Outcome reapOne(UploadSessionEntity session) {
         String objectKey = session.getObjectKey();
@@ -160,10 +199,11 @@ class UploadCleanupJob {
             log.warn("Failed to remove expired upload object {}: {}", objectKey, e.getMessage());
             return Outcome.FAILED;
         }
-        // The row was read before the MinIO call, so re-read it: a completion that landed in
-        // the meantime made it COMPLETED, and that upload must keep its draft and its row.
+        // The row was read before the MinIO call, so re-read it under its lock: a completion that
+        // landed in the meantime made it COMPLETED, and one still in flight holds the lock (the row
+        // comes back empty); either way that upload must keep its draft and its row.
         Outcome outcome = transaction.execute(status -> {
-            UploadSessionEntity current = repository.findById(session.getUploadId()).orElse(null);
+            UploadSessionEntity current = repository.findForReap(session.getUploadId()).orElse(null);
             if (current == null || current.getStatus() != UploadStatus.PENDING) {
                 return Outcome.SKIPPED;
             }
