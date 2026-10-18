@@ -22,9 +22,11 @@ public interface ModerationScreener {
      * id: an implementation that has to go and fetch its own inputs is one that
      * cannot be unit-tested without a database.
      *
-     * @param title nullable — a video may have no metadata row yet.
-     * @param approvedVideos how many of this creator's videos a human has
-     *     approved.
+     * @param title nullable — the creator may not have supplied one. A video with no
+     *     metadata row at all never reaches the screener; the caller refers it.
+     * @param approvedVideos how many of this creator's videos are APPROVED. This
+     *     includes ones the system approved itself, which is safe only because
+     *     the first approvals necessarily came from people.
      * @param rejectedVideos how many a human has rejected.
      */
     record ScreeningSubject(

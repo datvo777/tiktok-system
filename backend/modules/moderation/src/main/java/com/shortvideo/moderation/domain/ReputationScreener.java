@@ -34,12 +34,16 @@ import org.springframework.stereotype.Component;
 class ReputationScreener implements ModerationScreener {
 
     /**
-     * How many human approvals a creator needs before their uploads stop going to
+     * How many approvals a creator needs before their uploads stop going to
      * the queue by default.
      *
      * <p>Five is a judgement call, not a measurement. It is high enough that
      * registering an account and immediately posting does not buy a bypass, and
      * low enough that a genuine creator stops waiting after their first week.
+     *
+     * <p>The count includes videos the system approved, not just ones a person did.
+     * That cannot open the gate on its own: nothing is auto-approved until the
+     * threshold is reached, so the first {@code N} approvals are all human.
      */
     private final int trustedAfterApprovals;
 

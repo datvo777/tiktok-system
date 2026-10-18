@@ -2,7 +2,6 @@ package com.shortvideo.moderation.domain;
 
 import com.shortvideo.moderation.api.ModerationDecisionView;
 import com.shortvideo.eligibility.api.EligibilityDirectory;
-import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.moderation.api.ModerationBackfill;
 import com.shortvideo.moderation.api.ModerationDirectory;
 import com.shortvideo.moderation.api.PolicyCategory;
@@ -120,11 +119,20 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
         ScreeningVerdict verdict;
         try {
             var metadata = eligibilityDirectory.findVideoEligibility(videoId);
+            if (metadata.isEmpty()) {
+                // The title and description arrive through a different consumer than the
+                // upload event that got us here, with no ordering between the two. Screening
+                // without them would leave creator standing as the only signal and skip the
+                // text checks entirely, so an unknown video is referred (Rule 9). The
+                // record stays PENDING, which is what a referral is.
+                log.warn("No metadata for {} yet; referring to a human instead of screening", videoId);
+                return;
+            }
             verdict = screener.screen(new ModerationScreener.ScreeningSubject(
                     videoId,
                     creatorId,
-                    metadata.map(VideoEligibilityView::title).orElse(null),
-                    metadata.map(VideoEligibilityView::description).orElse(null),
+                    metadata.get().title(),
+                    metadata.get().description(),
                     repository.countByCreatorIdAndState(creator, ModerationState.APPROVED),
                     repository.countByCreatorIdAndState(creator, ModerationState.REJECTED)));
         } catch (RuntimeException e) {
