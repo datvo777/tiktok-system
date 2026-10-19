@@ -29,7 +29,7 @@ export function Operate() {
   const capped = Boolean(queue.data?.nextCursor);
   const now = Date.now();
 
-  const ages = items.map((i) => now - new Date(i.createdAt).getTime()).filter((ms) => Number.isFinite(ms) && ms >= 0);
+  const ages = items.map((i) => now - new Date(i.queuedAt).getTime()).filter((ms) => Number.isFinite(ms) && ms >= 0);
   const oldest = items[0];
   const overAnHour = ages.filter((ms) => ms > 60 * 60_000).length;
 
@@ -67,8 +67,8 @@ export function Operate() {
 
             <div className="statcard">
               <span className="k">Oldest waiting</span>
-              <span className={`v${oldest && now - new Date(oldest.createdAt).getTime() > 3600000 ? ' is-crit' : ' is-ok'}`}>
-                {oldest ? ageSince(oldest.createdAt) : '—'}
+              <span className={`v${oldest && now - new Date(oldest.queuedAt).getTime() > 3600000 ? ' is-crit' : ' is-ok'}`}>
+                {oldest ? ageSince(oldest.queuedAt) : '—'}
               </span>
               <span className="w">The queue is strict FIFO, so this is the true worst case.</span>
             </div>

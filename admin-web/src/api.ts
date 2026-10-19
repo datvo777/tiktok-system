@@ -22,6 +22,9 @@ const pendingVideoSchema = s.object({
   creatorId: s.string,
   state: s.string,
   createdAt: s.string,
+  /** When it began waiting for a reviewer; the queue is ordered by this, not by upload time. */
+  queuedAt: s.string,
+  queueReason: s.string,
 });
 export type PendingVideo = Infer<typeof pendingVideoSchema>;
 
@@ -30,6 +33,14 @@ const pendingPageSchema = s.object({
   nextCursor: s.nullable(s.string),
 });
 export type PendingVideoPage = Infer<typeof pendingPageSchema>;
+
+/** Why a video reached the queue, as a reviewer should read it. */
+export const QUEUE_REASON_LABEL: Record<string, string> = {
+  UPLOAD: 'New upload',
+  RISK: 'Flagged on upload',
+  UNSCREENED: 'Could not be screened',
+  PUBLISH_REQUESTED: 'Owner asked to publish',
+};
 
 /**
  * The password was right and a code is still needed. No session exists yet: the token is good for nothing but

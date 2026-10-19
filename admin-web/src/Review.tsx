@@ -1,6 +1,14 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { approve, getVideoDetail, listPending, listPendingAppeals, reject, type PendingVideo } from './api';
+import {
+  approve,
+  getVideoDetail,
+  listPending,
+  listPendingAppeals,
+  QUEUE_REASON_LABEL,
+  reject,
+  type PendingVideo,
+} from './api';
 import { AppealsQueue } from './Appeals';
 import { ageSince, EntityId, ModeratorPlayer, StateChip, useToast } from './ui';
 
@@ -312,8 +320,8 @@ function ModerationQueue() {
             )}
           </div>
           <div className="qstats">
-            <div className={`qstat${oldest && Date.now() - new Date(oldest.createdAt).getTime() > 3600000 ? ' is-warn' : ''}`}>
-              Oldest<b>{oldest ? ageSince(oldest.createdAt) : '—'}</b>
+            <div className={`qstat${oldest && Date.now() - new Date(oldest.queuedAt).getTime() > 3600000 ? ' is-warn' : ''}`}>
+              Oldest<b>{oldest ? ageSince(oldest.queuedAt) : '—'}</b>
             </div>
             <div className="qstat">
               Waiting<b>{live.length}{queue.data?.nextCursor ? '+' : ''}</b>
@@ -373,8 +381,14 @@ function ModerationQueue() {
               </div>
               <div className="ctx">
                 <span className="k">Waiting</span>
-                <span className={`v${Date.now() - new Date(current.createdAt).getTime() > 3600000 ? ' is-warn' : ''}`}>
-                  {ageSince(current.createdAt)}
+                <span className={`v${Date.now() - new Date(current.queuedAt).getTime() > 3600000 ? ' is-warn' : ''}`}>
+                  {ageSince(current.queuedAt)}
+                </span>
+              </div>
+              <div className="ctx">
+                <span className="k">Queued because</span>
+                <span className={`v${current.queueReason === 'RISK' ? ' is-warn' : ''}`}>
+                  {QUEUE_REASON_LABEL[current.queueReason] ?? current.queueReason}
                 </span>
               </div>
               <div className="ctx">
