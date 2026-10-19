@@ -72,6 +72,69 @@ class ReputationScreenerTest {
                 .isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
     }
 
+    /** The English list was the only list, so a Vietnamese caption never matched anything. */
+    @Test
+    void vietnameseTermsAreReviewedHoweverTrustedTheCreator() {
+        for (String title : new String[] {
+            "tôi muốn tự tử",
+            "TỰ SÁT",
+            "giết hết mọi người",
+            "bán súng giá rẻ",
+            "đặt mua ma túy",
+            "nữ sinh khiêu dâm"
+        }) {
+            assertThat(screener.screen(upload(title, 9999, 0)))
+                    .as("should always review: %s", title)
+                    .isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
+        }
+    }
+
+    /** Typed without accents, as plenty of people do; only terms that stay unambiguous without them. */
+    @Test
+    void unambiguousVietnameseTermsAreCaughtWithoutAccents() {
+        for (String title : new String[] {"toi muon tu sat", "giet het moi nguoi", "ma tuy da", "thuoc lac"}) {
+            assertThat(screener.screen(upload(title, 9999, 0)))
+                    .as("should always review: %s", title)
+                    .isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
+        }
+    }
+
+    /** Stripping accents turns "từ từ" into "tu tu" and "bạn" into "ban"; ordinary captions must not pay for that. */
+    @Test
+    void everydayVietnameseIsNotMistakenForARiskyTerm() {
+        for (String title : new String[] {"đi từ từ thôi", "chúc bạn một ngày vui", "mua sắm cuối tuần", "bạn sung sướng"}) {
+            assertThat(screener.screen(upload(title, 9999, 0)))
+                    .as("should not be flagged: %s", title)
+                    .isEqualTo(ScreeningVerdict.AUTO_APPROVE);
+        }
+    }
+
+    @Test
+    void aKeywordSpelledToDodgeTheFilterIsStillCaught() {
+        for (String title : new String[] {
+            "k1ll everyone",
+            "$uicide compilation",
+            "s.u.i.c.i.d.e",
+            "s u i c i d e",
+            "suiсide", // the "с" is Cyrillic
+            "ｓｕｉｃｉｄｅ" // fullwidth
+        }) {
+            assertThat(screener.screen(upload(title, 9999, 0)))
+                    .as("should always review: %s", title)
+                    .isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
+        }
+    }
+
+    /** Folding is for finding terms only; it must not turn plain captions into matches. */
+    @Test
+    void ordinaryTextWithDigitsAndInitialsIsLeftAlone() {
+        for (String title : new String[] {"my 5am routine", "top 10 views of 2024", "meet at U.S.A. border", "a b c"}) {
+            assertThat(screener.screen(upload(title, 9999, 0)))
+                    .as("should not be flagged: %s", title)
+                    .isEqualTo(ScreeningVerdict.AUTO_APPROVE);
+        }
+    }
+
     @Test
     void aCaptionFullOfLinksReadsAsPromotion() {
         ScreeningSubject spam = new ScreeningSubject(
