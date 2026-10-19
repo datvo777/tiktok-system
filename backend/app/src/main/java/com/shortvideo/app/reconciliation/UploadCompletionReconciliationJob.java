@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -85,6 +86,11 @@ public class UploadCompletionReconciliationJob {
     }
 
     @Scheduled(fixedDelayString = "${shortvideo.reconciliation.interval:5m}", initialDelayString = "45s")
+    // One instance sweeps at a time: the cursor is per instance and the steps are idempotent, so two
+    // sweeping would not corrupt anything, but they would collide on primary keys, count those as
+    // failed repairs, and raise alerts that mean nothing. lockAtLeastFor stops a quick sweep being
+    // followed at once by another instance's.
+    @SchedulerLock(name = "uploadCompletionReconciliation", lockAtMostFor = "PT10M", lockAtLeastFor = "PT1M")
     public void reconcile() {
         Instant now = Instant.now();
         List<CompletedUploadView> page =

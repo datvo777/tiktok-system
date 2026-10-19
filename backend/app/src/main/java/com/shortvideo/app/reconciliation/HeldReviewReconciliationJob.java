@@ -8,6 +8,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
 import java.util.Optional;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -56,6 +57,11 @@ public class HeldReviewReconciliationJob {
     }
 
     @Scheduled(fixedDelayString = "${shortvideo.reconciliation.interval:5m}", initialDelayString = "75s")
+    // One instance sweeps at a time: the cursor is per instance and the steps are idempotent, so two
+    // sweeping would not corrupt anything, but they would collide on primary keys, count those as
+    // failed repairs, and raise alerts that mean nothing. lockAtLeastFor stops a quick sweep being
+    // followed at once by another instance's.
+    @SchedulerLock(name = "heldReviewReconciliation", lockAtMostFor = "PT10M", lockAtLeastFor = "PT1M")
     public void reconcile() {
         List<String> held = moderationDirectory.findHeldPage(cursor, PAGE_SIZE);
         for (String videoId : held) {

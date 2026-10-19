@@ -365,12 +365,16 @@ class UploadHardeningIT {
         assertThat(downstreamRows(videoId)).isZero();
 
         jdbc.update("UPDATE upload.upload_session SET updated_at = now() - interval '10 minutes' WHERE upload_id = ?::uuid", uploadId);
+        // The sweep runs under a lock that outlasts a quick run (lockAtLeastFor); each call here stands
+        // for a later scheduled run, so the lock the previous one left behind is expired first.
+        expireSchedulerLock();
         job.reconcile();
 
         assertThat(videoState(videoId)).isEqualTo("TRANSCODING");
         assertThat(downstreamRows(videoId)).isEqualTo(2);
 
         // A second pass finds nothing to do: one transcode job, not two.
+        expireSchedulerLock();
         job.reconcile();
         Integer dispatched = jdbc.queryForObject(
                 "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = 'media.job.dispatched'",
