@@ -1,6 +1,6 @@
 # Short-Video Platform — Local macOS Implementation Brief
 
-Revision 3 (2026-08-23). See §27 for the change log against revisions 1 and 2.
+Revision 4 (2026-10-19). See §27 for the change log against revisions 1 and 2.
 
 ## 1. Goal
 
@@ -2307,6 +2307,25 @@ business logic.
 ---
 
 # 27. Change Log
+
+## Revision 4 — 2026-10-19
+
+Review effort is spent on videos that are risky or about to be published. No change to
+playback eligibility.
+
+1. **Intent-gated review queue** (§7.1, §13, §18). Moderation still consumes
+   `video.upload.completed` and creates a `PENDING` record for every upload, and playback is
+   still denied while it is `PENDING` (Rule 9). What changed is the human queue: it is the
+   `PENDING` records that have `queued_at` set, ordered by it. The screener has a third
+   verdict, `HOLD_UNTIL_PUBLISH`; with `queue-mode=INTENT_GATED` a held record is queued when
+   the owner asks to publish, signalled by the existing `video.publication.pending` event.
+   Risky or unscreened uploads are queued at once. `queue-mode=ALL` (default) keeps the old
+   behaviour.
+2. **Queueing is not a state change.** It updates `queued_at`/`queue_reason` directly, moves
+   no aggregate version and emits no event, so consumers of moderation events see nothing new.
+3. **Lost-event repair.** `HeldReviewReconciliationJob` queues held videos whose owner has
+   asked to publish, for the case where `video.publication.pending` was dead-lettered. It has
+   no lookback window, since the request can come at any time after upload.
 
 ## Revision 3 — 2026-08-23
 

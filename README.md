@@ -322,6 +322,38 @@ moderator looking at something unnecessarily. Turn it off entirely with
 `shortvideo.moderation.auto-approve-enabled=false`, which restores exactly the
 previous behaviour.
 
+### Who reviews what
+
+`PENDING` is not the same as "a person has to look at this". The screener returns
+one of three verdicts, and only the first two skip or advance the human queue:
+
+| Verdict | Meaning | What happens |
+| --- | --- | --- |
+| `AUTO_APPROVE` | Trusted creator, nothing flagged | Approved as `SYSTEM_ACTOR`; never queued |
+| `REFER_TO_HUMAN` | A signal pointed at the content (flagged text, links, a prior rejection) | Queued for review immediately (`RISK`) |
+| `HOLD_UNTIL_PUBLISH` | Nothing wrong, but no track record yet | Depends on `shortvideo.moderation.queue-mode` |
+
+`queue-mode` is `ALL` (the default, and exactly the behaviour before this existed:
+a held upload is queued straight away as `UPLOAD`) or `INTENT_GATED` (a held upload
+stays out of the queue until its owner asks to publish). In `INTENT_GATED` the owner's
+publish request reaches moderation through the `video.publication.pending` event
+Publication already emits; no new event or topic is involved.
+
+Anything uncertain is queued at once in either mode: the auto-approve switch off, no
+metadata yet, a screener that threw. Playback is denied while a record is `PENDING`
+whether it is queued or held (Rule 9), so holding can delay a publish but never
+allow one. Queueing changes no business state: it sets `queued_at` and `queue_reason`
+without touching the aggregate version or emitting an event.
+
+If `video.publication.pending` is dead-lettered, `HeldReviewReconciliationJob` queues
+the held video within a sweep (every `shortvideo.reconciliation.interval`, 5 minutes),
+so the owner's request is not lost. Switching back from `INTENT_GATED` to `ALL` does
+not queue records that are already held; they enter the queue when their owner asks
+to publish, or never if they do not.
+
+Metrics: `moderation.queue.entered{reason}`, `moderation.review.repaired`,
+`moderation.review.repair_failed`.
+
 ---
 
 ## Deploying the web client
