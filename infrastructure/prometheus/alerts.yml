@@ -67,6 +67,20 @@ groups:
           summary: Reconciliation repaired a completed upload that a consumer had missed
           description: Look for a DLT record or a consumer outage around the time of the repair log lines.
 
+      - alert: UploadCompletionRepairFailing
+        # A completed upload with no moderation record is invisible to admins and blocked from playback,
+        # so a repair that keeps failing leaves videos stuck with nothing else to show for it. The job
+        # only looks back upload-lookback (24h by default), so a long outage also ages them out of reach.
+        expr: increase(upload_completion_repair_failed_total[30m]) > 0 and increase(upload_completion_repaired_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: Completed uploads are missing moderation records and the reconciler cannot repair them
+          description: >-
+            The reconciliation job is failing and repairing nothing. Check its error logs and the database;
+            fix it within the upload-lookback window or the affected videos need a manual createPending.
+
       - alert: VideoTranscodeTimedOut
         # The transcode command or its result was lost, or a worker died without reporting.
         expr: increase(video_transcode_timed_out_total[30m]) > 0
