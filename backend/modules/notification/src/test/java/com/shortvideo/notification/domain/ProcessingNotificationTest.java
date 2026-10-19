@@ -19,6 +19,8 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** The uploader may have left the page, so processing outcomes also reach their inbox. */
 class ProcessingNotificationTest {
@@ -33,7 +35,8 @@ class ProcessingNotificationTest {
 
     @BeforeEach
     void setUp() {
-        listener = new ModerationNotificationListener(inbox, notifications, mapper);
+        listener = new ModerationNotificationListener(
+                inbox, notifications, mapper, new TransactionTemplate(mock(PlatformTransactionManager.class)));
         when(inbox.claim(anyString(), any())).thenReturn(true);
     }
 

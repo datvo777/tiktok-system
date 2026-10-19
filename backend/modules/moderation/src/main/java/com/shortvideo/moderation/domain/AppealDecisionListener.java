@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -56,7 +57,7 @@ class AppealDecisionListener {
                     return;
                 }
                 Map<String, Object> p = envelope.payload();
-                moderationService.reinstateFromAppeal((String) p.get("videoId"));
+                moderationService.reinstateFromAppeal(Payloads.required(p, "videoId"));
             });
         } catch (Exception e) {
             log.warn("Failed to apply video.appeal.approved; will retry on redelivery", e);

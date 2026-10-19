@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -54,9 +55,9 @@ class ModerationEligibilityListener {
                 }
                 Map<String, Object> p = envelope.payload();
                 projector.applyModeration(
-                        String.valueOf(p.get("videoId")),
-                        String.valueOf(p.get("creatorId")),
-                        String.valueOf(p.get("state")),
+                        Payloads.required(p, "videoId"),
+                        Payloads.required(p, "creatorId"),
+                        Payloads.required(p, "state"),
                         envelope.aggregateVersion());
             });
         } catch (Exception e) {

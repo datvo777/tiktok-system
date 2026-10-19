@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -55,7 +56,7 @@ class UploadCompletedListener {
                     return;
                 }
                 Map<String, Object> p = envelope.payload();
-                moderationService.createPending((String) p.get("videoId"), (String) p.get("accountId"));
+                moderationService.createPending(Payloads.required(p, "videoId"), Payloads.required(p, "accountId"));
             });
         } catch (Exception e) {
             log.warn("Failed to create pending moderation record; will retry on redelivery", e);

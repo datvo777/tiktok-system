@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -55,7 +56,7 @@ class VideoUploadCompletedListener {
                     return;
                 }
                 Map<String, Object> p = envelope.payload();
-                videoService.dispatchProcessing((String) p.get("videoId"), (String) p.get("sourceObjectKey"));
+                videoService.dispatchProcessing(Payloads.required(p, "videoId"), Payloads.required(p, "sourceObjectKey"));
             });
         } catch (Exception e) {
             log.warn("Failed to apply video.upload.completed; will retry on redelivery", e);

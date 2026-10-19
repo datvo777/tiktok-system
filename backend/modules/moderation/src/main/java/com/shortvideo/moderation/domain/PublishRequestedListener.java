@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -54,7 +55,7 @@ class PublishRequestedListener {
                 if (!inbox.claim(CONSUMER, envelope.eventId())) {
                     return;
                 }
-                moderationService.requestReview((String) envelope.payload().get("videoId"));
+                moderationService.requestReview(Payloads.required(envelope.payload(), "videoId"));
             });
         } catch (Exception e) {
             log.warn("Failed to queue a publish-requested video for review; will retry on redelivery", e);

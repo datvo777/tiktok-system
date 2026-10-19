@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -59,7 +60,7 @@ class VideoRemovedListener {
                 if (!inbox.claim(CONSUMER, envelope.eventId())) {
                     return;
                 }
-                moderationService.closeForRemovedVideo((String) p.get("videoId"));
+                moderationService.closeForRemovedVideo(Payloads.required(p, "videoId"));
             });
         } catch (Exception e) {
             log.warn("Failed to close the moderation record of a removed video; will retry on redelivery", e);
