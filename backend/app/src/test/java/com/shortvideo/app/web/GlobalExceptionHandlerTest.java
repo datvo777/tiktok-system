@@ -54,4 +54,12 @@ class GlobalExceptionHandlerTest {
         assertThat(problem.getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
         assertThat(problem.getProperties()).containsEntry("code", "UPLOAD_CHANGED_DURING_VERIFICATION");
     }
+
+    @Test
+    void twoWritersRacingOnOneAggregateIsAConflictNotAnInternalError() {
+        var problem = new GlobalExceptionHandler()
+                .concurrentModification(new org.springframework.orm.ObjectOptimisticLockingFailureException(Object.class, "v1"));
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+    }
 }

@@ -24,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -444,6 +445,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 .forEach(fieldError -> errors.putIfAbsent(fieldError.getField(), fieldError.getDefaultMessage()));
         detail.setProperty("errors", errors);
         return ResponseEntity.badRequest().body(detail);
+    }
+
+    /**
+     * Two writers changed the same aggregate at once and the version check refused the second. The
+     * first write stands and nothing was lost; the caller can reload and decide again, which is what
+     * 409 says. Left unhandled it reached the catch-all below as a 500.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ProblemDetail concurrentModification(OptimisticLockingFailureException e) {
+        log.info("Concurrent modification refused: {}", e.getMessage());
+        return problem(HttpStatus.CONFLICT, "Conflict", "The resource was changed by someone else; reload and try again");
     }
 
     @ExceptionHandler(Exception.class)

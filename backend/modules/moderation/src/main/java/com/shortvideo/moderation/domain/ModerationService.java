@@ -218,6 +218,11 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new ModerationExceptions.ModerationRecordNotFound("No such moderation record"));
 
+        // A second approval (a double click, a client retry) would append another event with a new
+        // version and another audit row for a decision that was already made.
+        if (record.getState() == ModerationState.APPROVED || record.getState() == ModerationState.REINSTATED) {
+            return;
+        }
         long previousVersion = record.getAggregateVersion();
         boolean wasRejected = record.approve();
         ModerationEntity saved = repository.saveAndFlush(record);
@@ -311,6 +316,14 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new ModerationExceptions.ModerationRecordNotFound("No such moderation record"));
 
+        // The same rejection again is a repeat, not a decision: re-running it would bump the blocking
+        // version and reactivate a revocation that is already in force. A different category or reason
+        // is a reclassification and still goes through.
+        if (record.getState() == ModerationState.REJECTED
+                && record.getPolicyCategory() == policyCategory
+                && java.util.Objects.equals(record.getReason(), reason)) {
+            return;
+        }
         record.reject(policyCategory, reason);
         ModerationEntity saved = repository.saveAndFlush(record);
 
