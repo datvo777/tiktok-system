@@ -217,4 +217,79 @@ class ModerationReviewQueueIT {
                         video))
                 .isNull();
     }
+
+    /** A creator the screener trusts: enough approved videos, none rejected. */
+    private String trustedCreator() {
+        String creator = UUID.randomUUID().toString();
+        for (int i = 0; i < 5; i++) {
+            jdbc.update(
+                    "INSERT INTO moderation.moderation_record (video_id, creator_id, state, aggregate_version, created_at, updated_at)"
+                            + " VALUES (?::uuid, ?::uuid, 'APPROVED', 1, now(), now())",
+                    UUID.randomUUID().toString(),
+                    creator);
+        }
+        return creator;
+    }
+
+    private int outboxEvents(String video, String type) {
+        return jdbc.queryForObject(
+                "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = ?",
+                Integer.class,
+                video,
+                type);
+    }
+
+    @Test
+    void aTrustedCreatorsCleanUploadIsApprovedByTheSystemEndToEnd() {
+        String video = videoId();
+        String creator = trustedCreator();
+        withMetadata(video, creator);
+
+        assertThat(moderation.createPending(video, creator)).isTrue();
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT state FROM moderation.moderation_record WHERE video_id = ?::uuid", String.class, video))
+                .isEqualTo("APPROVED");
+        // Never entered the queue, and nothing is waiting on a person.
+        assertThat(queueIds()).doesNotContain(video);
+        assertThat(outboxEvents(video, "video.moderation.approved")).isEqualTo(1);
+        // The audit trail says the system did it, not a person.
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM platform.admin_action WHERE target_id = ? AND action = 'video.approved'"
+                                + " AND actor_account_id = ?::uuid",
+                        Integer.class,
+                        video,
+                        ModerationService.SYSTEM_ACTOR))
+                .isEqualTo(1);
+    }
+
+    /** upload.completed is delivered at least once; the second delivery must not approve (or announce) again. */
+    @Test
+    void aRedeliveredUploadCompletionDoesNotApproveTwice() {
+        String video = videoId();
+        String creator = trustedCreator();
+        withMetadata(video, creator);
+        moderation.createPending(video, creator);
+
+        assertThat(moderation.createPending(video, creator)).isFalse();
+
+        assertThat(outboxEvents(video, "video.moderation.approved")).isEqualTo(1);
+    }
+
+    @Test
+    void aTrustedCreatorWhoHasBeenRejectedBeforeIsQueuedNotApproved() {
+        String video = videoId();
+        String creator = trustedCreator();
+        jdbc.update(
+                "INSERT INTO moderation.moderation_record (video_id, creator_id, state, aggregate_version, created_at, updated_at)"
+                        + " VALUES (?::uuid, ?::uuid, 'REJECTED', 1, now(), now())",
+                UUID.randomUUID().toString(),
+                creator);
+        withMetadata(video, creator);
+
+        moderation.createPending(video, creator);
+
+        assertThat(queueIds()).contains(video);
+        assertThat(outboxEvents(video, "video.moderation.approved")).isZero();
+    }
 }
