@@ -32,6 +32,13 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
               AND active = true AND blocking_version = ?
             """;
 
+    private static final String ACTIVE_FOR_SOURCE = """
+            SELECT EXISTS (
+                SELECT 1 FROM platform.revocation
+                WHERE subject_type = ? AND subject_id = ? AND source_type = ? AND active = true
+            )
+            """;
+
     private static final String IS_ACTIVE = """
             SELECT EXISTS (
                 SELECT 1 FROM platform.revocation
@@ -97,7 +104,7 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
     public void clear(RevocationClearCommand command) {
         requireTransaction();
         Timestamp now = Timestamp.from(Instant.now());
-        jdbc.update(
+        int cleared = jdbc.update(
                 CLEAR,
                 now,
                 now,
@@ -105,6 +112,21 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
                 command.subjectId(),
                 command.sourceType(),
                 command.expectedBlockingVersion());
+        // Nothing to clear is normal when it was already cleared. A block that is still active but was
+        // not the one expected is not: the caller is about to record the subject as reinstated while
+        // the media gateway, which reads this table, keeps refusing it, and nothing would say so.
+        // Refusing rolls the caller's change back, so the two stay in agreement and the failure is loud.
+        if (cleared == 0
+                && Boolean.TRUE.equals(jdbc.queryForObject(
+                        ACTIVE_FOR_SOURCE,
+                        Boolean.class,
+                        command.subjectType(),
+                        command.subjectId(),
+                        command.sourceType()))) {
+            throw new IllegalStateException("Revocation of " + command.subjectType() + " " + command.subjectId()
+                    + " by " + command.sourceType() + " is still active but was not set at version "
+                    + command.expectedBlockingVersion() + "; refusing to report it cleared");
+        }
         afterCommit(() -> cache.clearField(command.subjectType(), command.subjectId(), command.sourceType()));
     }
 
