@@ -351,8 +351,14 @@ so the owner's request is not lost. Switching back from `INTENT_GATED` to `ALL` 
 not queue records that are already held; they enter the queue when their owner asks
 to publish, or never if they do not.
 
-Metrics: `moderation.queue.entered{reason}`, `moderation.review.repaired`,
-`moderation.review.repair_failed`.
+A video that is removed (deleted by its owner or taken down) is closed out of the queue
+and the held sweep by `VideoRemovedListener`, so reviewers do not open videos that can
+never play. Approving a decided video, or repeating the same rejection, does nothing; two
+admins deciding at once get a 409 for the loser.
+
+Metrics: `moderation.auto_approved`, `moderation.held`, `moderation.queue.entered{reason}`,
+`moderation.queue.closed`, `moderation.queue.oldest.age` (seconds the longest-waiting queued
+video has waited), `moderation.review.repaired`, `moderation.review.repair_failed`.
 
 ---
 

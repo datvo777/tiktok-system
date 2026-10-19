@@ -16,4 +16,5 @@ search-video-indexer
 moderation-appeal-decision-listener
 moderation-upload-completed-listener
 moderation-publish-requested-listener
+moderation-video-removed-listener
 dlq-alert-sink

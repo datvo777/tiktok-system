@@ -26,7 +26,7 @@ interface ModerationJpaRepository extends JpaRepository<ModerationEntity, UUID> 
      */
     @Query(
             value = "select * from moderation.moderation_record where state = 'PENDING' "
-                    + "and queued_at is not null "
+                    + "and queued_at is not null and closed_at is null "
                     + "and (queued_at, video_id) > (:afterQueuedAt, :afterId) "
                     + "order by queued_at asc, video_id asc",
             nativeQuery = true)
@@ -45,14 +45,32 @@ interface ModerationJpaRepository extends JpaRepository<ModerationEntity, UUID> 
     @Modifying
     @Query(
             value = "update moderation.moderation_record set queued_at = :at, queue_reason = :reason "
-                    + "where video_id = :id and state = 'PENDING' and queued_at is null",
+                    + "where video_id = :id and state = 'PENDING' and queued_at is null and closed_at is null",
             nativeQuery = true)
     int enqueue(@Param("id") UUID id, @Param("at") Instant at, @Param("reason") String reason);
+
+    /**
+     * Takes an undecided record out of the queue and the held sweep because its video was removed.
+     * A direct update, for the same reason as {@link #enqueue}: no state change, so no version move.
+     *
+     * @return rows changed: 0 if it was already decided or already closed
+     */
+    @Modifying
+    @Query(
+            value = "update moderation.moderation_record set closed_at = :at "
+                    + "where video_id = :id and state = 'PENDING' and closed_at is null",
+            nativeQuery = true)
+    int close(@Param("id") UUID id, @Param("at") Instant at);
+
+    /** When the longest-waiting queued record started waiting, or null if the queue is empty. */
+    @Query("select min(m.queuedAt) from ModerationEntity m "
+            + "where m.state = :state and m.queuedAt is not null and m.closedAt is null")
+    Instant findOldestQueuedAt(@Param("state") ModerationState state);
 
     /** Held records (PENDING, not queued) after {@code afterId}, for the sweep that catches a lost publish event. */
     @Query(
             value = "select video_id from moderation.moderation_record where state = 'PENDING' "
-                    + "and queued_at is null and video_id > :afterId order by video_id asc",
+                    + "and queued_at is null and closed_at is null and video_id > :afterId order by video_id asc",
             nativeQuery = true)
     List<UUID> findHeldAfter(@Param("afterId") UUID afterId, Pageable pageable);
 

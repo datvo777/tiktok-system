@@ -53,12 +53,21 @@ public class ModerationEntity {
      * When a person first needed to look at this. Null while the record is only being held;
      * the review queue is the PENDING rows that have one.
      */
-    @Column(name = "queued_at")
+    @Column(name = "queued_at", updatable = false)
     private Instant queuedAt;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "queue_reason", length = 20)
+    @Column(name = "queue_reason", length = 20, updatable = false)
     private QueueReason queueReason;
+
+    /**
+     * Set when the video was removed, taking the record out of the queue. Like the two columns
+     * above it is written by direct updates, never by saving the entity, and is not updatable
+     * through it: an entity loaded before one of those updates must not write its stale null back
+     * over it when it is saved for an unrelated reason such as an approval.
+     */
+    @Column(name = "closed_at", updatable = false)
+    private Instant closedAt;
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
@@ -116,5 +125,6 @@ public class ModerationEntity {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getQueuedAt() { return queuedAt; }
     public QueueReason getQueueReason() { return queueReason; }
+    public Instant getClosedAt() { return closedAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

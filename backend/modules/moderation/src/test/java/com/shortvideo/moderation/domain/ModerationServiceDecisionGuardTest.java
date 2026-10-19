@@ -69,4 +69,18 @@ class ModerationServiceDecisionGuardTest {
 
         verify(repository, never()).saveAndFlush(any());
     }
+
+    @Test
+    void closingARemovedVideoCountsOnlyTheFirstTime() {
+        when(repository.close(any(), any())).thenReturn(1, 0);
+        var meters = new SimpleMeterRegistry();
+        var closing = new ModerationService(
+                repository, null, null, null, mock(ModerationScreener.class), new ModerationProperties(),
+                mock(EligibilityDirectory.class), meters);
+
+        closing.closeForRemovedVideo(videoId);
+        closing.closeForRemovedVideo(videoId);
+
+        org.assertj.core.api.Assertions.assertThat(meters.counter("moderation.queue.closed").count()).isEqualTo(1.0);
+    }
 }

@@ -106,6 +106,9 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
         if (intake.autoApprove()) {
             log.debug("Auto-approving {} on the strength of creator standing", videoId);
             approve(videoId, SYSTEM_ACTOR);
+            meters.counter("moderation.auto_approved").increment();
+        } else if (intake.queueReason() == null) {
+            meters.counter("moderation.held").increment();
         }
         return true;
     }
@@ -195,6 +198,18 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
             return true;
         }
         return false;
+    }
+
+    /**
+     * The video was removed (deleted by its owner or taken down), so there is nothing left to
+     * review: drop it from the queue and the held sweep. Not an error when there is no record yet
+     * or it was already decided; the first has nothing to close and the second stays as it was.
+     */
+    @Transactional
+    public void closeForRemovedVideo(String videoId) {
+        if (repository.close(UUID.fromString(videoId), Instant.now()) == 1) {
+            meters.counter("moderation.queue.closed").increment();
+        }
     }
 
     /** Held records after {@code afterVideoId}, oldest id first, for the sweep that catches a lost publish event. */

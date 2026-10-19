@@ -172,4 +172,49 @@ class ModerationReviewQueueIT {
 
         assertThat(ids.indexOf(second)).isLessThan(ids.indexOf(first));
     }
+
+    @Test
+    void aRemovedVideoLeavesTheQueueAndCannotBeQueuedAgain() {
+        String video = videoId();
+        moderation.createPending(video, UUID.randomUUID().toString()); // no metadata: queued
+        assertThat(queueIds()).contains(video);
+        Long before = version(video);
+
+        moderation.closeForRemovedVideo(video);
+
+        assertThat(queueIds()).doesNotContain(video);
+        assertThat(moderation.findHeldPage(null, 1000)).doesNotContain(video);
+        assertThat(moderation.requestReview(video)).isFalse();
+        // Closing is not a decision: no state change, so the version does not move.
+        assertThat(version(video)).isEqualTo(before);
+    }
+
+    @Test
+    void aHeldVideoThatIsRemovedIsNotSweptAgain() {
+        String video = videoId();
+        String creator = UUID.randomUUID().toString();
+        withMetadata(video, creator);
+        moderation.createPending(video, creator);
+        assertThat(moderation.findHeldPage(null, 1000)).contains(video);
+
+        moderation.closeForRemovedVideo(video);
+
+        assertThat(moderation.findHeldPage(null, 1000)).doesNotContain(video);
+    }
+
+    @Test
+    void closingADecidedOrUnknownVideoChangesNothing() {
+        String video = videoId();
+        moderation.createPending(video, UUID.randomUUID().toString());
+        jdbc.update("UPDATE moderation.moderation_record SET state = 'APPROVED' WHERE video_id = ?::uuid", video);
+
+        moderation.closeForRemovedVideo(video);
+        moderation.closeForRemovedVideo(videoId()); // no record at all
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT closed_at FROM moderation.moderation_record WHERE video_id = ?::uuid",
+                        Object.class,
+                        video))
+                .isNull();
+    }
 }
