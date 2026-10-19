@@ -11,7 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Reacts to an approved appeal by reinstating moderation, exactly as the admin
@@ -29,26 +29,35 @@ class AppealDecisionListener {
     private final InboxGuard inbox;
     private final ModerationService moderationService;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transaction;
 
-    AppealDecisionListener(InboxGuard inbox, ModerationService moderationService, ObjectMapper objectMapper) {
+    AppealDecisionListener(InboxGuard inbox, ModerationService moderationService, ObjectMapper objectMapper, TransactionTemplate transaction) {
         this.inbox = inbox;
         this.moderationService = moderationService;
         this.objectMapper = objectMapper;
+        this.transaction = transaction;
     }
 
+    /**
+     * Not {@code @Transactional}: this topic carries every video event and each listener wants only
+     * a few types, so decoding and filtering happen first and a transaction (and its pooled
+     * connection) is opened only for an event this listener acts on. The inbox claim and the
+     * business update share that one transaction, as the inbox requires.
+     */
     @KafkaListener(topics = Topics.VIDEO_EVENTS, groupId = "moderation-appeal-decision-listener")
-    @Transactional
     public void onVideoEvent(String payload) {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
             if (!EventTypes.VIDEO_APPEAL_APPROVED.equals(envelope.eventType())) {
                 return;
             }
-            if (!inbox.claim(CONSUMER, envelope.eventId())) {
-                return;
-            }
-            Map<String, Object> p = envelope.payload();
-            moderationService.reinstateFromAppeal((String) p.get("videoId"));
+            transaction.executeWithoutResult(status -> {
+                if (!inbox.claim(CONSUMER, envelope.eventId())) {
+                    return;
+                }
+                Map<String, Object> p = envelope.payload();
+                moderationService.reinstateFromAppeal((String) p.get("videoId"));
+            });
         } catch (Exception e) {
             log.warn("Failed to apply video.appeal.approved; will retry on redelivery", e);
             throw new RuntimeException(e);
