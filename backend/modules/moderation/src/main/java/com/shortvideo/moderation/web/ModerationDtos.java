@@ -17,10 +17,20 @@ public final class ModerationDtos {
      */
     public record RejectRequest(@NotNull PolicyCategory policyCategory, @Size(max = 200) String reason) {}
 
-    public record PendingVideoResponse(String videoId, String creatorId, String state, Instant createdAt) {
+    /**
+     * {@code createdAt} is when the upload arrived; {@code queuedAt} is when it began waiting for a
+     * reviewer, and {@code queueReason} says why (UPLOAD, RISK, UNSCREENED, PUBLISH_REQUESTED).
+     */
+    public record PendingVideoResponse(
+            String videoId, String creatorId, String state, Instant createdAt, Instant queuedAt, String queueReason) {
         public static PendingVideoResponse from(ModerationView view) {
             return new PendingVideoResponse(
-                    view.videoId(), view.creatorId(), view.state().name(), view.createdAt());
+                    view.videoId(),
+                    view.creatorId(),
+                    view.state().name(),
+                    view.createdAt(),
+                    view.queuedAt(),
+                    view.queueReason() == null ? null : view.queueReason().name());
         }
     }
 

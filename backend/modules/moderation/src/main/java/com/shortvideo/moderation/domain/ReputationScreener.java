@@ -14,7 +14,8 @@ import org.springframework.stereotype.Component;
  * has are two weak signals — the text the uploader typed, and what humans have
  * previously decided about this uploader — and it uses them only to answer one
  * narrow question: <em>is this upload boring enough to let through without a
- * person?</em>
+ * person?</em> Anything it cannot vouch for but has no complaint about is held for the
+ * owner's publish request rather than queued.
  *
  * <p>That question is worth answering because the alternative is what the
  * platform did before: every upload, from every creator, waiting on a human.
@@ -105,8 +106,9 @@ class ReputationScreener implements ModerationScreener {
         if (anyRejectionRevokesTrust && subject.rejectedVideos() > 0) {
             return ScreeningVerdict.REFER_TO_HUMAN;
         }
+        // No bad signal, only no track record: it needs a person before it is published, not before it is uploaded.
         if (subject.approvedVideos() < trustedAfterApprovals) {
-            return ScreeningVerdict.REFER_TO_HUMAN;
+            return ScreeningVerdict.HOLD_UNTIL_PUBLISH;
         }
         return ScreeningVerdict.AUTO_APPROVE;
     }

@@ -6,18 +6,18 @@ import java.util.Base64;
 import java.util.UUID;
 
 /**
- * Opaque keyset-pagination cursor over (createdAt, videoId): the pair
+ * Opaque keyset-pagination cursor over (queuedAt, videoId): the pair
  * identifies the last row of a page, so the next page can resume with "strictly
  * after this row" instead of an offset that drifts as the queue changes.
  */
-record PendingCursor(Instant createdAt, UUID videoId) {
+record PendingCursor(Instant queuedAt, UUID videoId) {
 
-    private static final Instant FLOOR_CREATED_AT = Instant.EPOCH;
+    private static final Instant FLOOR_QUEUED_AT = Instant.EPOCH;
     private static final UUID FLOOR_VIDEO_ID = new UUID(0, 0);
 
     static PendingCursor decode(String cursor) {
         if (cursor == null || cursor.isBlank()) {
-            return new PendingCursor(FLOOR_CREATED_AT, FLOOR_VIDEO_ID);
+            return new PendingCursor(FLOOR_QUEUED_AT, FLOOR_VIDEO_ID);
         }
         try {
             String raw = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
@@ -31,7 +31,7 @@ record PendingCursor(Instant createdAt, UUID videoId) {
     }
 
     String encode() {
-        String raw = createdAt + ":" + videoId;
+        String raw = queuedAt + ":" + videoId;
         return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
 }

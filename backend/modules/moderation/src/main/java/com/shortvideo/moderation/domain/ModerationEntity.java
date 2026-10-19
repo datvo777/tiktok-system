@@ -49,6 +49,17 @@ public class ModerationEntity {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    /**
+     * When a person first needed to look at this. Null while the record is only being held;
+     * the review queue is the PENDING rows that have one.
+     */
+    @Column(name = "queued_at")
+    private Instant queuedAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "queue_reason", length = 20)
+    private QueueReason queueReason;
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -61,6 +72,16 @@ public class ModerationEntity {
         this.state = ModerationState.PENDING;
         this.createdAt = now;
         this.updatedAt = now;
+    }
+
+    /**
+     * Queues a record that has not been saved yet. Setting this before the first save keeps the
+     * insert at version 0; queueing an existing record goes through
+     * {@link ModerationJpaRepository#enqueue} so it does not bump the version either.
+     */
+    void enqueueOnCreate(QueueReason reason) {
+        this.queuedAt = this.createdAt;
+        this.queueReason = reason;
     }
 
     /** PENDING -> APPROVED, or REJECTED -> REINSTATED (brief section 18 ties reinstatement to appeal approval; the local admin action is the same transition). */
@@ -93,5 +114,7 @@ public class ModerationEntity {
     public String getPolicyTier() { return policyTier; }
     public long getAggregateVersion() { return aggregateVersion; }
     public Instant getCreatedAt() { return createdAt; }
+    public Instant getQueuedAt() { return queuedAt; }
+    public QueueReason getQueueReason() { return queueReason; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

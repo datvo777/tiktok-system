@@ -28,15 +28,15 @@ class ReputationScreenerTest {
     }
 
     @Test
-    void aBrandNewCreatorAlwaysGoesToAHuman() {
-        assertThat(screener.screen(upload("morning coffee", 0, 0))).isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
+    void aBrandNewCreatorWithNothingWrongIsHeldNotReferred() {
+        assertThat(screener.screen(upload("morning coffee", 0, 0))).isEqualTo(ScreeningVerdict.HOLD_UNTIL_PUBLISH);
     }
 
     @Test
     void trustBeginsExactlyAtTheConfiguredThreshold() {
         int threshold = properties.getTrustedAfterApprovals();
 
-        assertThat(screener.screen(upload("hello", threshold - 1, 0))).isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
+        assertThat(screener.screen(upload("hello", threshold - 1, 0))).isEqualTo(ScreeningVerdict.HOLD_UNTIL_PUBLISH);
         assertThat(screener.screen(upload("hello", threshold, 0))).isEqualTo(ScreeningVerdict.AUTO_APPROVE);
     }
 
@@ -93,14 +93,26 @@ class ReputationScreenerTest {
         assertThat(screener.screen(new ScreeningSubject("v1", "c1", null, null, 50, 0)))
                 .isEqualTo(ScreeningVerdict.AUTO_APPROVE);
         assertThat(screener.screen(new ScreeningSubject("v1", "c1", null, null, 0, 0)))
+                .isEqualTo(ScreeningVerdict.HOLD_UNTIL_PUBLISH);
+    }
+
+    /** A risk signal outranks the lack of a track record: a new creator's flagged upload is not merely held. */
+    @Test
+    void riskOutranksHolding() {
+        assertThat(screener.screen(upload("free money crypto giveaway", 0, 0)))
                 .isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
+        assertThat(screener.screen(upload("hello", 0, 1))).isEqualTo(ScreeningVerdict.REFER_TO_HUMAN);
     }
 
     /** There is no input that takes a video down; the worst outcome is human review. */
     @Test
     void neverProducesAnythingStrongerThanAReferral() {
         for (ScreeningVerdict verdict : ScreeningVerdict.values()) {
-            assertThat(verdict).isIn(ScreeningVerdict.AUTO_APPROVE, ScreeningVerdict.REFER_TO_HUMAN);
+            assertThat(verdict)
+                    .isIn(
+                            ScreeningVerdict.AUTO_APPROVE,
+                            ScreeningVerdict.REFER_TO_HUMAN,
+                            ScreeningVerdict.HOLD_UNTIL_PUBLISH);
         }
     }
 }
