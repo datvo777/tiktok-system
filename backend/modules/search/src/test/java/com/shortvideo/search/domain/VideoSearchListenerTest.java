@@ -37,10 +37,22 @@ class VideoSearchListenerTest {
             new TransactionTemplate(transactionManager));
 
     private String removed(Long aggregateVersion) throws Exception {
+        return event(EventTypes.VIDEO_PUBLICATION_REMOVED, aggregateVersion);
+    }
+
+    private String event(String eventType, Long aggregateVersion) throws Exception {
         var envelope = new EventEnvelope<>(
-                UUID.randomUUID(), EventTypes.VIDEO_PUBLICATION_REMOVED, 1, AggregateTypes.VIDEO, "v1",
+                UUID.randomUUID(), eventType, 1, AggregateTypes.VIDEO, "v1",
                 aggregateVersion, Instant.now(), "video", "video", "corr", null, Map.of("videoId", "v1"));
         return mapper.writeValueAsString(envelope);
+    }
+
+    @Test
+    void aPublishedVideoFallingBackToPendingLeavesTheIndex() throws Exception {
+        listener.onVideoEvent(event(EventTypes.VIDEO_PUBLICATION_PENDING, 8L));
+
+        verify(index).removeVideo("v1", 8L);
+        verify(inbox).claim(any(), any());
     }
 
     @Test

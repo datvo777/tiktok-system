@@ -91,7 +91,10 @@ class VideoSearchListener {
                             envelope.occurredAt().toString(),
                             envelope.aggregateVersion());
                 }
-                case EventTypes.VIDEO_PUBLICATION_SUSPENDED,
+                // PENDING counts: a published video whose processing later fails falls back to
+                // PUBLISH_PENDING, and must leave the index the same way it leaves the feed.
+                case EventTypes.VIDEO_PUBLICATION_PENDING,
+                     EventTypes.VIDEO_PUBLICATION_SUSPENDED,
                      EventTypes.VIDEO_PUBLICATION_PRIVATE,
                      EventTypes.VIDEO_PUBLICATION_REMOVED -> indexService.removeVideo(videoId, envelope.aggregateVersion());
                 default -> { /* not relevant to search */ }

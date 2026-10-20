@@ -1,7 +1,9 @@
 package com.shortvideo.publication.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -104,6 +106,40 @@ class PublicationEntityTest {
         assertThat(video.requestPublish()).isFalse();
         assertThat(video.withdrawPublish()).isFalse();
         assertThat(video.getState()).isEqualTo(PublicationState.REMOVED);
+    }
+
+    @Test
+    void ownerCannotPublishOrWithdrawASuspendedVideo() {
+        PublicationEntity video = newVideo();
+        video.requestPublish();
+        video.setProcessingReady(true);
+        video.setModerationApproved(true);
+        video.suspend();
+
+        assertThatThrownBy(video::requestPublish).isInstanceOf(PublicationExceptions.PublicationSuspended.class);
+        assertThatThrownBy(video::withdrawPublish).isInstanceOf(PublicationExceptions.PublicationSuspended.class);
+        assertThat(video.getState()).isEqualTo(PublicationState.SUSPENDED);
+    }
+
+    @Test
+    void publishingARemovedVideoDoesNotRecordIntent() {
+        PublicationEntity video = newVideo();
+        video.remove();
+
+        assertThat(video.requestPublish()).isFalse();
+        assertThat(video.isIntent()).isFalse();
+    }
+
+    @Test
+    void aRepeatedRequestDoesNotTouchUpdatedAt() throws InterruptedException {
+        PublicationEntity video = newVideo();
+        video.requestPublish();
+        Instant before = video.getUpdatedAt();
+        Thread.sleep(5);
+
+        assertThat(video.requestPublish()).isFalse();
+        assertThat(video.setProcessingReady(false)).isFalse();
+        assertThat(video.getUpdatedAt()).isEqualTo(before);
     }
 
     @Test

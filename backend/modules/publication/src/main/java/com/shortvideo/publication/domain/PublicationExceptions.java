@@ -10,5 +10,10 @@ public final class PublicationExceptions {
         public NotVideoOwner(String message) { super(message); }
     }
 
+    /** The owner acted on a video an admin suspended; only moderation can lift that. */
+    public static class PublicationSuspended extends RuntimeException {
+        public PublicationSuspended(String message) { super(message); }
+    }
+
     private PublicationExceptions() {}
 }

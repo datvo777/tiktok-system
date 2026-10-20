@@ -344,6 +344,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
     }
 
+    @ExceptionHandler(PublicationExceptions.PublicationSuspended.class)
+    public ProblemDetail publicationSuspended(PublicationExceptions.PublicationSuspended e) {
+        return problem(HttpStatus.CONFLICT, "Video suspended", e.getMessage());
+    }
+
     @ExceptionHandler({PublicationExceptions.NotVideoOwner.class, AppealExceptions.NotVideoOwner.class})
     public ProblemDetail notPublicationOwner(RuntimeException e) {
         return problem(HttpStatus.FORBIDDEN, "Forbidden", e.getMessage());
