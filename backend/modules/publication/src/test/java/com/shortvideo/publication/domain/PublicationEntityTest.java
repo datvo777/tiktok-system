@@ -109,6 +109,18 @@ class PublicationEntityTest {
     }
 
     @Test
+    void aRejectionAfterATakedownDoesNotResurrectTheVideoAsSuspended() {
+        PublicationEntity video = newVideo();
+        video.requestPublish();
+        video.remove();
+        long changedAt = video.getUpdatedAt().toEpochMilli();
+
+        assertThat(video.suspend()).isFalse();
+        assertThat(video.getState()).isEqualTo(PublicationState.REMOVED);
+        assertThat(video.getUpdatedAt().toEpochMilli()).isEqualTo(changedAt);
+    }
+
+    @Test
     void ownerCannotPublishOrWithdrawASuspendedVideo() {
         PublicationEntity video = newVideo();
         video.requestPublish();

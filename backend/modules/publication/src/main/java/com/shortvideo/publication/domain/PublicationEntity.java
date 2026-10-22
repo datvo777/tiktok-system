@@ -119,8 +119,15 @@ public class PublicationEntity {
         }
     }
 
-    /** Forces SUSPENDED regardless of current state; bypasses the normal prerequisite computation. */
+    /**
+     * Forces SUSPENDED from any state but REMOVED; bypasses the normal prerequisite computation.
+     * REMOVED is terminal, so a rejection arriving after a takedown must not bring the video back
+     * as SUSPENDED (and so reachable by reinstatement).
+     */
     public boolean suspend() {
+        if (this.state == PublicationState.REMOVED) {
+            return false;
+        }
         boolean changed = this.state != PublicationState.SUSPENDED;
         this.state = PublicationState.SUSPENDED;
         this.moderationApproved = false;
