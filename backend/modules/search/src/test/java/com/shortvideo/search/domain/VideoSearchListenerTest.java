@@ -56,6 +56,21 @@ class VideoSearchListenerTest {
     }
 
     @Test
+    void aPublicationStateAddedLaterAlsoLeavesTheIndex() throws Exception {
+        listener.onVideoEvent(event("video.publication.archived", 9L));
+
+        verify(index).removeVideo("v1", 9L);
+    }
+
+    @Test
+    void anotherAggregatesEventOnTheSameTopicLeavesTheIndexAlone() throws Exception {
+        listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_REJECTED, 3L));
+
+        verify(index, never()).removeVideo(anyString(), anyLong());
+        verify(inbox).claim(any(), any());
+    }
+
+    @Test
     void theIndexIsWrittenBeforeAnyTransactionOpensAndTheClaimGetsOneOfItsOwn() throws Exception {
         listener.onVideoEvent(removed(7L));
 

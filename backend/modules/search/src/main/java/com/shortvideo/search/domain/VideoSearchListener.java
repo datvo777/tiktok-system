@@ -28,6 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 class VideoSearchListener {
 
     private static final String CONSUMER = "search-video-indexer";
+    private static final String PUBLICATION_EVENT_PREFIX = "video.publication.";
     private static final Logger log = LoggerFactory.getLogger(VideoSearchListener.class);
 
     private final InboxGuard inbox;
@@ -72,32 +73,31 @@ class VideoSearchListener {
             }
             Map<String, Object> p = envelope.payload();
             String videoId = (String) p.get("videoId");
-            switch (envelope.eventType()) {
-                case EventTypes.VIDEO_PUBLICATION_PUBLISHED -> {
-                    String creatorId = (String) p.get("ownerAccountId");
-                    var creator = accountDirectory.find(creatorId);
-                    String displayName = creator.map(a -> a.displayName()).orElse("");
-                    String handle = creator.map(a -> a.handle()).orElse("");
-                    VideoEligibilityView eligibility = eligibilityDirectory.findVideoEligibility(videoId).orElse(null);
-                    String title = eligibility == null ? null : eligibility.title();
-                    String description = eligibility == null ? null : eligibility.description();
-                    indexService.indexVideo(
-                            videoId,
-                            creatorId,
-                            displayName,
-                            handle,
-                            title,
-                            description,
-                            envelope.occurredAt().toString(),
-                            envelope.aggregateVersion());
-                }
-                // PENDING counts: a published video whose processing later fails falls back to
-                // PUBLISH_PENDING, and must leave the index the same way it leaves the feed.
-                case EventTypes.VIDEO_PUBLICATION_PENDING,
-                     EventTypes.VIDEO_PUBLICATION_SUSPENDED,
-                     EventTypes.VIDEO_PUBLICATION_PRIVATE,
-                     EventTypes.VIDEO_PUBLICATION_REMOVED -> indexService.removeVideo(videoId, envelope.aggregateVersion());
-                default -> { /* not relevant to search */ }
+            String eventType = envelope.eventType();
+            if (EventTypes.VIDEO_PUBLICATION_PUBLISHED.equals(eventType)) {
+                String creatorId = (String) p.get("ownerAccountId");
+                var creator = accountDirectory.find(creatorId);
+                String displayName = creator.map(a -> a.displayName()).orElse("");
+                String handle = creator.map(a -> a.handle()).orElse("");
+                VideoEligibilityView eligibility = eligibilityDirectory.findVideoEligibility(videoId).orElse(null);
+                String title = eligibility == null ? null : eligibility.title();
+                String description = eligibility == null ? null : eligibility.description();
+                indexService.indexVideo(
+                        videoId,
+                        creatorId,
+                        displayName,
+                        handle,
+                        title,
+                        description,
+                        envelope.occurredAt().toString(),
+                        envelope.aggregateVersion());
+            } else if (eventType.startsWith(PUBLICATION_EVENT_PREFIX)) {
+                // Allowlist, not blocklist: PUBLISHED is the only publication state that stays
+                // searchable, so every other one -- and any state added later -- leaves the index
+                // the same way it leaves the feed. Scoped to publication events because this topic
+                // also carries other aggregates' events, whose versions are not comparable with the
+                // one the index guards on.
+                indexService.removeVideo(videoId, envelope.aggregateVersion());
             }
             claim(envelope);
         } catch (Exception e) {
