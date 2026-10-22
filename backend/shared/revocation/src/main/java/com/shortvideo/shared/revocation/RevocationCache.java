@@ -1,7 +1,12 @@
 package com.shortvideo.shared.revocation;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -80,12 +85,29 @@ public class RevocationCache {
         }
     }
 
-    /** All subject keys currently cached, so a rebuild can find stray subjects with no active revocation left at all. */
-    Set<String> allCachedSubjectKeys() {
-        try {
-            return redis.keys("revocation:*");
+    /**
+     * Walks every cached subject key in batches, so a rebuild can find stray subjects with no active
+     * revocation left at all. SCAN rather than KEYS: KEYS is one blocking command over the whole
+     * keyspace, which stalls every other Redis user (the revocation check on each request included)
+     * for as long as it runs. A key can appear in two batches, and the walk stops quietly if Redis
+     * becomes unreachable; the next rebuild tries again.
+     */
+    void forEachCachedSubjectKeyBatch(int batchSize, Consumer<List<String>> batch) {
+        ScanOptions options = ScanOptions.scanOptions().match("revocation:*").count(batchSize).build();
+        try (Cursor<String> cursor = redis.scan(options)) {
+            List<String> keys = new ArrayList<>(batchSize);
+            while (cursor.hasNext()) {
+                keys.add(cursor.next());
+                if (keys.size() >= batchSize) {
+                    batch.accept(keys);
+                    keys = new ArrayList<>(batchSize);
+                }
+            }
+            if (!keys.isEmpty()) {
+                batch.accept(keys);
+            }
         } catch (RuntimeException e) {
-            return Set.of();
+            // Best-effort like every other cache operation: durable state stays authoritative.
         }
     }
 

@@ -6,6 +6,10 @@ import java.time.Instant;
 public record AccountView(
         String accountId,
         String displayName,
+        /** The unique, mentionable username. Never null. */
+        String handle,
+        /** Null when never set. */
+        String bio,
         AccountState state,
         long aggregateVersion,
         Instant createdAt) {

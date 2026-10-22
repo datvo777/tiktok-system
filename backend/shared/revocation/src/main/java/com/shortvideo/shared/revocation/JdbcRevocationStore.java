@@ -32,6 +32,13 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
               AND active = true AND blocking_version = ?
             """;
 
+    private static final String ACTIVE_FOR_SOURCE = """
+            SELECT EXISTS (
+                SELECT 1 FROM platform.revocation
+                WHERE subject_type = ? AND subject_id = ? AND source_type = ? AND active = true
+            )
+            """;
+
     private static final String IS_ACTIVE = """
             SELECT EXISTS (
                 SELECT 1 FROM platform.revocation
@@ -39,8 +46,33 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
             )
             """;
 
-    private static final String FIND_ALL_ACTIVE =
-            "SELECT subject_type, subject_id, source_type, reason FROM platform.revocation WHERE active = true";
+    /**
+     * Uses the same {@code (subject_type, subject_id) WHERE active} partial index as
+     * {@link #IS_ACTIVE}; {@code = ANY(?)} keeps the statement text constant
+     * regardless of how many subjects are asked about.
+     */
+    private static final String ACTIVE_AMONG = """
+            SELECT DISTINCT subject_id FROM platform.revocation
+            WHERE subject_type = ? AND active = true AND subject_id = ANY(?)
+            """;
+
+    /**
+     * Keyset pages over the primary key, so the rebuild never holds more than one page: the order is
+     * the key's own, which also keeps every source of one subject adjacent.
+     */
+    private static final String FIRST_ACTIVE_PAGE = """
+            SELECT subject_type, subject_id, source_type, reason FROM platform.revocation
+            WHERE active = true
+            ORDER BY subject_type, subject_id, source_type
+            LIMIT ?
+            """;
+
+    private static final String NEXT_ACTIVE_PAGE = """
+            SELECT subject_type, subject_id, source_type, reason FROM platform.revocation
+            WHERE active = true AND (subject_type, subject_id, source_type) > (?, ?, ?)
+            ORDER BY subject_type, subject_id, source_type
+            LIMIT ?
+            """;
 
     private final JdbcTemplate jdbc;
     private final RevocationCache cache;
@@ -72,7 +104,7 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
     public void clear(RevocationClearCommand command) {
         requireTransaction();
         Timestamp now = Timestamp.from(Instant.now());
-        jdbc.update(
+        int cleared = jdbc.update(
                 CLEAR,
                 now,
                 now,
@@ -80,6 +112,21 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
                 command.subjectId(),
                 command.sourceType(),
                 command.expectedBlockingVersion());
+        // Nothing to clear is normal when it was already cleared. A block that is still active but was
+        // not the one expected is not: the caller is about to record the subject as reinstated while
+        // the media gateway, which reads this table, keeps refusing it, and nothing would say so.
+        // Refusing rolls the caller's change back, so the two stay in agreement and the failure is loud.
+        if (cleared == 0
+                && Boolean.TRUE.equals(jdbc.queryForObject(
+                        ACTIVE_FOR_SOURCE,
+                        Boolean.class,
+                        command.subjectType(),
+                        command.subjectId(),
+                        command.sourceType()))) {
+            throw new IllegalStateException("Revocation of " + command.subjectType() + " " + command.subjectId()
+                    + " by " + command.sourceType() + " is still active but was not set at version "
+                    + command.expectedBlockingVersion() + "; refusing to report it cleared");
+        }
         afterCommit(() -> cache.clearField(command.subjectType(), command.subjectId(), command.sourceType()));
     }
 
@@ -89,15 +136,32 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
         return Boolean.TRUE.equals(active);
     }
 
-    /** Brief section 16: "After a Redis restart, rebuild hashes from active durable revocations." */
-    java.util.List<ActiveRevocation> findAllActive() {
+    @Override
+    public java.util.Set<String> activeAmong(String subjectType, java.util.Collection<String> subjectIds) {
+        if (subjectIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        // subject_id is VARCHAR here (it holds both video and account ids), so the
+        // array is bound as text rather than uuid.
+        String[] ids = subjectIds.toArray(String[]::new);
+        return new java.util.HashSet<>(jdbc.queryForList(ACTIVE_AMONG, String.class, subjectType, ids));
+    }
+
+    /**
+     * Brief section 16: "After a Redis restart, rebuild hashes from active durable revocations."
+     * One page of them, in key order, strictly after {@code after} (the start when null).
+     */
+    java.util.List<ActiveRevocation> findActivePage(ActiveRevocation after, int limit) {
+        org.springframework.jdbc.core.RowMapper<ActiveRevocation> mapper = (rs, rowNum) -> new ActiveRevocation(
+                rs.getString("subject_type"),
+                rs.getString("subject_id"),
+                rs.getString("source_type"),
+                rs.getString("reason"));
+        if (after == null) {
+            return jdbc.query(FIRST_ACTIVE_PAGE, mapper, limit);
+        }
         return jdbc.query(
-                FIND_ALL_ACTIVE,
-                (rs, rowNum) -> new ActiveRevocation(
-                        rs.getString("subject_type"),
-                        rs.getString("subject_id"),
-                        rs.getString("source_type"),
-                        rs.getString("reason")));
+                NEXT_ACTIVE_PAGE, mapper, after.subjectType(), after.subjectId(), after.sourceType(), limit);
     }
 
     private void requireTransaction() {

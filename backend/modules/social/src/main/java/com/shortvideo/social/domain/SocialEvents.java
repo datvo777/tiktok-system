@@ -12,6 +12,21 @@ public final class SocialEvents {
 
     public record VideoCommented(String videoId, String commenterId, String videoOwnerId, String commentId) {}
 
+    /**
+     * {@code parentAuthorId} is the person to notify — the author of the comment
+     * being replied to. {@code videoOwnerId} rides along so a consumer can still
+     * tell whose video the thread sits under without a second lookup.
+     */
+    public record CommentReplied(
+            String videoId,
+            String replierId,
+            String parentAuthorId,
+            String videoOwnerId,
+            String parentCommentId,
+            String commentId) {}
+
+    public record VideoLiked(String videoId, String likerId, String videoOwnerId) {}
+
     public record CreatorFollowed(String followerId, String followeeId) {}
 
     private SocialEvents() {}

@@ -2,6 +2,10 @@ package com.shortvideo.appeal.domain;
 
 import com.shortvideo.appeal.api.AppealState;
 import com.shortvideo.moderation.api.ModerationDirectory;
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
@@ -12,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,16 +38,19 @@ public class AppealService {
     private final OutboxWriter outboxWriter;
     private final VideoPlaybackDirectory videoDirectory;
     private final ModerationDirectory moderationDirectory;
+    private final AdminActionRecorder auditRecorder;
 
     public AppealService(
             AppealJpaRepository repository,
             OutboxWriter outboxWriter,
             VideoPlaybackDirectory videoDirectory,
-            ModerationDirectory moderationDirectory) {
+            ModerationDirectory moderationDirectory,
+            AdminActionRecorder auditRecorder) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDirectory = videoDirectory;
         this.moderationDirectory = moderationDirectory;
+        this.auditRecorder = auditRecorder;
     }
 
     @Transactional
@@ -74,31 +82,59 @@ public class AppealService {
     }
 
     @Transactional
-    public AppealView approve(String videoId, String decisionReason) {
+    public AppealView approve(String videoId, String decisionReason, String actorAccountId) {
         AppealEntity entity = find(videoId);
         if (!entity.approve(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
         AppealEntity saved = repository.saveAndFlush(entity);
         append(saved, EventTypes.VIDEO_APPEAL_APPROVED, decisionReason);
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.APPEAL_APPROVED, AuditTargets.VIDEO, videoId, decisionReason));
         return toView(saved);
     }
 
     @Transactional
-    public AppealView deny(String videoId, String decisionReason) {
+    public AppealView deny(String videoId, String decisionReason, String actorAccountId) {
         AppealEntity entity = find(videoId);
         if (!entity.deny(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
         AppealEntity saved = repository.saveAndFlush(entity);
         append(saved, EventTypes.VIDEO_APPEAL_DENIED, decisionReason);
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.APPEAL_DENIED, AuditTargets.VIDEO, videoId, decisionReason));
         return toView(saved);
     }
 
+    /**
+     * Owner checks the current appeal status of one of their own videos — a NONE
+     * view when no appeal has ever been submitted, matching the resting state
+     * {@link AppealEntity} itself starts in, rather than a 404.
+     */
     @Transactional(readOnly = true)
-    public List<AppealView> listPending() {
+    public AppealView getStatus(String videoId, String callerAccountId) {
+        VideoPlaybackView video = videoDirectory
+                .findForPlayback(videoId)
+                .orElseThrow(() -> new AppealExceptions.AppealNotFound("No such video"));
+        if (!video.ownerAccountId().equals(callerAccountId)) {
+            throw new AppealExceptions.AppealNotFound("No such video");
+        }
         return repository
-                .findByStateInOrderByUpdatedAtAsc(List.of(AppealState.UNDER_APPEAL, AppealState.REVIEWING))
+                .findById(UUID.fromString(videoId))
+                .map(AppealService::toView)
+                .orElseGet(() -> new AppealView(videoId, callerAccountId, AppealState.NONE, null, null, null));
+    }
+
+    /** Hard ceiling on one response, however large the queue or the requested limit. */
+    public static final int MAX_PENDING_PAGE = 200;
+
+    @Transactional(readOnly = true)
+    public List<AppealView> listPending(int limit) {
+        int size = Math.min(Math.max(limit, 1), MAX_PENDING_PAGE);
+        return repository
+                .findByStateInOrderByUpdatedAtAsc(
+                        List.of(AppealState.UNDER_APPEAL, AppealState.REVIEWING), PageRequest.of(0, size))
                 .stream()
                 .map(AppealService::toView)
                 .toList();

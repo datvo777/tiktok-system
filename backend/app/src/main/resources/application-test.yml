@@ -9,6 +9,11 @@ spring:
 shortvideo:
   jwt:
     secret: test-secret-value-that-is-at-least-32-bytes
+    allow-insecure-secret: true
+    # Tests drive the app over plain HTTP, so Secure cookies would never be sent.
+    cookie-secure: false
+  playback:
+    cookie-secure: false
   outbox:
     # Tests assert on raw outbox rows; the relay is started explicitly where needed.
     enabled: false

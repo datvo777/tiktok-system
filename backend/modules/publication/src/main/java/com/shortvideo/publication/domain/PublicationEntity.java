@@ -68,22 +68,66 @@ public class PublicationEntity {
     }
 
     public boolean requestPublish() {
+        if (this.state == PublicationState.REMOVED) {
+            return false; // terminal: do not record an intent that can never take effect
+        }
+        refuseWhileSuspended();
+        boolean intentChanged = !this.intent;
         this.intent = true;
-        return reevaluate();
+        return reevaluate(intentChanged);
+    }
+
+    /**
+     * The owner taking their video back out of the feed. Publication intent is
+     * one of the prerequisites {@link #reevaluate(boolean)} already computes over, so
+     * withdrawing it is the exact inverse of {@link #requestPublish()} and needs
+     * no separate state: with no intent the machine settles on PRIVATE.
+     *
+     * <p>Not a takedown. Moderation approval and processing readiness are left
+     * untouched, so a later re-publish does not have to be reviewed again — and,
+     * unlike {@link #remove()}, this is reversible.
+     */
+    public boolean withdrawPublish() {
+        if (this.state == PublicationState.REMOVED) {
+            return false;
+        }
+        refuseWhileSuspended();
+        boolean intentChanged = this.intent;
+        this.intent = false;
+        return reevaluate(intentChanged);
     }
 
     public boolean setProcessingReady(boolean ready) {
+        boolean flagChanged = this.processingReady != ready;
         this.processingReady = ready;
-        return reevaluate();
+        return reevaluate(flagChanged);
     }
 
     public boolean setModerationApproved(boolean approved) {
+        boolean flagChanged = this.moderationApproved != approved;
         this.moderationApproved = approved;
-        return reevaluate();
+        return reevaluate(flagChanged);
     }
 
-    /** Forces SUSPENDED regardless of current state; bypasses the normal prerequisite computation. */
+    /**
+     * Reevaluation would overwrite SUSPENDED with PRIVATE or PUBLISH_PENDING, so the owner would
+     * lose the fact that an admin suspended the video. Only moderation leaves SUSPENDED.
+     */
+    private void refuseWhileSuspended() {
+        if (this.state == PublicationState.SUSPENDED) {
+            throw new PublicationExceptions.PublicationSuspended("This video is suspended");
+        }
+    }
+
+    /**
+     * Forces SUSPENDED from any state but REMOVED; bypasses the normal prerequisite computation.
+     * REMOVED is terminal, so a rejection arriving after a takedown must not bring the video back
+     * as SUSPENDED (and so reachable by reinstatement).
+     */
     public boolean suspend() {
+        if (this.state == PublicationState.REMOVED) {
+            return false;
+        }
         boolean changed = this.state != PublicationState.SUSPENDED;
         this.state = PublicationState.SUSPENDED;
         this.moderationApproved = false;
@@ -99,7 +143,11 @@ public class PublicationEntity {
         return changed;
     }
 
-    private boolean reevaluate() {
+    /**
+     * @param inputChanged whether the caller changed intent or a prerequisite flag. {@code updatedAt}
+     *     moves only when something did, so a repeated call dirties nothing: no write, no version bump.
+     */
+    private boolean reevaluate(boolean inputChanged) {
         if (this.state == PublicationState.REMOVED) {
             return false; // terminal — an admin takedown is never undone by a normal prerequisite flip
         }
@@ -113,7 +161,9 @@ public class PublicationEntity {
         }
         boolean changed = next != this.state;
         this.state = next;
-        this.updatedAt = Instant.now();
+        if (changed || inputChanged) {
+            this.updatedAt = Instant.now();
+        }
         return changed;
     }
 

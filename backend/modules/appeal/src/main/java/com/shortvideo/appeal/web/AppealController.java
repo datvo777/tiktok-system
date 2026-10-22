@@ -1,11 +1,13 @@
 package com.shortvideo.appeal.web;
 
+import java.util.UUID;
 import com.shortvideo.appeal.domain.AppealService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,9 +29,16 @@ public class AppealController {
     @PostMapping("/{videoId}/appeals")
     @Operation(summary = "Owner appeals a rejected video")
     public AppealDtos.AppealResponse submit(
-            @PathVariable String videoId,
+            @PathVariable UUID videoId,
             @Valid @RequestBody AppealDtos.SubmitRequest request,
             @AuthenticationPrincipal AuthenticatedAccount caller) {
-        return AppealDtos.AppealResponse.from(appealService.submit(videoId, caller.accountId(), request.reason()));
+        return AppealDtos.AppealResponse.from(appealService.submit(videoId.toString(), caller.accountId(), request.reason()));
+    }
+
+    @GetMapping("/{videoId}/appeals")
+    @Operation(summary = "Owner checks the appeal status of one of their own videos")
+    public AppealDtos.AppealResponse status(
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        return AppealDtos.AppealResponse.from(appealService.getStatus(videoId.toString(), caller.accountId()));
     }
 }

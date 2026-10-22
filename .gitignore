@@ -11,5 +11,15 @@ dist/
 *.log
 data/
 .claude/
+*.code-workspace
 *.tsbuildinfo
 *.tar.gz
+
+# Local Kafka CA, broker key and per-principal passwords (infrastructure/kafka/secure/gen-secrets.sh)
+infrastructure/kafka/secure/generated/
+
+# Throwaway mTLS test certificates (infrastructure/nginx/mtls/gen-dev-certs.sh)
+infrastructure/nginx/mtls/generated/
+
+# Throwaway admin credentials for trying the second factor locally (tests/mfa)
+tests/mfa/local-admin.txt

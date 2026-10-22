@@ -29,9 +29,15 @@ class FeedCacheService {
         this.properties = properties;
     }
 
-    List<FeedItemView> get(String viewerId, int page) {
+    /**
+     * The whole ranking is cached under one key per viewer, not one key per page.
+     * Caching page slices separately let two pages of the same feed come from two
+     * different rankings, which is how a video could show up on both page 0 and
+     * page 1 — or on neither.
+     */
+    List<FeedItemView> getRanking(String viewerId) {
         try {
-            String json = redis.opsForValue().get(key(viewerId, page));
+            String json = redis.opsForValue().get(key(viewerId));
             return json == null ? null : objectMapper.readValue(json, LIST_TYPE);
         } catch (Exception e) {
             log.debug("Feed cache read failed; recomputing: {}", e.getMessage());
@@ -39,15 +45,15 @@ class FeedCacheService {
         }
     }
 
-    void put(String viewerId, int page, List<FeedItemView> items) {
+    void putRanking(String viewerId, List<FeedItemView> ranking) {
         try {
-            redis.opsForValue().set(key(viewerId, page), objectMapper.writeValueAsString(items), properties.getCacheTtl());
+            redis.opsForValue().set(key(viewerId), objectMapper.writeValueAsString(ranking), properties.getCacheTtl());
         } catch (Exception e) {
-            log.debug("Feed cache write failed; page will be recomputed next time: {}", e.getMessage());
+            log.debug("Feed cache write failed; ranking will be recomputed next time: {}", e.getMessage());
         }
     }
 
-    private String key(String viewerId, int page) {
-        return "feed:" + viewerId + ":" + page;
+    private String key(String viewerId) {
+        return "feed:ranking:" + viewerId;
     }
 }
