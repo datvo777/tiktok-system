@@ -22,10 +22,13 @@ public class PublicationService implements PublicationDirectory, PublicationBack
 
     private final PublicationJpaRepository repository;
     private final OutboxWriter outboxWriter;
+    private final PublishToggleRateLimiter toggleRateLimiter;
 
-    public PublicationService(PublicationJpaRepository repository, OutboxWriter outboxWriter) {
+    public PublicationService(
+            PublicationJpaRepository repository, OutboxWriter outboxWriter, PublishToggleRateLimiter toggleRateLimiter) {
         this.repository = repository;
         this.outboxWriter = outboxWriter;
+        this.toggleRateLimiter = toggleRateLimiter;
     }
 
     /** Consumed from video.upload.completed; every video gets a PRIVATE draft (brief section 8). */
@@ -116,6 +119,9 @@ public class PublicationService implements PublicationDirectory, PublicationBack
     /** Shared owner check and event append for the two owner-driven transitions. */
     private PublicationView applyAsOwner(
             String videoId, String ownerAccountId, java.util.function.Predicate<PublicationEntity> mutation) {
+        // Before any database work, and counted for non-owners too, so probing other people's ids
+        // is throttled the same way.
+        toggleRateLimiter.checkAllowed(ownerAccountId);
         PublicationEntity entity = repository
                 .findById(UUID.fromString(videoId))
                 .orElseThrow(() -> new PublicationExceptions.PublicationNotFound("No such video"));

@@ -26,7 +26,7 @@ class PublicationServiceOrderingTest {
 
     private final PublicationJpaRepository repository = mock(PublicationJpaRepository.class);
     private final OutboxWriter outboxWriter = mock(OutboxWriter.class);
-    private final PublicationService service = new PublicationService(repository, outboxWriter);
+    private final PublicationService service = new PublicationService(repository, outboxWriter, mock(PublishToggleRateLimiter.class));
 
     private final String videoId = UUID.randomUUID().toString();
 

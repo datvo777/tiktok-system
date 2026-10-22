@@ -349,6 +349,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Video suspended", e.getMessage());
     }
 
+    @ExceptionHandler(PublicationExceptions.PublishRateLimited.class)
+    public ResponseEntity<ProblemDetail> publishRateLimited(PublicationExceptions.PublishRateLimited e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Too many changes",
+                        "You have changed this too many times recently. Try again later."));
+    }
+
     @ExceptionHandler({PublicationExceptions.NotVideoOwner.class, AppealExceptions.NotVideoOwner.class})
     public ProblemDetail notPublicationOwner(RuntimeException e) {
         return problem(HttpStatus.FORBIDDEN, "Forbidden", e.getMessage());
