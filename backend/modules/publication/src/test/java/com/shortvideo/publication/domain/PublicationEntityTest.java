@@ -161,4 +161,71 @@ class PublicationEntityTest {
         assertThat(video.remove()).isTrue();
         assertThat(video.remove()).isFalse();
     }
+
+    private PublicationEntity publishedVideo() {
+        PublicationEntity video = newVideo();
+        video.requestPublish();
+        video.setProcessingReady(true);
+        video.acceptModeration(1);
+        video.setModerationApproved(true);
+        return video;
+    }
+
+    @Test
+    void aModerationDecisionNoNewerThanTheLastAppliedIsStale() {
+        PublicationEntity video = newVideo();
+
+        assertThat(video.acceptModeration(3)).isTrue();
+        assertThat(video.acceptModeration(3)).isFalse();
+        assertThat(video.acceptModeration(2)).isFalse();
+        assertThat(video.getModerationVersion()).isEqualTo(3);
+    }
+
+    @Test
+    void aSuspendedVideoStaysSuspendedWhenProcessingSignalsArrive() {
+        PublicationEntity video = publishedVideo();
+        video.suspend();
+
+        assertThat(video.setProcessingReady(false)).isFalse();
+        assertThat(video.setProcessingReady(true)).isFalse();
+        assertThat(video.getState()).isEqualTo(PublicationState.SUSPENDED);
+    }
+
+    @Test
+    void aStrayApprovalDoesNotLiftASuspension() {
+        PublicationEntity video = publishedVideo();
+        video.suspend();
+
+        assertThat(video.setModerationApproved(true)).isFalse();
+        assertThat(video.getState()).isEqualTo(PublicationState.SUSPENDED);
+    }
+
+    @Test
+    void reinstatementIsTheWayOutAndReturnsTheVideoToPublished() {
+        PublicationEntity video = publishedVideo();
+        video.suspend();
+
+        assertThat(video.reinstate()).isTrue();
+        assertThat(video.getState()).isEqualTo(PublicationState.PUBLISHED);
+        assertThat(video.isModerationApproved()).isTrue();
+    }
+
+    @Test
+    void reinstatementWithoutIntentLeavesTheVideoPrivate() {
+        PublicationEntity video = newVideo();
+        video.setProcessingReady(true);
+        video.suspend();
+
+        assertThat(video.reinstate()).isTrue();
+        assertThat(video.getState()).isEqualTo(PublicationState.PRIVATE);
+    }
+
+    @Test
+    void reinstatingAVideoThatWasRemovedChangesNothing() {
+        PublicationEntity video = publishedVideo();
+        video.remove();
+
+        assertThat(video.reinstate()).isFalse();
+        assertThat(video.getState()).isEqualTo(PublicationState.REMOVED);
+    }
 }

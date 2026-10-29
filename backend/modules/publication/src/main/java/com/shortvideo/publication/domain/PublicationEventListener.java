@@ -48,6 +48,8 @@ class PublicationEventListener {
     public void onVideoEvent(String payload) {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
+            // Moderation decisions do not commute, so they are ordered by the moderation aggregate
+            // version; the others ignore it.
             Consumer<Map<String, Object>> handler = switch (envelope.eventType()) {
                 case EventTypes.VIDEO_UPLOAD_COMPLETED -> p -> publicationService.ensureDraft(
                         Payloads.required(p, "videoId"), Payloads.required(p, "accountId"));
@@ -58,11 +60,14 @@ class PublicationEventListener {
                 case EventTypes.VIDEO_LIFECYCLE_CHANGED -> p -> publicationService.onAssetLifecycleChanged(
                         Payloads.required(p, "videoId"), (String) p.get("assetLifecycleState"));
                 case EventTypes.VIDEO_MODERATION_APPROVED -> p ->
-                        publicationService.onModerationApproved(Payloads.required(p, "videoId"));
+                        publicationService.onModerationApproved(
+                                Payloads.required(p, "videoId"), moderationVersion(envelope));
                 case EventTypes.VIDEO_MODERATION_REJECTED -> p ->
-                        publicationService.onModerationRejected(Payloads.required(p, "videoId"));
+                        publicationService.onModerationRejected(
+                                Payloads.required(p, "videoId"), moderationVersion(envelope));
                 case EventTypes.VIDEO_MODERATION_REINSTATED -> p ->
-                        publicationService.onModerationReinstated(Payloads.required(p, "videoId"));
+                        publicationService.onModerationReinstated(
+                                Payloads.required(p, "videoId"), moderationVersion(envelope));
                 default -> null; // not relevant to this coordinator
             };
             if (handler == null) {
@@ -78,5 +83,12 @@ class PublicationEventListener {
             log.warn("Failed to apply video event to publication coordinator; will retry on redelivery", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private static long moderationVersion(EventEnvelope<?> envelope) {
+        if (envelope.aggregateVersion() == null) {
+            throw new IllegalArgumentException("Moderation event " + envelope.eventId() + " carries no aggregate version");
+        }
+        return envelope.aggregateVersion();
     }
 }

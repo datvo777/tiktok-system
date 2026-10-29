@@ -17,9 +17,10 @@ import java.util.UUID;
  * <p>An event-driven coordinator: {@code intent}, {@code processingReady}, and
  * {@code moderationApproved} are maintained from Kafka, and {@link #reevaluate}
  * derives the resulting state. Rejection forces {@code SUSPENDED} directly
- * ({@link #suspend}); reinstatement clears the moderation flag and lets a normal
- * reevaluation move the video back to PUBLISHED if the other prerequisites still
- * hold (brief section 18).
+ * ({@link #suspend}) and SUSPENDED then holds until {@link #reinstate}, which restores the
+ * approval and lets the video move back to PUBLISHED if the other prerequisites still hold
+ * (brief section 18). Moderation events are applied through {@link #acceptModeration}, so a
+ * decision older than the one already applied cannot undo it.
  */
 @Entity
 @Table(name = "publication", schema = "publication")
@@ -44,6 +45,10 @@ public class PublicationEntity {
 
     @Column(name = "moderation_approved", nullable = false)
     private boolean moderationApproved;
+
+    /** Version of the newest moderation event applied; older ones are stale. -1 before the first. */
+    @Column(name = "moderation_version", nullable = false)
+    private long moderationVersion = -1;
 
     /** Optimistic concurrency and the aggregate version carried by events (Rule 10). */
     @Version
@@ -110,6 +115,33 @@ public class PublicationEntity {
     }
 
     /**
+     * Approved and rejected do not commute, so moderation events are ordered by the moderation
+     * aggregate version rather than by arrival. Returns false for a decision no newer than the one
+     * already applied, which the caller must then ignore.
+     */
+    public boolean acceptModeration(long version) {
+        if (version <= this.moderationVersion) {
+            return false;
+        }
+        this.moderationVersion = version;
+        return true;
+    }
+
+    /**
+     * The only way out of SUSPENDED: moderation restored its approval. The video goes wherever the
+     * other prerequisites put it, which may be PUBLISHED again.
+     */
+    public boolean reinstate() {
+        if (this.state != PublicationState.SUSPENDED) {
+            return setModerationApproved(true);
+        }
+        this.moderationApproved = true;
+        this.state = derive();
+        this.updatedAt = Instant.now();
+        return true;
+    }
+
+    /**
      * Reevaluation would overwrite SUSPENDED with PRIVATE or PUBLISH_PENDING, so the owner would
      * lose the fact that an admin suspended the video. Only moderation leaves SUSPENDED.
      */
@@ -151,20 +183,28 @@ public class PublicationEntity {
         if (this.state == PublicationState.REMOVED) {
             return false; // terminal — an admin takedown is never undone by a normal prerequisite flip
         }
-        PublicationState next;
-        if (!intent) {
-            next = PublicationState.PRIVATE;
-        } else if (processingReady && moderationApproved) {
-            next = PublicationState.PUBLISHED;
-        } else {
-            next = PublicationState.PUBLISH_PENDING;
+        if (this.state == PublicationState.SUSPENDED) {
+            // Held until reinstatement: a late processing signal or a stray approval records its
+            // flag but must not lift a rejection.
+            if (inputChanged) {
+                this.updatedAt = Instant.now();
+            }
+            return false;
         }
+        PublicationState next = derive();
         boolean changed = next != this.state;
         this.state = next;
         if (changed || inputChanged) {
             this.updatedAt = Instant.now();
         }
         return changed;
+    }
+
+    private PublicationState derive() {
+        if (!intent) {
+            return PublicationState.PRIVATE;
+        }
+        return processingReady && moderationApproved ? PublicationState.PUBLISHED : PublicationState.PUBLISH_PENDING;
     }
 
     public UUID getVideoId() { return videoId; }
@@ -176,4 +216,5 @@ public class PublicationEntity {
     public long getAggregateVersion() { return aggregateVersion; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public long getModerationVersion() { return moderationVersion; }
 }

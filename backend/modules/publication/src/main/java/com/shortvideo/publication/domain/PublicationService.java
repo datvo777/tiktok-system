@@ -9,6 +9,7 @@ import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,13 @@ public class PublicationService implements PublicationDirectory, PublicationBack
 
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "publication";
+
+    /**
+     * Names of the video module's {@code AssetLifecycleState} values that mean the video is gone.
+     * Strings because this module does not depend on video; a test in the app module pins them to
+     * the enum so a rename there cannot silently stop takedowns.
+     */
+    public static final Set<String> REMOVAL_STATES = Set.of("DELETE_SCHEDULED", "DELETION_IN_PROGRESS", "DELETED");
 
     private final PublicationJpaRepository repository;
     private final OutboxWriter outboxWriter;
@@ -71,29 +79,28 @@ public class PublicationService implements PublicationDirectory, PublicationBack
         apply(videoId, true, entity -> entity.setProcessingReady(false));
     }
 
+    /** @param moderationVersion the moderation aggregate version on the event; an older decision is ignored */
     @Transactional
-    public void onModerationApproved(String videoId) {
-        apply(videoId, true, entity -> entity.setModerationApproved(true));
+    public void onModerationApproved(String videoId, long moderationVersion) {
+        apply(videoId, true, entity -> entity.acceptModeration(moderationVersion) && entity.setModerationApproved(true));
     }
 
     @Transactional
-    public void onModerationReinstated(String videoId) {
-        // Reevaluates normally; the video returns to PUBLISHED only if every
+    public void onModerationReinstated(String videoId, long moderationVersion) {
+        // The only exit from SUSPENDED; the video returns to PUBLISHED only if every
         // other prerequisite still holds (brief section 18).
-        apply(videoId, true, entity -> entity.setModerationApproved(true));
+        apply(videoId, true, entity -> entity.acceptModeration(moderationVersion) && entity.reinstate());
     }
 
     @Transactional
-    public void onModerationRejected(String videoId) {
-        apply(videoId, true, PublicationEntity::suspend);
+    public void onModerationRejected(String videoId, long moderationVersion) {
+        apply(videoId, true, entity -> entity.acceptModeration(moderationVersion) && entity.suspend());
     }
 
     /** Reacts to the video lifecycle snapshot's assetLifecycleState (brief section 18, Milestone 6). */
     @Transactional
     public void onAssetLifecycleChanged(String videoId, String assetLifecycleState) {
-        if ("DELETE_SCHEDULED".equals(assetLifecycleState)
-                || "DELETION_IN_PROGRESS".equals(assetLifecycleState)
-                || "DELETED".equals(assetLifecycleState)) {
+        if (REMOVAL_STATES.contains(assetLifecycleState)) {
             apply(videoId, false, PublicationEntity::remove);
         }
     }

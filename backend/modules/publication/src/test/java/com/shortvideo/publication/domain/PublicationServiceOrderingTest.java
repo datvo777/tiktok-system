@@ -34,7 +34,7 @@ class PublicationServiceOrderingTest {
     void approvalBeforeTheDraftFailsSoTheListenerRetriesIt() {
         when(repository.findById(UUID.fromString(videoId))).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.onModerationApproved(videoId))
+        assertThatThrownBy(() -> service.onModerationApproved(videoId, 1))
                 .isInstanceOf(IllegalStateException.class);
 
         verify(repository, never()).saveAndFlush(any());
@@ -46,8 +46,51 @@ class PublicationServiceOrderingTest {
         when(repository.findById(UUID.fromString(videoId))).thenReturn(Optional.of(draft));
         when(repository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        service.onModerationApproved(videoId);
+        service.onModerationApproved(videoId, 1);
 
         assertThat(draft.isModerationApproved()).isTrue();
+    }
+
+    private PublicationEntity draftWithRejection() {
+        var draft = new PublicationEntity(UUID.fromString(videoId), UUID.randomUUID());
+        when(repository.findById(UUID.fromString(videoId))).thenReturn(Optional.of(draft));
+        when(repository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        draft.requestPublish();
+        draft.setProcessingReady(true);
+        service.onModerationApproved(videoId, 1);
+        service.onModerationRejected(videoId, 2);
+        return draft;
+    }
+
+    /** The case that mattered: approved and rejected do not commute, so arrival order must not decide. */
+    @Test
+    void anApprovalOlderThanTheRejectionDoesNotBringARejectedVideoBack() {
+        var draft = draftWithRejection();
+
+        service.onModerationApproved(videoId, 1);
+
+        assertThat(draft.getState()).isEqualTo(PublicationState.SUSPENDED);
+        assertThat(draft.isModerationApproved()).isFalse();
+    }
+
+    @Test
+    void aRejectionOlderThanTheReinstatementDoesNotSuspendAgain() {
+        var draft = draftWithRejection();
+        service.onModerationReinstated(videoId, 3);
+        assertThat(draft.getState()).isEqualTo(PublicationState.PUBLISHED);
+
+        service.onModerationRejected(videoId, 2);
+
+        assertThat(draft.getState()).isEqualTo(PublicationState.PUBLISHED);
+    }
+
+    @Test
+    void aStaleDecisionAppendsNoEvent() {
+        draftWithRejection();
+        org.mockito.Mockito.clearInvocations(outboxWriter);
+
+        service.onModerationApproved(videoId, 1);
+
+        verify(outboxWriter, never()).append(any());
     }
 }

@@ -2,6 +2,7 @@ package com.shortvideo.publication.domain;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -49,7 +50,7 @@ class PublicationEventListenerTest {
 
         listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_APPROVED, Map.of("videoId", "v1")));
 
-        verify(service).onModerationApproved("v1");
+        verify(service).onModerationApproved("v1", 1L);
     }
 
     @Test
@@ -58,7 +59,7 @@ class PublicationEventListenerTest {
 
         listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_APPROVED, Map.of("videoId", "v1")));
 
-        verify(service, never()).onModerationApproved(anyString());
+        verify(service, never()).onModerationApproved(anyString(), anyLong());
     }
 
     @Test
@@ -69,5 +70,17 @@ class PublicationEventListenerTest {
                 .hasRootCauseInstanceOf(IllegalArgumentException.class);
 
         verify(service, never()).ensureDraft(anyString(), anyString());
+    }
+
+    @Test
+    void aModerationEventWithoutAnAggregateVersionIsRefused() throws Exception {
+        when(inbox.claim(anyString(), any())).thenReturn(true);
+        String noVersion = mapper.writeValueAsString(new EventEnvelope<>(
+                UUID.randomUUID(), EventTypes.VIDEO_MODERATION_REJECTED, 1, "MODERATION", "v1", null, Instant.now(),
+                "p", "m", "c", null, Map.of("videoId", "v1")));
+
+        assertThatThrownBy(() -> listener.onVideoEvent(noVersion)).hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+        verify(service, never()).onModerationRejected(anyString(), anyLong());
     }
 }
