@@ -8,10 +8,12 @@ import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -67,6 +69,46 @@ public class PublicationService implements PublicationDirectory, PublicationBack
             onProcessingReady(videoId);
         }
         return true;
+    }
+
+    @Override
+    @Transactional
+    public boolean reconcileFlags(String videoId, boolean processingReady, String moderationState, long moderationVersion) {
+        PublicationEntity entity = repository.findById(UUID.fromString(videoId)).orElse(null);
+        if (entity == null) {
+            return false;
+        }
+        boolean changed = false;
+        if (processingReady) {
+            changed = entity.setProcessingReady(true);
+        }
+        // PENDING (or nothing) is no decision, so it must not advance the applied version either.
+        if (moderationState != null
+                && Set.of("APPROVED", "REINSTATED", "REJECTED").contains(moderationState)
+                && entity.acceptModeration(moderationVersion)) {
+            changed |= switch (moderationState) {
+                case "APPROVED" -> entity.setModerationApproved(true);
+                case "REINSTATED" -> entity.reinstate();
+                default -> entity.suspend();
+            };
+        }
+        PublicationEntity saved = repository.saveAndFlush(entity);
+        if (changed) {
+            append(saved);
+        }
+        return changed;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> findUnsettledPage(String afterVideoId, int limit) {
+        UUID after = afterVideoId == null ? new UUID(0, 0) : UUID.fromString(afterVideoId);
+        return repository
+                .findIdsInStatesAfter(
+                        List.of(PublicationState.PUBLISH_PENDING, PublicationState.SUSPENDED), after, PageRequest.of(0, limit))
+                .stream()
+                .map(UUID::toString)
+                .toList();
     }
 
     @Transactional

@@ -93,4 +93,71 @@ class PublicationServiceOrderingTest {
 
         verify(outboxWriter, never()).append(any());
     }
+
+    private PublicationEntity pendingDraft() {
+        var draft = new PublicationEntity(UUID.fromString(videoId), UUID.randomUUID());
+        when(repository.findById(UUID.fromString(videoId))).thenReturn(Optional.of(draft));
+        when(repository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        draft.requestPublish();
+        return draft;
+    }
+
+    @Test
+    void reconcilingPublishesAVideoWhoseReadyAndApprovalEventsWereLost() {
+        var draft = pendingDraft();
+
+        assertThat(service.reconcileFlags(videoId, true, "APPROVED", 1)).isTrue();
+
+        assertThat(draft.getState()).isEqualTo(PublicationState.PUBLISHED);
+        verify(outboxWriter).append(any());
+    }
+
+    @Test
+    void reconcilingNeverClearsAFlagForAVideoThatIsNotReadyYet() {
+        var draft = pendingDraft();
+        service.onProcessingReady(videoId);
+
+        service.reconcileFlags(videoId, false, null, 0);
+
+        assertThat(draft.isProcessingReady()).isTrue();
+    }
+
+    @Test
+    void aPendingModerationRecordChangesNothingAndDoesNotAdvanceTheVersion() {
+        var draft = pendingDraft();
+
+        assertThat(service.reconcileFlags(videoId, false, "PENDING", 0)).isFalse();
+
+        assertThat(draft.getModerationVersion()).isEqualTo(-1);
+    }
+
+    @Test
+    void reconcilingSuspendsAVideoWhoseRejectionWasLostAndLiftsItOnReinstatement() {
+        var draft = pendingDraft();
+
+        assertThat(service.reconcileFlags(videoId, true, "REJECTED", 2)).isTrue();
+        assertThat(draft.getState()).isEqualTo(PublicationState.SUSPENDED);
+
+        assertThat(service.reconcileFlags(videoId, true, "REINSTATED", 3)).isTrue();
+        assertThat(draft.getState()).isEqualTo(PublicationState.PUBLISHED);
+    }
+
+    @Test
+    void reconcilingWithAnOlderDecisionThanTheOneAppliedChangesNothing() {
+        var draft = pendingDraft();
+        service.onModerationRejected(videoId, 2);
+
+        assertThat(service.reconcileFlags(videoId, false, "APPROVED", 1)).isFalse();
+
+        assertThat(draft.getState()).isEqualTo(PublicationState.SUSPENDED);
+    }
+
+    @Test
+    void reconcilingAVideoWithNoDraftDoesNothing() {
+        when(repository.findById(UUID.fromString(videoId))).thenReturn(Optional.empty());
+
+        assertThat(service.reconcileFlags(videoId, true, "APPROVED", 1)).isFalse();
+
+        verify(repository, never()).saveAndFlush(any());
+    }
 }

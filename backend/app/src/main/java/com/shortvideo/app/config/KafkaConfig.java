@@ -6,6 +6,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.boot.ssl.SslBundles;
 import org.springframework.context.annotation.Bean;
@@ -128,12 +129,23 @@ public class KafkaConfig {
      * dies mid-poll, at most {@code max.poll.records} records are delivered again and the
      * inbox absorbs them. Measured locally, a synchronous offset commit per record cut a
      * listener to about 40% of its throughput.
+     *
+     * <p>One consumer thread per partition (the topics have three). Retrying a failing record
+     * blocks the thread that polled it, for ~31 seconds, or ~2.5 minutes for a store outage; with a
+     * single thread that held back every partition of the topic, so one video waiting on a missing
+     * draft delayed all the others. Order across partitions was never guaranteed (a publication event can
+     * overtake the upload event), and the handlers already cope: version guards, a retry for a missing
+     * draft, a retry after an optimistic-lock conflict. A listener can still set its own
+     * {@code concurrency}.
      */
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(
-            ConsumerFactory<String, String> consumerFactory, DefaultErrorHandler kafkaErrorHandler) {
+            ConsumerFactory<String, String> consumerFactory,
+            DefaultErrorHandler kafkaErrorHandler,
+            @Value("${shortvideo.kafka.listener-concurrency:3}") int concurrency) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
+        factory.setConcurrency(concurrency);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
         factory.setCommonErrorHandler(kafkaErrorHandler);
         return factory;
