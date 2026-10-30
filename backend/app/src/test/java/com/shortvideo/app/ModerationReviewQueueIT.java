@@ -292,4 +292,94 @@ class ModerationReviewQueueIT {
         assertThat(queueIds()).contains(video);
         assertThat(outboxEvents(video, "video.moderation.approved")).isZero();
     }
+
+    // --- paging: the keyset seek is native SQL, so only a real database can vouch for it -------------
+
+    /** The queue is shared with the other tests here; closing what is in it leaves it empty for a paging test. */
+    private void emptyQueue() {
+        jdbc.update("UPDATE moderation.moderation_record SET closed_at = now() WHERE state = 'PENDING' AND closed_at IS NULL");
+    }
+
+    private String queued(java.time.Instant queuedAt) {
+        String video = videoId();
+        jdbc.update(
+                "INSERT INTO moderation.moderation_record (video_id, creator_id, state, aggregate_version, created_at,"
+                        + " updated_at, queued_at, queue_reason) VALUES (?::uuid, ?::uuid, 'PENDING', 0, now(), now(), ?, 'UPLOAD')",
+                video,
+                UUID.randomUUID().toString(),
+                java.sql.Timestamp.from(queuedAt));
+        return video;
+    }
+
+    /** Every page in turn, as the ids it held, until there is no next cursor. */
+    private List<List<String>> pages(int limit) {
+        List<List<String>> pages = new java.util.ArrayList<>();
+        String cursor = null;
+        do {
+            var page = moderation.listPending(cursor, limit);
+            pages.add(page.items().stream().map(v -> v.videoId()).toList());
+            cursor = page.nextCursor();
+        } while (cursor != null);
+        return pages;
+    }
+
+    @Test
+    void aPageOfExactlyTheLimitHasNoNextPageAndOneMoreHasOne() {
+        emptyQueue();
+        java.time.Instant base = java.time.Instant.parse("2020-01-01T00:00:00Z");
+        for (int i = 0; i < 3; i++) {
+            queued(base.plusSeconds(i));
+        }
+
+        var exact = moderation.listPending(null, 3);
+        assertThat(exact.items()).hasSize(3);
+        assertThat(exact.nextCursor()).isNull();
+
+        queued(base.plusSeconds(3));
+
+        var more = moderation.listPending(null, 3);
+        assertThat(more.items()).hasSize(3);
+        assertThat(more.nextCursor()).isNotNull();
+        assertThat(moderation.listPending(more.nextCursor(), 3).items()).hasSize(1);
+    }
+
+    /** The reason the cursor carries video_id: videos queued in the same instant fall on both sides of a page. */
+    @Test
+    void videosQueuedAtTheSameInstantAreNeitherRepeatedNorLostAcrossAPageBoundary() {
+        emptyQueue();
+        java.time.Instant base = java.time.Instant.parse("2020-01-01T00:00:00Z");
+        java.time.Instant tie = base.plusSeconds(10);
+        List<String> expected = new java.util.ArrayList<>();
+        expected.add(queued(base));
+        List<String> tied = new java.util.ArrayList<>(List.of(queued(tie), queued(tie), queued(tie), queued(tie)));
+        java.util.Collections.sort(tied); // video_id is the tie-breaker; uuid text order matches uuid order
+        expected.addAll(tied);
+        expected.add(queued(base.plusSeconds(20)));
+
+        // Page size 2 puts the boundary between two of the tied videos.
+        List<List<String>> pages = pages(2);
+
+        assertThat(pages.stream().flatMap(List::stream).toList()).containsExactlyElementsOf(expected);
+        assertThat(pages).hasSize(3);
+    }
+
+    @Test
+    void walkingEveryPageVisitsEachQueuedVideoExactlyOnceInOrder() {
+        emptyQueue();
+        java.time.Instant base = java.time.Instant.parse("2020-01-01T00:00:00Z");
+        List<String> expected = new java.util.ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            expected.add(queued(base.plusSeconds(i)));
+        }
+
+        List<String> seen = pages(7).stream().flatMap(List::stream).toList();
+
+        assertThat(seen).containsExactlyElementsOf(expected);
+    }
+
+    @Test
+    void aCursorThisServiceDidNotIssueIsRefused() {
+        assertThatThrownBy(() -> moderation.listPending("not-a-cursor!", 10))
+                .isInstanceOf(com.shortvideo.moderation.domain.ModerationExceptions.InvalidCursor.class);
+    }
 }
