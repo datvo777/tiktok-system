@@ -75,6 +75,19 @@ class MfaFlowIT {
         assertThat(refused.getBody()).contains("MFA_REQUIRED");
     }
 
+    /** Reviewing content is as sensitive as it gets short of admin, so the factor is required of both roles. */
+    @Test
+    void aModeratorWithoutASecondFactorIsRefusedAtInternalToo() {
+        Admin moderator = newUser();
+        jdbc.update("UPDATE account.account SET roles = 'USER,MODERATOR' WHERE email = ?", moderator.email());
+        String token = (String) login(moderator).getBody().get("token");
+
+        ResponseEntity<String> refused = get(ADMIN_ONLY_ROUTE, token);
+
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(refused.getBody()).contains("MFA_REQUIRED");
+    }
+
     @Test
     void enrolmentNeedsThePasswordAgainNotJustASession() {
         Admin admin = newAdmin();

@@ -11,6 +11,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import com.shortvideo.shared.security.Roles;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
@@ -40,7 +41,7 @@ public class InternalAccountController {
     }
 
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Search accounts by an email substring")
     public AccountDtos.AdminAccountListResponse search(
             @RequestParam @NotBlank @Size(max = 320) String q,
@@ -49,7 +50,7 @@ public class InternalAccountController {
     }
 
     @PostMapping("/{accountId}/suspend")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Suspend an account")
     public AccountDtos.AccountResponse suspend(
             @PathVariable UUID accountId,
@@ -60,7 +61,7 @@ public class InternalAccountController {
     }
 
     @PostMapping("/{accountId}/reinstate")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Reinstate a suspended or restricted account back to active")
     public AccountDtos.AccountResponse reinstate(
             @PathVariable UUID accountId,

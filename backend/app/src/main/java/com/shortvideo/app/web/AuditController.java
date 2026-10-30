@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import java.util.List;
+import com.shortvideo.shared.security.Roles;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,7 +38,7 @@ public class AuditController {
     }
 
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Admin actions against one video or account, newest first")
     public List<AdminActionEntry> forTarget(
             @RequestParam @NotBlank String targetType,
@@ -47,7 +48,7 @@ public class AuditController {
     }
 
     @GetMapping("/by-actor")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Everything one admin has done, newest first")
     public List<AdminActionEntry> byActor(
             @RequestParam @NotBlank String actorAccountId,

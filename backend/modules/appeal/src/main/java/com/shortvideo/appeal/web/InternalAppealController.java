@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import java.util.List;
 import java.util.UUID;
+import com.shortvideo.shared.security.Roles;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
@@ -38,7 +39,7 @@ public class InternalAppealController {
     }
 
     @GetMapping("/pending")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "List appeals awaiting a decision")
     public List<AppealDtos.AppealResponse> pending(
             @RequestParam(defaultValue = "50") @Min(1) @Max(AppealService.MAX_PENDING_PAGE) int limit) {
@@ -46,7 +47,7 @@ public class InternalAppealController {
     }
 
     @PostMapping("/{appealId}/approve")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Approve an appeal; moderation reinstates the video if it is still rejected")
     public AppealDtos.AppealResponse approve(
             @PathVariable UUID appealId,
@@ -58,7 +59,7 @@ public class InternalAppealController {
     }
 
     @PostMapping("/{appealId}/deny")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Deny an appeal")
     public AppealDtos.AppealResponse deny(
             @PathVariable UUID appealId,

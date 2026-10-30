@@ -10,6 +10,7 @@ import com.shortvideo.shared.security.JwtAuthenticationFilter;
 import com.shortvideo.shared.security.JwtService;
 import com.shortvideo.shared.security.SessionCookies;
 import com.shortvideo.shared.security.SessionTokenDenyList;
+import com.shortvideo.shared.security.Roles;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -128,25 +129,24 @@ public class SecurityConfig {
                         // report, prometheus, metrics, info — enumerates internal
                         // topology and is admin-only.
                         .requestMatchers("/actuator/**").hasRole("ADMIN")
-                        // The admin API: the ADMIN role and, when the second factor is on, a sign-in that used
-                        // one. Judged here, in one place, rather than by each controller.
-                        .requestMatchers("/internal/**").access((authentication, context) -> {
-                            var who = authentication.get();
-                            boolean admin = who != null && who.isAuthenticated() && who.getAuthorities().stream()
-                                    .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
-                            if (!admin) {
-                                return new AuthorizationDecision(false);
-                            }
-                            if (mfa.isEnabled()
-                                    && who.getPrincipal() instanceof com.shortvideo.shared.security.AuthenticatedAccount caller
-                                    && mfa.getRequiredRoles().stream().anyMatch(caller.roles()::contains)
-                                    && !caller.hasSecondFactor()) {
-                                // Lets the 403 below say why, so a client can send the person to enrol or sign in again.
-                                context.getRequest().setAttribute(JwtAuthenticationFilter.MFA_REQUIRED, Boolean.TRUE);
-                                return new AuthorizationDecision(false);
-                            }
-                            return new AuthorizationDecision(true);
-                        })
+                        // The admin API. Staff roles are judged here, in one place, and again by each controller.
+                        //
+                        // A moderator reaches only the routes listed next: the review queue, the report queue and
+                        // quarantine, the reversible hold a report may call for (lifting it, and removal, are
+                        // ADMIN). Everything else under /internal, including a route added later, is
+                        // ADMIN-only until it is deliberately listed here.
+                        .requestMatchers(HttpMethod.GET, "/internal/v1/videos/*", "/internal/v1/reports/open")
+                        .access(internalAccess(mfa, Roles.MODERATING))
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/internal/v1/videos/*/approve",
+                                "/internal/v1/videos/*/reject",
+                                "/internal/v1/videos/*/quarantine",
+                                "/internal/v1/videos/*/moderator-playback-session",
+                                "/internal/v1/reports/*/resolve")
+                        .access(internalAccess(mfa, Roles.MODERATING))
+                        .requestMatchers("/internal/**")
+                        .access(internalAccess(mfa, java.util.Set.of(Roles.ADMIN)))
                         // ---------------------------------------------------------------
                         // The anonymous read tier.
                         //
@@ -238,6 +238,32 @@ public class SecurityConfig {
         }
 
         return http.build();
+    }
+
+    /**
+     * Whether the caller holds one of {@code roles} and, when the second factor is on and their role
+     * requires it, signed in with one. The 403 for a missing factor is marked so the response can say
+     * why, and a client can send the person to enrol or sign in again.
+     */
+    private static org.springframework.security.authorization.AuthorizationManager<
+                    org.springframework.security.web.access.intercept.RequestAuthorizationContext>
+            internalAccess(com.shortvideo.shared.security.MfaProperties mfa, java.util.Set<String> roles) {
+        return (authentication, context) -> {
+            var who = authentication.get();
+            boolean entitled = who != null && who.isAuthenticated() && who.getAuthorities().stream()
+                    .anyMatch(a -> roles.contains(a.getAuthority().replaceFirst("^ROLE_", "")));
+            if (!entitled) {
+                return new AuthorizationDecision(false);
+            }
+            if (mfa.isEnabled()
+                    && who.getPrincipal() instanceof com.shortvideo.shared.security.AuthenticatedAccount caller
+                    && mfa.getRequiredRoles().stream().anyMatch(caller.roles()::contains)
+                    && !caller.hasSecondFactor()) {
+                context.getRequest().setAttribute(JwtAuthenticationFilter.MFA_REQUIRED, Boolean.TRUE);
+                return new AuthorizationDecision(false);
+            }
+            return new AuthorizationDecision(true);
+        };
     }
 
     /**

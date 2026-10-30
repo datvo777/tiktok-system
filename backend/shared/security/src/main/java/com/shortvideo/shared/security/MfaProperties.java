@@ -16,7 +16,7 @@ public class MfaProperties {
      * Roles that must hold a second factor to reach {@code /internal}. Anyone with an active factor is asked
      * for a code at sign-in regardless; this only decides who is shut out of the admin API without one.
      */
-    private Set<String> requiredRoles = Set.of("ADMIN");
+    private Set<String> requiredRoles = Set.of("ADMIN", "MODERATOR");
     /** Shown in the authenticator app next to the account. */
     private String issuer = "Short";
     /** How long the password-only step stays valid for the code to be entered. */

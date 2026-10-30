@@ -272,6 +272,87 @@ class AuthorizationIT {
         assertThat(getStatus("/internal/v1/videos/pending", token)).isEqualTo(HttpStatus.OK);
     }
 
+    // ------------------------------------------------------------ MODERATOR versus ADMIN
+
+    /** Role check passed: whatever the route answers (200, 400, 404), it did not refuse the caller. */
+    private void assertReaches(HttpStatus status, String what) {
+        assertThat(status).as(what).isNotIn(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN);
+    }
+
+    private void assertRefused(HttpStatus status, String what) {
+        assertThat(status).as(what).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    /** Ids no row exists for: the role check is what is under test, and it runs before any lookup. */
+    private static final String SOME_ID = "00000000-0000-0000-0000-000000000001";
+
+    @Test
+    void aModeratorWorksTheReviewAndReportQueues() {
+        String token = tokenFor(Set.of("USER", "MODERATOR"));
+
+        assertThat(getStatus("/internal/v1/videos/pending", token)).isEqualTo(HttpStatus.OK);
+        assertThat(getStatus("/internal/v1/reports/open", token)).isEqualTo(HttpStatus.OK);
+        assertReaches(getStatus("/internal/v1/videos/" + SOME_ID, token), "video lookup");
+        assertReaches(postStatus("/internal/v1/videos/" + SOME_ID + "/approve", token, null), "approve");
+        assertReaches(
+                postStatus("/internal/v1/videos/" + SOME_ID + "/reject", token, Map.of("policyCategory", "SPAM", "reason", "x")),
+                "reject");
+        assertReaches(postStatus("/internal/v1/videos/" + SOME_ID + "/moderator-playback-session", token, null), "preview");
+        assertReaches(
+                postStatus("/internal/v1/reports/" + SOME_ID + "/resolve", token, Map.of("resolution", "DISMISSED")),
+                "resolve report");
+        // The hold a report may call for. Lifting it, and removing the video, stay with admins (next test).
+        assertReaches(postStatus("/internal/v1/videos/" + SOME_ID + "/quarantine", token, Map.of("reason", "x")), "quarantine");
+    }
+
+    /**
+     * What a moderator must not do: decide an appeal against a moderator, lift a hold or delete a video,
+     * act on an account, or read the audit trail and the operational endpoints.
+     */
+    @Test
+    void aModeratorIsRefusedEveryAdminOnlyRoute() {
+        String token = tokenFor(Set.of("USER", "MODERATOR"));
+        Map<String, String> reason = Map.of("reason", "x");
+
+        assertRefused(getStatus("/internal/v1/appeals/pending", token), "list appeals");
+        assertRefused(postStatus("/internal/v1/appeals/" + SOME_ID + "/approve", token, reason), "approve appeal");
+        assertRefused(postStatus("/internal/v1/appeals/" + SOME_ID + "/deny", token, reason), "deny appeal");
+        assertRefused(postStatus("/internal/v1/videos/" + SOME_ID + "/restore", token, null), "restore");
+        assertRefused(postStatus("/internal/v1/videos/" + SOME_ID + "/remove", token, reason), "remove");
+        assertRefused(postStatus("/internal/v1/videos/" + SOME_ID + "/reprocess", token, null), "reprocess");
+        assertRefused(getStatus("/internal/v1/accounts", token), "list accounts");
+        assertRefused(postStatus("/internal/v1/accounts/" + SOME_ID + "/suspend", token, reason), "suspend account");
+        assertRefused(postStatus("/internal/v1/accounts/" + SOME_ID + "/reinstate", token, reason), "reinstate account");
+        assertRefused(getStatus("/internal/v1/audit", token), "audit");
+        assertRefused(getStatus("/internal/v1/audit/by-actor", token), "audit by actor");
+        assertRefused(getStatus("/actuator/metrics", token), "actuator");
+    }
+
+    /** A route nobody has listed for moderators is closed to them, so adding one is private by default. */
+    @Test
+    void aRouteUnderInternalThatWasNeverListedForModeratorsIsClosedToThem() {
+        String token = tokenFor(Set.of("USER", "MODERATOR"));
+
+        assertRefused(getStatus("/internal/v1/not-a-route-yet", token), "unlisted GET");
+        assertRefused(postStatus("/internal/v1/videos/" + SOME_ID + "/some-new-action", token, null), "unlisted POST");
+    }
+
+    @Test
+    void anAdminReachesTheModeratorRoutesAndTheAdminOnlyOnes() {
+        String token = tokenFor(Set.of("USER", "ADMIN"));
+        Map<String, String> reason = Map.of("reason", "x");
+
+        assertThat(getStatus("/internal/v1/videos/pending", token)).isEqualTo(HttpStatus.OK);
+        assertThat(getStatus("/internal/v1/reports/open", token)).isEqualTo(HttpStatus.OK);
+        assertReaches(postStatus("/internal/v1/videos/" + SOME_ID + "/approve", token, null), "approve");
+        assertReaches(postStatus("/internal/v1/videos/" + SOME_ID + "/moderator-playback-session", token, null), "preview");
+
+        assertThat(getStatus("/internal/v1/appeals/pending", token)).isEqualTo(HttpStatus.OK);
+        assertReaches(getStatus("/internal/v1/audit", token), "audit");
+        assertReaches(postStatus("/internal/v1/videos/" + SOME_ID + "/quarantine", token, reason), "quarantine");
+        assertReaches(postStatus("/internal/v1/accounts/" + SOME_ID + "/suspend", token, reason), "suspend account");
+    }
+
     // ------------------------------------------------------------------- BOLA
 
     @Test

@@ -2,6 +2,7 @@ package com.shortvideo.report.web;
 
 import com.shortvideo.report.domain.ReportService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.Roles;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -33,7 +34,7 @@ public class InternalReportController {
     }
 
     @GetMapping("/open")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.CAN_MODERATE)
     @Operation(summary = "Open reports, oldest first, with a count per subject")
     public ReportDtos.ReportListResponse open(
             @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit) {
@@ -41,7 +42,7 @@ public class InternalReportController {
     }
 
     @PostMapping("/{reportId}/resolve")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.CAN_MODERATE)
     @Operation(summary = "Close a report with an outcome")
     public ReportDtos.ReportResponse resolve(
             @PathVariable UUID reportId,

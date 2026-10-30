@@ -14,6 +14,7 @@ import com.shortvideo.shared.security.JwtAuthenticationFilter;
 import com.shortvideo.shared.security.PlaybackClaims;
 import com.shortvideo.shared.security.PlaybackMode;
 import com.shortvideo.shared.security.PlaybackTokenService;
+import com.shortvideo.shared.security.Roles;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import com.shortvideo.video.api.VideoPlaybackView;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -197,13 +198,13 @@ class MediaAuthorizer {
 
     /**
      * Ownership is irrelevant here — the whole point is letting a moderator
-     * watch someone else's pending content. Re-checks the ADMIN role
+     * watch someone else's pending content. Re-checks the staff role
      * independently of the token's mode claim, the same way owner-preview
      * re-checks ownership rather than trusting the mode alone.
      */
     private void authorizeModeratorPreview(VideoPlaybackView video, AuthenticatedAccount viewer, int requestedVersion) {
-        if (!viewer.roles().contains("ADMIN")) {
-            throw new MediaAuthorizationException.Forbidden("Viewer is not an admin");
+        if (viewer.roles().stream().noneMatch(Roles.MODERATING::contains)) {
+            throw new MediaAuthorizationException.Forbidden("Viewer is not a moderator");
         }
         if (!video.ownerPreviewEligible(requestedVersion)) {
             throw new MediaAuthorizationException.Forbidden("Video is not ready for preview");

@@ -10,6 +10,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ResponseEntity;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.Roles;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -48,7 +49,7 @@ public class LifecycleAdminController {
      * gets full context before acting on it instead of a blind quarantine/remove.
      */
     @GetMapping("/{videoId}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.CAN_MODERATE)
     @Operation(summary = "Full status snapshot for a video, for admin lookup")
     public ResponseEntity<LifecycleDtos.VideoDetailResponse> get(@PathVariable UUID videoId) {
         VideoEligibilityView eligibility = eligibilityDirectory
@@ -60,7 +61,7 @@ public class LifecycleAdminController {
     }
 
     @PostMapping("/{videoId}/quarantine")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.CAN_MODERATE)
     @Operation(summary = "Place a lifecycle hold on a video, independent of moderation")
     public ResponseEntity<Void> quarantine(
             @PathVariable UUID videoId,
@@ -71,7 +72,7 @@ public class LifecycleAdminController {
     }
 
     @PostMapping("/{videoId}/restore")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Reverse a quarantine if the underlying assets are still verifiably present")
     public ResponseEntity<Void> restore(
             @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
@@ -80,7 +81,7 @@ public class LifecycleAdminController {
     }
 
     @PostMapping("/{videoId}/remove")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Permanently take down a video; schedules its assets for deletion")
     public ResponseEntity<Void> remove(
             @PathVariable UUID videoId,
@@ -91,7 +92,7 @@ public class LifecycleAdminController {
     }
 
     @PostMapping("/{videoId}/reprocess")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.IS_ADMIN)
     @Operation(summary = "Redispatch transcoding from the original source object")
     public ResponseEntity<Void> reprocess(
             @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {

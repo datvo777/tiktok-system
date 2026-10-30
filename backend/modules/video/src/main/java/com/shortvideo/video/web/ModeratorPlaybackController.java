@@ -5,6 +5,7 @@ import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.Roles;
 import com.shortvideo.shared.security.PlaybackCookies;
 import com.shortvideo.shared.security.PlaybackMode;
 import com.shortvideo.shared.security.PlaybackTokenService;
@@ -57,8 +58,8 @@ public class ModeratorPlaybackController {
     }
 
     @PostMapping("/{videoId}/moderator-playback-session")
-    @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Admin-only preview session; requires processing to be READY, nothing else")
+    @PreAuthorize(Roles.CAN_MODERATE)
+    @Operation(summary = "Moderator preview session; requires processing to be READY, nothing else")
     public ResponseEntity<PlaybackSessionResponse> moderatorPreview(
             @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
 

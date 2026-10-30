@@ -3,6 +3,7 @@ package com.shortvideo.moderation.web;
 import java.util.UUID;
 import com.shortvideo.moderation.domain.ModerationService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
+import com.shortvideo.shared.security.Roles;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -36,7 +37,7 @@ public class ModerationController {
     }
 
     @GetMapping("/pending")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.CAN_MODERATE)
     @Operation(summary = "List a page of videos awaiting a moderation decision, oldest first")
     public ModerationDtos.PendingPageResponse pending(
             @RequestParam(required = false) String cursor,
@@ -45,7 +46,7 @@ public class ModerationController {
     }
 
     @PostMapping("/{videoId}/approve")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.CAN_MODERATE)
     @Operation(summary = "Approve (PENDING) or reinstate (REJECTED) a video")
     public ResponseEntity<Void> approve(
             @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
@@ -54,7 +55,7 @@ public class ModerationController {
     }
 
     @PostMapping("/{videoId}/reject")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize(Roles.CAN_MODERATE)
     @Operation(summary = "Reject a video against a policy; immediately revokes playback")
     public ResponseEntity<Void> reject(
             @PathVariable UUID videoId,

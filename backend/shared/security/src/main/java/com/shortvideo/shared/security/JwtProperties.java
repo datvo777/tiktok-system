@@ -20,7 +20,7 @@ public class JwtProperties {
     private Duration absoluteTtl = Duration.ofDays(30);
     /** The same bound for accounts holding any of {@link #privilegedRoles}: far shorter, because far more is at stake. */
     private Duration privilegedAbsoluteTtl = Duration.ofHours(12);
-    private Set<String> privilegedRoles = Set.of("ADMIN");
+    private Set<String> privilegedRoles = Set.of("ADMIN", "MODERATOR");
     private String sessionCookieName = "sv_session";
     /**
      * Defaults to true so that shipping a session cookie over plain HTTP is an
