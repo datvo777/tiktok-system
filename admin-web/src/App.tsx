@@ -6,6 +6,7 @@ import { MfaGate } from './MfaGate';
 import { Operate } from './Operate';
 import { ReportsQueue } from './Reports';
 import { Review } from './Review';
+import { isAdmin, isStaff } from './roles';
 import { ToastProvider } from './ui';
 
 type Surface = 'review' | 'reports' | 'investigate' | 'operate';
@@ -31,7 +32,7 @@ export function App() {
     queryKey: ['mfa-status'],
     queryFn: getMfaStatus,
     retry: false,
-    enabled: Boolean(me.data?.roles.includes('ADMIN')),
+    enabled: isStaff(me.data?.roles),
   });
 
   if (me.isPending) {
@@ -53,10 +54,11 @@ export function App() {
             {import.meta.env.DEV ? (
               <p className="section-note">
                 There is no self-service admin registration. Grant the role directly in Postgres for local
-                testing: <code>UPDATE account.account SET roles = 'USER,ADMIN' WHERE email = …</code>
+                testing: <code>UPDATE account.account SET roles = 'USER,ADMIN' WHERE email = …</code> (or{' '}
+                <code>'USER,MODERATOR'</code> for a moderator)
               </p>
             ) : (
-              <p className="section-note">Sign in with an account that carries the ADMIN role.</p>
+              <p className="section-note">Sign in with an account that carries the ADMIN or MODERATOR role.</p>
             )}
 
             {pendingToken ? (
@@ -130,14 +132,15 @@ export function App() {
     );
   }
 
-  if (!me.data.roles.includes('ADMIN')) {
+  if (!isStaff(me.data.roles)) {
     return (
       <div className="auth">
         <Brand />
         <section className="panel">
           <div className="panel-body">
             <p className="error-text">
-              Signed in as {me.data.displayName}, but this account does not carry the ADMIN role.
+              Signed in as {me.data.displayName}, but this account carries neither the ADMIN nor the MODERATOR
+              role.
             </p>
             <div className="btn-row">
               <button onClick={() => void signOut()}>Sign out</button>
@@ -168,7 +171,11 @@ export function App() {
 
   return (
     <ToastProvider>
-      <Console displayName={me.data.displayName} onSignOut={() => void signOut()} />
+      <Console
+        displayName={me.data.displayName}
+        isAdmin={isAdmin(me.data.roles)}
+        onSignOut={() => void signOut()}
+      />
     </ToastProvider>
   );
 
@@ -239,7 +246,15 @@ function Brand() {
   );
 }
 
-function Console({ displayName, onSignOut }: { displayName: string; onSignOut: () => void }) {
+function Console({
+  displayName,
+  isAdmin,
+  onSignOut,
+}: {
+  displayName: string;
+  isAdmin: boolean;
+  onSignOut: () => void;
+}) {
   const [surface, setSurface] = useState<Surface>('review');
 
   // Shares a cache key with Operate, so the badge costs nothing extra.
@@ -276,18 +291,22 @@ function Console({ displayName, onSignOut }: { displayName: string; onSignOut: (
           >
             Reports
           </button>
-          <button
-            aria-current={surface === 'investigate' ? 'page' : undefined}
-            onClick={() => setSurface('investigate')}
-          >
-            Investigate
-          </button>
-          <button
-            aria-current={surface === 'operate' ? 'page' : undefined}
-            onClick={() => setSurface('operate')}
-          >
-            Operate
-          </button>
+          {isAdmin && (
+            <>
+              <button
+                aria-current={surface === 'investigate' ? 'page' : undefined}
+                onClick={() => setSurface('investigate')}
+              >
+                Investigate
+              </button>
+              <button
+                aria-current={surface === 'operate' ? 'page' : undefined}
+                onClick={() => setSurface('operate')}
+              >
+                Operate
+              </button>
+            </>
+          )}
         </nav>
 
         <div className="topbar-end">
@@ -299,10 +318,10 @@ function Console({ displayName, onSignOut }: { displayName: string; onSignOut: (
       </header>
 
       <main className="surface">
-        {surface === 'review' && <Review />}
-        {surface === 'reports' && <ReportsQueue />}
-        {surface === 'investigate' && <Investigate />}
-        {surface === 'operate' && <Operate />}
+        {surface === 'review' && <Review showAppeals={isAdmin} />}
+        {surface === 'reports' && <ReportsQueue canRemove={isAdmin} />}
+        {isAdmin && surface === 'investigate' && <Investigate />}
+        {isAdmin && surface === 'operate' && <Operate />}
       </main>
     </div>
   );

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import {
   listOpenReports,
+  quarantine,
   removeVideo,
   resolveReport,
   type OpenReport,
@@ -34,7 +35,7 @@ const REASON_LABEL: Record<string, string> = {
  * can be removed for reasons no report raised; collapsing them would make the
  * audit trail unable to tell those apart.
  */
-export function ReportsQueue() {
+export function ReportsQueue({ canRemove }: { canRemove: boolean }) {
   const queryClient = useQueryClient();
   const pushToast = useToast();
 
@@ -76,7 +77,18 @@ export function ReportsQueue() {
     onError: (error) => pushToast('error', `Could not remove: ${(error as Error).message}`),
   });
 
-  const busy = resolve.isPending || removeAndAction.isPending;
+  // The reversible enforcement action, open to moderators: the video is held with its assets kept, and an
+  // admin can lift the hold. Closing the report as ACTIONED is what actioning it means.
+  const quarantineAndAction = useMutation({
+    mutationFn: async () => {
+      await quarantine(current!.subjectId, note.trim() || `Reported: ${current!.reason}`);
+      await resolveReport(current!.reportId, 'ACTIONED', note);
+    },
+    onSuccess: afterResolve('Video quarantined and report actioned'),
+    onError: (error) => pushToast('error', `Could not quarantine: ${(error as Error).message}`),
+  });
+
+  const busy = resolve.isPending || removeAndAction.isPending || quarantineAndAction.isPending;
 
   return (
     <div className="review">
@@ -147,12 +159,21 @@ export function ReportsQueue() {
 
                 <div className="btn-row">
                   <button
-                    className="btn-danger"
                     disabled={busy || current.subjectType !== 'VIDEO'}
-                    onClick={() => removeAndAction.mutate()}
+                    onClick={() => quarantineAndAction.mutate()}
                   >
-                    {removeAndAction.isPending ? 'Removing…' : 'Remove video & action'}
+                    {quarantineAndAction.isPending ? 'Quarantining…' : 'Quarantine video & action'}
                   </button>
+                  {/* Removal cannot be undone, so it is an admin action; the server refuses a moderator. */}
+                  {canRemove && (
+                    <button
+                      className="btn-danger"
+                      disabled={busy || current.subjectType !== 'VIDEO'}
+                      onClick={() => removeAndAction.mutate()}
+                    >
+                      {removeAndAction.isPending ? 'Removing…' : 'Remove video & action'}
+                    </button>
+                  )}
                   <button disabled={busy} onClick={() => resolve.mutate('ACTIONED')}>
                     Actioned elsewhere
                   </button>

@@ -51,7 +51,7 @@ type Deferred = {
  * Moderation and appeals are different inputs to the same activity, so they are
  * queues within one surface rather than two unrelated sections of a scroll.
  */
-export function Review() {
+export function Review({ showAppeals }: { showAppeals: boolean }) {
   const [queue, setQueue] = useState<'moderation' | 'appeals'>('moderation');
 
   // Only for the tab count — the appeals queue fetches its own data. Shares a
@@ -60,6 +60,8 @@ export function Review() {
     queryKey: ['pending-appeals'],
     queryFn: listPendingAppeals,
     refetchInterval: 30000,
+    // Deciding an appeal is an admin action; the endpoint refuses a moderator.
+    enabled: showAppeals,
   });
 
   const appealCount = appeals.data?.length ?? 0;
@@ -75,18 +77,20 @@ export function Review() {
         >
           Moderation
         </button>
-        <button
-          role="tab"
-          aria-selected={queue === 'appeals'}
-          className={queue === 'appeals' ? 'is-on' : ''}
-          onClick={() => setQueue('appeals')}
-        >
-          Appeals
-          {appealCount > 0 && <span className="badge is-warn">{appealCount}</span>}
-        </button>
+        {showAppeals && (
+          <button
+            role="tab"
+            aria-selected={queue === 'appeals'}
+            className={queue === 'appeals' ? 'is-on' : ''}
+            onClick={() => setQueue('appeals')}
+          >
+            Appeals
+            {appealCount > 0 && <span className="badge is-warn">{appealCount}</span>}
+          </button>
+        )}
       </div>
 
-      {queue === 'moderation' ? <ModerationQueue /> : <AppealsQueue />}
+      {queue === 'appeals' && showAppeals ? <AppealsQueue /> : <ModerationQueue />}
     </div>
   );
 }
