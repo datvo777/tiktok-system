@@ -11,6 +11,9 @@ public interface DurableRevocationReader {
 
     boolean isActive(String subjectType, String subjectId);
 
+    /** The sources with an active revocation on this subject, so a caller can look past some of them. */
+    java.util.Set<String> activeSources(String subjectType, String subjectId);
+
     /**
      * Batched form of {@link #isActive} for callers ranking or filtering a whole
      * page at once, so a 200-candidate feed costs one query rather than 200.

@@ -34,7 +34,7 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
     private static final String MODULE = "moderation";
 
     /** Revocation source type for a moderation rejection (brief section 16). */
-    public static final String REJECTION_SOURCE = "MODERATION";
+    public static final String REJECTION_SOURCE = com.shortvideo.shared.revocation.RevocationSources.MODERATION;
 
     /**
      * Recorded as the actor on an automated approval, so the audit trail can

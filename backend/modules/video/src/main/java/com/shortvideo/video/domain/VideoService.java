@@ -70,7 +70,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     private static final int MAX_TIMEOUT_ATTEMPTS = 2;
 
     /** Revocation source type for admin lifecycle holds (quarantine/removal — brief section 16). */
-    public static final String LIFECYCLE_SOURCE = "LIFECYCLE";
+    public static final String LIFECYCLE_SOURCE = com.shortvideo.shared.revocation.RevocationSources.LIFECYCLE;
 
     private final VideoJpaRepository repository;
     private final SupersededAssetJpaRepository supersededAssetRepository;

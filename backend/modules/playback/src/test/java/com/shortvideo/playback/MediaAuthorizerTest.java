@@ -35,13 +35,15 @@ class MediaAuthorizerTest {
 
     private final PlaybackTokenService tokenService = mock(PlaybackTokenService.class);
     private final VideoPlaybackDirectory videoDirectory = mock(VideoPlaybackDirectory.class);
+    private final RevocationCache revocationCache = mock(RevocationCache.class);
+    private final DurableRevocationReader revocationReader = mock(DurableRevocationReader.class);
     private final MediaAuthorizer authorizer = new MediaAuthorizer(
             tokenService,
             videoDirectory,
             mock(AccountDirectory.class),
             mock(EligibilityDirectory.class),
-            mock(RevocationCache.class),
-            mock(DurableRevocationReader.class),
+            revocationCache,
+            revocationReader,
             mock(DeviceIdentity.class),
             new SimpleMeterRegistry());
 
@@ -94,10 +96,21 @@ class MediaAuthorizerTest {
     }
 
     private void aReadyVideoOwnedBySomeoneElse() {
+        aVideoOwnedBySomeoneElse(AssetLifecycleState.ACTIVE);
+    }
+
+    private void aVideoOwnedBySomeoneElse(AssetLifecycleState lifecycle) {
         when(videoDirectory.findForPlayback(VIDEO_ID))
                 .thenReturn(java.util.Optional.of(new VideoPlaybackView(
                         VIDEO_ID, "22222222-2222-2222-2222-222222222222", ProcessingState.READY, 1,
-                        DurabilityState.DURABLE, AssetLifecycleState.ACTIVE, LegalServingState.CLEAR, 1)));
+                        DurabilityState.DURABLE, lifecycle, LegalServingState.CLEAR, 1)));
+    }
+
+    private void revokedFor(String subjectType, String subjectId, String... sources) {
+        when(revocationCache.isDenied(subjectType, subjectId)).thenReturn(true);
+        when(revocationCache.activeSources(subjectType, subjectId)).thenReturn(Set.of(sources));
+        when(revocationReader.isActive(subjectType, subjectId)).thenReturn(true);
+        when(revocationReader.activeSources(subjectType, subjectId)).thenReturn(Set.of(sources));
     }
 
     @Test
@@ -116,6 +129,28 @@ class MediaAuthorizerTest {
         aReadyVideoOwnedBySomeoneElse();
 
         assertThatThrownBy(() -> authorizer.authorize(requestWithModeratorPreviewCookie(), key, viewerWith("USER")))
+                .isInstanceOf(MediaAuthorizationException.Forbidden.class);
+    }
+
+    /** Deciding an appeal means watching the rejected video, which a rejection otherwise shuts to everyone. */
+    @Test
+    void aModeratorMayWatchARejectedVideoButAnythingElseRecordedAgainstItStillBlocks() {
+        aVideoOwnedBySomeoneElse(AssetLifecycleState.REJECTED_RETAINED);
+        revokedFor("VIDEO", VIDEO_ID, "MODERATION");
+
+        assertThatCode(() -> authorizer.authorize(requestWithModeratorPreviewCookie(), key, viewerWith("MODERATOR")))
+                .doesNotThrowAnyException();
+
+        revokedFor("VIDEO", VIDEO_ID, "MODERATION", "LIFECYCLE");
+        assertThatThrownBy(() -> authorizer.authorize(requestWithModeratorPreviewCookie(), key, viewerWith("MODERATOR")))
+                .isInstanceOf(MediaAuthorizationException.Forbidden.class);
+    }
+
+    @Test
+    void aQuarantinedVideoIsNotWatchableEvenByStaff() {
+        aVideoOwnedBySomeoneElse(AssetLifecycleState.QUARANTINED);
+
+        assertThatThrownBy(() -> authorizer.authorize(requestWithModeratorPreviewCookie(), key, viewerWith("ADMIN")))
                 .isInstanceOf(MediaAuthorizationException.Forbidden.class);
     }
 }

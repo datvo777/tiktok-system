@@ -43,6 +43,17 @@ public class RevocationCache {
         }
     }
 
+    /** The restrictive sources Redis reports as active; empty when there are none or Redis cannot answer. */
+    public Set<String> activeSources(String subjectType, String subjectId) {
+        try {
+            Set<Object> fields = redis.opsForHash().keys(key(subjectType, subjectId));
+            return fields.stream().map(Object::toString).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        } catch (RuntimeException e) {
+            // As in isDenied: an outage is not a deny signal, it just leaves the durable check to decide.
+            return Set.of();
+        }
+    }
+
     void putActive(String subjectType, String subjectId, String sourceType, String reason) {
         try {
             redis.opsForHash().put(key(subjectType, subjectId), sourceType, reason == null ? "revoked" : reason);

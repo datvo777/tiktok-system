@@ -6,6 +6,8 @@ import com.shortvideo.eligibility.api.EligibilityDirectory;
 import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
+import com.shortvideo.shared.revocation.RevocationChecks;
+import com.shortvideo.shared.revocation.RevocationSources;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.DeviceIdentity;
@@ -114,8 +116,11 @@ class MediaAuthorizer {
                 throw new MediaAuthorizationException.Forbidden("Requested version is not the current version");
             }
 
-            requireNotRevoked(RevocationSubjects.VIDEO, key.videoId());
-            requireNotRevoked(RevocationSubjects.ACCOUNT, video.ownerAccountId());
+            // A moderator preview looks past the decisions staff are there to review (see
+            // RevocationSources.ignoredByStaffPreview); every other mode is blocked by any source.
+            boolean staffPreview = PlaybackMode.MODERATOR_PREVIEW.equals(claims.mode());
+            requireNotRevoked(RevocationSubjects.VIDEO, key.videoId(), staffPreview);
+            requireNotRevoked(RevocationSubjects.ACCOUNT, video.ownerAccountId(), staffPreview);
 
             if (PlaybackMode.OWNER_PREVIEW.equals(claims.mode())) {
                 authorizeOwnerPreview(video, viewer, key.processingVersion());
@@ -206,7 +211,7 @@ class MediaAuthorizer {
         if (viewer.roles().stream().noneMatch(Roles.MODERATING::contains)) {
             throw new MediaAuthorizationException.Forbidden("Viewer is not a moderator");
         }
-        if (!video.ownerPreviewEligible(requestedVersion)) {
+        if (!video.moderatorPreviewEligible(requestedVersion)) {
             throw new MediaAuthorizationException.Forbidden("Video is not ready for preview");
         }
     }
@@ -226,11 +231,16 @@ class MediaAuthorizer {
         }
     }
 
-    private void requireNotRevoked(String subjectType, String subjectId) {
+    private void requireNotRevoked(String subjectType, String subjectId, boolean staffPreview) {
         Timer.Sample sample = Timer.start(meterRegistry);
         boolean denied;
         try {
-            denied = revocationCache.isDenied(subjectType, subjectId) || revocationReader.isActive(subjectType, subjectId);
+            denied = RevocationChecks.isBlockedExcept(
+                    revocationCache,
+                    revocationReader,
+                    subjectType,
+                    subjectId,
+                    staffPreview ? RevocationSources.ignoredByStaffPreview(subjectType) : java.util.Set.of());
         } finally {
             sample.stop(revocationCheckTimerBuilder.tag("subject_type", subjectType).register(meterRegistry));
         }

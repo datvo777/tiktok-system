@@ -53,7 +53,7 @@ public class AccountService implements AccountDirectory {
             "$2a$10$7EqJtq98hPqEX7fNZaFWoOa8Nnhz1kFPqTBGvE0Y9WQ0v3wq1nJ8u";
 
     /** Revocation source type for an account suspension (brief section 16). */
-    private static final String SUSPENSION_SOURCE = "ACCOUNT";
+    private static final String SUSPENSION_SOURCE = com.shortvideo.shared.revocation.RevocationSources.ACCOUNT_SUSPENSION;
 
     private final AccountJpaRepository repository;
     private final PasswordEncoder passwordEncoder;

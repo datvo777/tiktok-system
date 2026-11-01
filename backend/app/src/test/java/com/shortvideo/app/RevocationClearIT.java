@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.DurableRevocationWriter;
+import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationClearCommand;
 import com.shortvideo.shared.revocation.RevocationCommand;
 import java.util.UUID;
@@ -33,6 +35,8 @@ class RevocationClearIT {
     }
 
     @Autowired DurableRevocationWriter writer;
+    @Autowired DurableRevocationReader reader;
+    @Autowired RevocationCache cache;
     @Autowired TransactionTemplate transaction;
     @Autowired JdbcTemplate jdbc;
 
@@ -86,5 +90,21 @@ class RevocationClearIT {
     @Test
     void clearingASubjectThatWasNeverBlockedIsNotAnError() {
         assertThatCode(() -> clear(1)).doesNotThrowAnyException();
+    }
+
+    /** What lets staff look past a rejection without looking past a lifecycle hold recorded beside it. */
+    @Test
+    void theActiveSourcesOfASubjectAreReportedPerSourceAndDropWhenOneIsCleared() {
+        block(5);
+        transaction.executeWithoutResult(s -> writer.activate(new RevocationCommand("VIDEO", subject, "LIFECYCLE", 1, "hold")));
+
+        assertThat(reader.activeSources("VIDEO", subject)).containsExactlyInAnyOrder("MODERATION", "LIFECYCLE");
+        assertThat(cache.activeSources("VIDEO", subject)).containsExactlyInAnyOrder("MODERATION", "LIFECYCLE");
+
+        clear(5);
+
+        assertThat(reader.activeSources("VIDEO", subject)).containsExactly("LIFECYCLE");
+        assertThat(cache.activeSources("VIDEO", subject)).containsExactly("LIFECYCLE");
+        assertThat(reader.activeSources("VIDEO", UUID.randomUUID().toString())).isEmpty();
     }
 }

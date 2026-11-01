@@ -46,6 +46,11 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
             )
             """;
 
+    private static final String ACTIVE_SOURCES = """
+            SELECT source_type FROM platform.revocation
+            WHERE subject_type = ? AND subject_id = ? AND active = true
+            """;
+
     /**
      * Uses the same {@code (subject_type, subject_id) WHERE active} partial index as
      * {@link #IS_ACTIVE}; {@code = ANY(?)} keeps the statement text constant
@@ -134,6 +139,11 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
     public boolean isActive(String subjectType, String subjectId) {
         Boolean active = jdbc.queryForObject(IS_ACTIVE, Boolean.class, subjectType, subjectId);
         return Boolean.TRUE.equals(active);
+    }
+
+    @Override
+    public java.util.Set<String> activeSources(String subjectType, String subjectId) {
+        return new java.util.HashSet<>(jdbc.queryForList(ACTIVE_SOURCES, String.class, subjectType, subjectId));
     }
 
     @Override

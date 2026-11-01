@@ -3,6 +3,8 @@ package com.shortvideo.video.web;
 import java.util.UUID;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
+import com.shortvideo.shared.revocation.RevocationChecks;
+import com.shortvideo.shared.revocation.RevocationSources;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.Roles;
@@ -31,7 +33,12 @@ import org.springframework.web.bind.annotation.RestController;
  * the caller to be the owner, and {@code PUBLIC} requires the full eligibility
  * invariant, which a video pending its first moderation decision can never yet
  * satisfy). Same authority order as every other playback-session endpoint,
- * with ownership swapped for the ADMIN role the URL already requires.
+ * with ownership swapped for the staff role the URL already requires.
+ *
+ * <p>Staff look past the decisions they are there to review: a video retained after a rejection stays
+ * watchable and so does its revocation, or an appeal could never be decided; likewise a suspended
+ * account's videos. Anything else (a lifecycle hold, a source added later) blocks them as it blocks
+ * everyone.
  */
 @RestController
 @RequestMapping("/internal/v1/videos")
@@ -67,7 +74,7 @@ public class ModeratorPlaybackController {
                 .findForPlayback(videoId.toString())
                 .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
 
-        if (video.currentProcessingVersion() == null || !video.ownerPreviewEligible(video.currentProcessingVersion())) {
+        if (video.currentProcessingVersion() == null || !video.moderatorPreviewEligible(video.currentProcessingVersion())) {
             throw new VideoExceptions.VideoNotReady("Video is not ready for preview");
         }
 
@@ -85,8 +92,12 @@ public class ModeratorPlaybackController {
     }
 
     private void requireNotRevoked(String subjectType, String subjectId) {
-        boolean denied = revocationCache.isDenied(subjectType, subjectId)
-                || revocationReader.isActive(subjectType, subjectId);
+        boolean denied = RevocationChecks.isBlockedExcept(
+                revocationCache,
+                revocationReader,
+                subjectType,
+                subjectId,
+                RevocationSources.ignoredByStaffPreview(subjectType));
         if (denied) {
             throw new VideoExceptions.VideoNotReady("Playback is currently restricted");
         }
