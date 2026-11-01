@@ -13,6 +13,7 @@ import com.shortvideo.publication.domain.PublicationExceptions;
 import com.shortvideo.report.domain.ReportExceptions;
 import com.shortvideo.search.domain.SearchUnavailableException;
 import com.shortvideo.account.mfa.MfaExceptions;
+import com.shortvideo.shared.revocation.RevocationConflictException;
 import com.shortvideo.shared.security.MfaUnavailableException;
 import com.shortvideo.shared.security.TooManyLoginAttemptsException;
 import com.shortvideo.shared.security.TooManyRegistrationAttemptsException;
@@ -471,6 +472,20 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ProblemDetail concurrentModification(OptimisticLockingFailureException e) {
         log.info("Concurrent modification refused: {}", e.getMessage());
         return problem(HttpStatus.CONFLICT, "Conflict", "The resource was changed by someone else; reload and try again");
+    }
+
+    /**
+     * Lifting a block that was set by a different decision than the one the caller is reversing.
+     * Nothing was changed (the caller's transaction rolled back), and the caller has to look at the
+     * subject's current state before deciding again, which is what 409 says.
+     */
+    @ExceptionHandler(RevocationConflictException.class)
+    public ProblemDetail revocationConflict(RevocationConflictException e) {
+        log.warn("Revocation clear refused: {}", e.getMessage());
+        return problem(
+                HttpStatus.CONFLICT,
+                "Conflict",
+                "The block on this item was set by a different decision; nothing was changed. Reload it and review its current state");
     }
 
     @ExceptionHandler(Exception.class)

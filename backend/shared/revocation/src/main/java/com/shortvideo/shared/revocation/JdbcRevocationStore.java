@@ -128,7 +128,7 @@ public class JdbcRevocationStore implements DurableRevocationWriter, DurableRevo
                         command.subjectType(),
                         command.subjectId(),
                         command.sourceType()))) {
-            throw new IllegalStateException("Revocation of " + command.subjectType() + " " + command.subjectId()
+            throw new RevocationConflictException("Revocation of " + command.subjectType() + " " + command.subjectId()
                     + " by " + command.sourceType() + " is still active but was not set at version "
                     + command.expectedBlockingVersion() + "; refusing to report it cleared");
         }

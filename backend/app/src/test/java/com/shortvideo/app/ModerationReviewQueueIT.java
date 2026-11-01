@@ -3,6 +3,7 @@ package com.shortvideo.app;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.shortvideo.moderation.api.PolicyCategory;
 import com.shortvideo.moderation.domain.ModerationService;
 import java.util.List;
 import java.util.UUID;
@@ -291,6 +292,27 @@ class ModerationReviewQueueIT {
 
         assertThat(queueIds()).contains(video);
         assertThat(outboxEvents(video, "video.moderation.approved")).isZero();
+    }
+
+    /** Putting back a rejected video is a different act from a first approval, and the trail has to say so. */
+    @Test
+    void reinstatingARejectedVideoIsAuditedAsAReinstatementNotAnApproval() {
+        String video = videoId();
+        moderation.createPending(video, UUID.randomUUID().toString());
+        moderation.reject(video, PolicyCategory.SPAM_DECEPTIVE, "x", ModerationService.SYSTEM_ACTOR);
+
+        moderation.approve(video, ModerationService.SYSTEM_ACTOR);
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT state FROM moderation.moderation_record WHERE video_id = ?::uuid", String.class, video))
+                .isEqualTo("REINSTATED");
+        assertThat(auditRows(video, "video.reinstated")).isEqualTo(1);
+        assertThat(auditRows(video, "video.approved")).isZero();
+    }
+
+    private int auditRows(String video, String action) {
+        return jdbc.queryForObject(
+                "SELECT count(*) FROM platform.admin_action WHERE target_id = ? AND action = ?", Integer.class, video, action);
     }
 
     // --- paging: the keyset seek is native SQL, so only a real database can vouch for it -------------

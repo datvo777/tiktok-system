@@ -5,6 +5,12 @@ public final class AuditActions {
 
     public static final String VIDEO_APPROVED = "video.approved";
     public static final String VIDEO_REJECTED = "video.rejected";
+
+    /**
+     * A rejected video put back by a person. Distinct from {@link #VIDEO_APPROVED}, which is a first
+     * decision: reversing a takedown is the act an audit trail most needs to be able to find.
+     */
+    public static final String VIDEO_REINSTATED = "video.reinstated";
     public static final String VIDEO_QUARANTINED = "video.quarantined";
     public static final String VIDEO_RESTORED = "video.restored";
     public static final String VIDEO_REMOVED = "video.removed";

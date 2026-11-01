@@ -251,7 +251,10 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
         }
 
         auditRecorder.record(AdminAction.of(
-                actorAccountId, AuditActions.VIDEO_APPROVED, AuditTargets.VIDEO, saved.getVideoId().toString()));
+                actorAccountId,
+                wasRejected ? AuditActions.VIDEO_REINSTATED : AuditActions.VIDEO_APPROVED,
+                AuditTargets.VIDEO,
+                saved.getVideoId().toString()));
     }
 
     /**

@@ -8,6 +8,7 @@ import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.DurableRevocationWriter;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationClearCommand;
+import com.shortvideo.shared.revocation.RevocationConflictException;
 import com.shortvideo.shared.revocation.RevocationCommand;
 import com.shortvideo.shared.revocation.RevocationSources;
 import com.shortvideo.shared.revocation.RevocationSubjects;
@@ -75,7 +76,7 @@ class RevocationClearIT {
     void clearingAtTheWrongVersionIsRefusedAndTheBlockStays() {
         block(5);
 
-        assertThatThrownBy(() -> clear(4)).isInstanceOf(IllegalStateException.class).hasMessageContaining("version 4");
+        assertThatThrownBy(() -> clear(4)).isInstanceOf(RevocationConflictException.class).hasMessageContaining("version 4");
 
         assertThat(active()).isTrue();
     }
