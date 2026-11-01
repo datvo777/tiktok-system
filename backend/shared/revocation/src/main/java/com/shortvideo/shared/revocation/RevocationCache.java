@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -24,6 +26,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class RevocationCache {
+
+    private static final Logger log = LoggerFactory.getLogger(RevocationCache.class);
 
     private final StringRedisTemplate redis;
 
@@ -57,17 +61,22 @@ public class RevocationCache {
     void putActive(String subjectType, String subjectId, String sourceType, String reason) {
         try {
             redis.opsForHash().put(key(subjectType, subjectId), sourceType, reason == null ? "revoked" : reason);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException e) {
             // Best-effort: the durable record is authoritative and will be found
             // on the next read even if this cache write failed.
+            log.warn("Could not cache the {} revocation of {} {}; the rebuild will repair it: {}",
+                    sourceType, subjectType, subjectId, e.toString());
         }
     }
 
     void clearField(String subjectType, String subjectId, String sourceType) {
         try {
             redis.opsForHash().delete(key(subjectType, subjectId), sourceType);
-        } catch (RuntimeException ignored) {
-            // Same reasoning as putActive: durable state is authoritative.
+        } catch (RuntimeException e) {
+            // Same reasoning as putActive: durable state is authoritative. Until the reconcile pass
+            // removes the stale field, the subject stays denied by the cache, so say so.
+            log.warn("Could not clear the {} revocation of {} {} from the cache; the reconcile pass will remove it: {}",
+                    sourceType, subjectType, subjectId, e.toString());
         }
     }
 
