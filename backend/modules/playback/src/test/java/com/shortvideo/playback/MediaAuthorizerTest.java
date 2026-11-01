@@ -9,6 +9,8 @@ import com.shortvideo.account.api.AccountDirectory;
 import com.shortvideo.eligibility.api.EligibilityDirectory;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
+import com.shortvideo.shared.revocation.RevocationSources;
+import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import com.shortvideo.shared.security.DeviceIdentity;
 import com.shortvideo.shared.security.JwtAuthenticationFilter;
@@ -136,12 +138,12 @@ class MediaAuthorizerTest {
     @Test
     void aModeratorMayWatchARejectedVideoButAnythingElseRecordedAgainstItStillBlocks() {
         aVideoOwnedBySomeoneElse(AssetLifecycleState.REJECTED_RETAINED);
-        revokedFor("VIDEO", VIDEO_ID, "MODERATION");
+        revokedFor(RevocationSubjects.VIDEO, VIDEO_ID, RevocationSources.MODERATION);
 
         assertThatCode(() -> authorizer.authorize(requestWithModeratorPreviewCookie(), key, viewerWith("MODERATOR")))
                 .doesNotThrowAnyException();
 
-        revokedFor("VIDEO", VIDEO_ID, "MODERATION", "LIFECYCLE");
+        revokedFor(RevocationSubjects.VIDEO, VIDEO_ID, RevocationSources.MODERATION, RevocationSources.LIFECYCLE);
         assertThatThrownBy(() -> authorizer.authorize(requestWithModeratorPreviewCookie(), key, viewerWith("MODERATOR")))
                 .isInstanceOf(MediaAuthorizationException.Forbidden.class);
     }

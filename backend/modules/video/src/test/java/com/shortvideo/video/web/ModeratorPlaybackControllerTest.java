@@ -5,11 +5,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationSources;
@@ -38,8 +41,9 @@ class ModeratorPlaybackControllerTest {
     private final DurableRevocationReader reader = mock(DurableRevocationReader.class);
     private final PlaybackTokenService tokenService = mock(PlaybackTokenService.class);
     private final PlaybackCookies cookies = mock(PlaybackCookies.class);
+    private final AdminActionRecorder audit = mock(AdminActionRecorder.class);
     private final ModeratorPlaybackController controller =
-            new ModeratorPlaybackController(videoService, cache, reader, tokenService, cookies);
+            new ModeratorPlaybackController(videoService, cache, reader, tokenService, cookies, audit);
 
     private final UUID videoId = UUID.randomUUID();
     private final String owner = UUID.randomUUID().toString();
@@ -65,12 +69,15 @@ class ModeratorPlaybackControllerTest {
     }
 
     @Test
-    void aReadyVideoGetsASession() {
+    void aReadyVideoGetsASessionAndTheAccessIsAudited() {
         video(AssetLifecycleState.ACTIVE, ProcessingState.READY);
 
         var response = controller.moderatorPreview(videoId, caller);
 
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        verify(audit).record(argThat(a -> a.actorAccountId().equals(staff)
+                && a.action().equals(AuditActions.VIDEO_PREVIEWED)
+                && a.targetId().equals(videoId.toString())));
     }
 
     /** An appeal can only be decided by watching what was rejected. */
@@ -93,7 +100,7 @@ class ModeratorPlaybackControllerTest {
     }
 
     @Test
-    void aLifecycleHoldStillBlocksStaffAndNothingIsIssued() {
+    void aLifecycleHoldStillBlocksStaffAndNothingIsIssuedOrAudited() {
         video(AssetLifecycleState.ACTIVE, ProcessingState.READY);
         revoked(RevocationSubjects.VIDEO, videoId.toString(), RevocationSources.LIFECYCLE);
 
@@ -101,6 +108,7 @@ class ModeratorPlaybackControllerTest {
                 .isInstanceOf(VideoExceptions.VideoNotReady.class);
 
         verify(tokenService, never()).issue(anyString(), anyString(), anyInt(), anyString());
+        verify(audit, never()).record(any());
     }
 
     /** Looking past a rejection must not mean looking past everything else recorded against the video. */

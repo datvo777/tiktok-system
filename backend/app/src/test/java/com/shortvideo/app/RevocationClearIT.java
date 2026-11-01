@@ -9,6 +9,8 @@ import com.shortvideo.shared.revocation.DurableRevocationWriter;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationClearCommand;
 import com.shortvideo.shared.revocation.RevocationCommand;
+import com.shortvideo.shared.revocation.RevocationSources;
+import com.shortvideo.shared.revocation.RevocationSubjects;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,12 +46,12 @@ class RevocationClearIT {
 
     private void block(long version) {
         transaction.executeWithoutResult(s -> writer.activate(
-                new RevocationCommand("VIDEO", subject, "MODERATION", version, "SPAM_DECEPTIVE")));
+                new RevocationCommand(RevocationSubjects.VIDEO, subject, RevocationSources.MODERATION, version, "SPAM_DECEPTIVE")));
     }
 
     private void clear(long expectedVersion) {
         transaction.executeWithoutResult(
-                s -> writer.clear(new RevocationClearCommand("VIDEO", subject, "MODERATION", expectedVersion)));
+                s -> writer.clear(new RevocationClearCommand(RevocationSubjects.VIDEO, subject, RevocationSources.MODERATION, expectedVersion)));
     }
 
     private boolean active() {
@@ -96,15 +98,15 @@ class RevocationClearIT {
     @Test
     void theActiveSourcesOfASubjectAreReportedPerSourceAndDropWhenOneIsCleared() {
         block(5);
-        transaction.executeWithoutResult(s -> writer.activate(new RevocationCommand("VIDEO", subject, "LIFECYCLE", 1, "hold")));
+        transaction.executeWithoutResult(s -> writer.activate(new RevocationCommand(RevocationSubjects.VIDEO, subject, RevocationSources.LIFECYCLE, 1, "hold")));
 
-        assertThat(reader.activeSources("VIDEO", subject)).containsExactlyInAnyOrder("MODERATION", "LIFECYCLE");
-        assertThat(cache.activeSources("VIDEO", subject)).containsExactlyInAnyOrder("MODERATION", "LIFECYCLE");
+        assertThat(reader.activeSources(RevocationSubjects.VIDEO, subject)).containsExactlyInAnyOrder(RevocationSources.MODERATION, RevocationSources.LIFECYCLE);
+        assertThat(cache.activeSources(RevocationSubjects.VIDEO, subject)).containsExactlyInAnyOrder(RevocationSources.MODERATION, RevocationSources.LIFECYCLE);
 
         clear(5);
 
-        assertThat(reader.activeSources("VIDEO", subject)).containsExactly("LIFECYCLE");
-        assertThat(cache.activeSources("VIDEO", subject)).containsExactly("LIFECYCLE");
-        assertThat(reader.activeSources("VIDEO", UUID.randomUUID().toString())).isEmpty();
+        assertThat(reader.activeSources(RevocationSubjects.VIDEO, subject)).containsExactly(RevocationSources.LIFECYCLE);
+        assertThat(cache.activeSources(RevocationSubjects.VIDEO, subject)).containsExactly(RevocationSources.LIFECYCLE);
+        assertThat(reader.activeSources(RevocationSubjects.VIDEO, UUID.randomUUID().toString())).isEmpty();
     }
 }

@@ -18,6 +18,12 @@ public final class AuditActions {
     public static final String VIDEO_DELETED_BY_OWNER = "video.deleted_by_owner";
     public static final String VIDEO_REPROCESSED = "video.reprocessed";
 
+    /**
+     * Staff were given a session to watch a video that is not public. Access to content its creator has
+     * not published is worth a trace even though nothing changed; one row per session issued, not per request.
+     */
+    public static final String VIDEO_PREVIEWED = "video.previewed";
+
     public static final String APPEAL_APPROVED = "appeal.approved";
     public static final String APPEAL_DENIED = "appeal.denied";
 

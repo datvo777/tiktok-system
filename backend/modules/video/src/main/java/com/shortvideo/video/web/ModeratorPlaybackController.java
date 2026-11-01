@@ -1,6 +1,10 @@
 package com.shortvideo.video.web;
 
 import java.util.UUID;
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationCache;
 import com.shortvideo.shared.revocation.RevocationChecks;
@@ -38,7 +42,7 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>Staff look past the decisions they are there to review: a video retained after a rejection stays
  * watchable and so does its revocation, or an appeal could never be decided; likewise a suspended
  * account's videos. Anything else (a lifecycle hold, a source added later) blocks them as it blocks
- * everyone.
+ * everyone. Every session issued is audited, since this is how unpublished content is reached.
  */
 @RestController
 @RequestMapping("/internal/v1/videos")
@@ -50,18 +54,21 @@ public class ModeratorPlaybackController {
     private final DurableRevocationReader revocationReader;
     private final PlaybackTokenService tokenService;
     private final PlaybackCookies playbackCookies;
+    private final AdminActionRecorder auditRecorder;
 
     public ModeratorPlaybackController(
             VideoService videoService,
             RevocationCache revocationCache,
             DurableRevocationReader revocationReader,
             PlaybackTokenService tokenService,
-            PlaybackCookies playbackCookies) {
+            PlaybackCookies playbackCookies,
+            AdminActionRecorder auditRecorder) {
         this.videoService = videoService;
         this.revocationCache = revocationCache;
         this.revocationReader = revocationReader;
         this.tokenService = tokenService;
         this.playbackCookies = playbackCookies;
+        this.auditRecorder = auditRecorder;
     }
 
     @PostMapping("/{videoId}/moderator-playback-session")
@@ -80,6 +87,10 @@ public class ModeratorPlaybackController {
 
         requireNotRevoked(RevocationSubjects.VIDEO, video.videoId());
         requireNotRevoked(RevocationSubjects.ACCOUNT, video.ownerAccountId());
+
+        // Before the session exists: an access that cannot be attributed is not one to allow.
+        auditRecorder.record(
+                AdminAction.of(caller.accountId(), AuditActions.VIDEO_PREVIEWED, AuditTargets.VIDEO, videoId.toString()));
 
         int processingVersion = video.currentProcessingVersion();
         var issued = tokenService.issue(caller.accountId(), videoId.toString(), processingVersion, PlaybackMode.MODERATOR_PREVIEW);
