@@ -7,6 +7,9 @@ import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
+import com.shortvideo.shared.revocation.DurableRevocationReader;
+import com.shortvideo.shared.revocation.RevocationSources;
+import com.shortvideo.shared.revocation.RevocationSubjects;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
@@ -22,6 +25,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  * the underlying files are still verifiably present. Own consumer group, same
  * topic and idempotent-by-eventId pattern as every other {@code video.events.v1}
  * listener in this module.
+ *
+ * <p>The asset state follows the moderation block as it is now, not the event as it arrived. These
+ * events carry a version but the asset transitions do not compare it, so a rejection redelivered after
+ * a reinstatement (a retry, a dead-letter replay) would otherwise retain an asset that was already
+ * restored, and nothing later would restore it. The block is written in the same transaction as the
+ * decision, so it is never behind the event.
  */
 @Component
 class VideoLifecycleReactionListener {
@@ -30,12 +39,19 @@ class VideoLifecycleReactionListener {
     private static final Logger log = LoggerFactory.getLogger(VideoLifecycleReactionListener.class);
 
     private final InboxGuard inbox;
+    private final DurableRevocationReader revocations;
     private final VideoService videoService;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transaction;
 
-    VideoLifecycleReactionListener(InboxGuard inbox, VideoService videoService, ObjectMapper objectMapper, TransactionTemplate transaction) {
+    VideoLifecycleReactionListener(
+            InboxGuard inbox,
+            DurableRevocationReader revocations,
+            VideoService videoService,
+            ObjectMapper objectMapper,
+            TransactionTemplate transaction) {
         this.inbox = inbox;
+        this.revocations = revocations;
         this.videoService = videoService;
         this.objectMapper = objectMapper;
         this.transaction = transaction;
@@ -51,8 +67,16 @@ class VideoLifecycleReactionListener {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
             Consumer<String> handler = switch (envelope.eventType()) {
-                case EventTypes.VIDEO_MODERATION_REJECTED -> videoService::retainAsRejected;
-                case EventTypes.VIDEO_MODERATION_REINSTATED -> videoService::restoreIfValid;
+                case EventTypes.VIDEO_MODERATION_REJECTED -> videoId -> {
+                    if (moderationBlocks(videoId)) {
+                        videoService.retainAsRejected(videoId);
+                    }
+                };
+                case EventTypes.VIDEO_MODERATION_REINSTATED -> videoId -> {
+                    if (!moderationBlocks(videoId)) {
+                        videoService.restoreIfValid(videoId);
+                    }
+                };
                 default -> null; // not relevant to the lifecycle reaction
             };
             if (handler == null) {
@@ -68,5 +92,9 @@ class VideoLifecycleReactionListener {
             log.warn("Failed to apply video event to the lifecycle reaction listener; will retry on redelivery", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private boolean moderationBlocks(String videoId) {
+        return revocations.activeSources(RevocationSubjects.VIDEO, videoId).contains(RevocationSources.MODERATION);
     }
 }
