@@ -18,5 +18,17 @@ public final class AppealExceptions {
         public AppealNotPending(String message) { super(message); }
     }
 
+    /** A denied appeal was resubmitted before its cooldown ended; answered 429 with Retry-After. */
+    public static class ResubmitTooSoon extends RuntimeException {
+        private final java.time.Duration retryAfter;
+
+        public ResubmitTooSoon(java.time.Duration retryAfter) {
+            super("Too soon to appeal again");
+            this.retryAfter = retryAfter;
+        }
+
+        public java.time.Duration retryAfter() { return retryAfter; }
+    }
+
     private AppealExceptions() {}
 }

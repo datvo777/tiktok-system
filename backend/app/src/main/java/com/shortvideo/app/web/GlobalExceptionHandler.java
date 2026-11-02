@@ -370,6 +370,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Appeal invalid", e.getMessage());
     }
 
+    @ExceptionHandler(AppealExceptions.ResubmitTooSoon.class)
+    public ResponseEntity<ProblemDetail> appealResubmitTooSoon(AppealExceptions.ResubmitTooSoon e) {
+        // Rounded up: a Retry-After of 0 would invite a retry that is refused again.
+        long seconds = e.retryAfter().plusSeconds(1).toSeconds();
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(seconds))
+                .body(problem(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Too soon to appeal again",
+                        "This appeal was denied recently. Try again later."));
+    }
+
     @ExceptionHandler(NotificationExceptions.NotificationNotFound.class)
     public ProblemDetail notificationNotFound(NotificationExceptions.NotificationNotFound e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());

@@ -20,6 +20,16 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void anAppealResubmittedDuringItsCooldownIsAnswered429WithRetryAfterRoundedUp() {
+        var response = new GlobalExceptionHandler()
+                .appealResubmitTooSoon(new com.shortvideo.appeal.domain.AppealExceptions.ResubmitTooSoon(
+                        java.time.Duration.ofMillis(59_400)));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("60");
+    }
+
+    @Test
     void missingUploadObjectIsConflictWithMachineReadableCode() {
         var problem = new GlobalExceptionHandler()
                 .uploadObjectMissing(new UploadExceptions.UploadObjectMissing("No object was uploaded"));

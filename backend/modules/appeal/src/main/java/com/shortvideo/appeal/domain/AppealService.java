@@ -12,10 +12,13 @@ import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import com.shortvideo.video.api.VideoPlaybackView;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,13 +42,17 @@ public class AppealService {
     private final VideoPlaybackDirectory videoDirectory;
     private final ModerationDirectory moderationDirectory;
     private final AdminActionRecorder auditRecorder;
+    /** How long after a denial the creator must wait before appealing again; zero turns it off. */
+    private final Duration resubmitCooldown;
 
     public AppealService(
             AppealJpaRepository repository,
             OutboxWriter outboxWriter,
             VideoPlaybackDirectory videoDirectory,
             ModerationDirectory moderationDirectory,
-            AdminActionRecorder auditRecorder) {
+            AdminActionRecorder auditRecorder,
+            @Value("${shortvideo.appeal.resubmit-cooldown:24h}") Duration resubmitCooldown) {
+        this.resubmitCooldown = resubmitCooldown;
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDirectory = videoDirectory;
@@ -73,10 +80,17 @@ public class AppealService {
 
         UUID id = UUID.fromString(videoId);
         AppealEntity entity = repository.findById(id).orElseGet(() -> new AppealEntity(id, UUID.fromString(callerAccountId)));
+        refuseWhileCoolingDown(entity);
         if (!entity.submit(reason)) {
             throw new AppealExceptions.NotEligibleForAppeal("An appeal is already under review for this video");
         }
-        AppealEntity saved = repository.saveAndFlush(entity);
+        AppealEntity saved;
+        try {
+            saved = repository.saveAndFlush(entity);
+        } catch (DataIntegrityViolationException e) {
+            // Two first appeals for one video raced to insert its row; the other one won, so this is a repeat.
+            throw new AppealExceptions.NotEligibleForAppeal("An appeal is already under review for this video");
+        }
         append(saved, EventTypes.VIDEO_APPEAL_SUBMITTED, reason);
         return toView(saved);
     }
@@ -138,6 +152,21 @@ public class AppealService {
                 .stream()
                 .map(AppealService::toView)
                 .toList();
+    }
+
+    /**
+     * Only a denial starts a cooldown: it is what keeps a creator from refilling the admin queue with the
+     * same appeal the moment it is turned down. A first appeal, and one after a reinstated video was
+     * rejected again, are new cases and wait for nothing. A denial's {@code updatedAt} is when it was decided.
+     */
+    private void refuseWhileCoolingDown(AppealEntity entity) {
+        if (entity.getState() != AppealState.DENIED || resubmitCooldown.isZero()) {
+            return;
+        }
+        Duration remaining = Duration.between(Instant.now(), entity.getUpdatedAt().plus(resubmitCooldown));
+        if (remaining.isPositive()) {
+            throw new AppealExceptions.ResubmitTooSoon(remaining);
+        }
     }
 
     private AppealEntity find(String videoId) {

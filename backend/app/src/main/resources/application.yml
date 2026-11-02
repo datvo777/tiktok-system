@@ -153,6 +153,10 @@ shortvideo:
       # disk, so this brakes how fast write access is handed out; zero turns it off.
       global-max-per-window: 600
       global-window: 1m
+  appeal:
+    # After an admin denies an appeal the creator waits this long before submitting another for the
+    # same video, so a denial is not answered by an immediate resubmission. Zero turns it off.
+    resubmit-cooldown: 24h
   outbox:
     enabled: true
     relay-id: relay-1
