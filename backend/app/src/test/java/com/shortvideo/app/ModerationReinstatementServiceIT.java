@@ -28,7 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
-class ModerationReinstatementIT {
+class ModerationReinstatementServiceIT {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {

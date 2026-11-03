@@ -29,7 +29,7 @@ import org.springframework.test.context.DynamicPropertySource;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
-class AppealSubmitIT {
+class AppealServiceIT {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {

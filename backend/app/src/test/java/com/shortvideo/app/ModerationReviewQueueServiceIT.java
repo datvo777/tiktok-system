@@ -23,7 +23,7 @@ import org.springframework.test.context.DynamicPropertySource;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
-class ModerationReviewQueueIT {
+class ModerationReviewQueueServiceIT {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
