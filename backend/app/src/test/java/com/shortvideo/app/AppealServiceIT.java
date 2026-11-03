@@ -6,8 +6,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.shortvideo.appeal.api.AppealState;
 import com.shortvideo.appeal.domain.AppealExceptions;
 import com.shortvideo.appeal.domain.AppealService;
+import com.shortvideo.appeal.domain.AppealView;
 import com.shortvideo.moderation.api.PolicyCategory;
 import com.shortvideo.moderation.domain.ModerationService;
+import com.shortvideo.shared.events.EventTypes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -69,6 +71,14 @@ class AppealServiceIT {
 
     private static String account() {
         return UUID.randomUUID().toString();
+    }
+
+    private int outboxEvents(String video, String type) {
+        return jdbc.queryForObject(
+                "SELECT count(*) FROM platform.outbox_event WHERE aggregate_id = ? AND event_type = ?",
+                Integer.class,
+                video,
+                type);
     }
 
     /** The version an admin reading the appeal now would send back with a decision. */
@@ -159,6 +169,89 @@ class AppealServiceIT {
 
         assertThatThrownBy(() -> appeals.approve(video, "changed my mind", versionOf(video, owner), ADMIN))
                 .isInstanceOf(AppealExceptions.AppealNotPending.class);
+    }
+
+    @Test
+    void decidingTheSameAppealTwiceIsRefusedAndPublishesOneEvent() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        appeals.submit(video, owner, "first");
+        long seen = versionOf(video, owner);
+        appeals.approve(video, "fair", seen, ADMIN);
+
+        // A retry after a lost response, with the very version the first call used.
+        assertThatThrownBy(() -> appeals.approve(video, "fair", seen, ADMIN))
+                .isInstanceOf(AppealExceptions.AppealNotPending.class);
+        assertThatThrownBy(() -> appeals.deny(video, "no", seen, ADMIN))
+                .isInstanceOf(AppealExceptions.AppealNotPending.class);
+
+        assertThat(outboxEvents(video, EventTypes.VIDEO_APPEAL_APPROVED)).isEqualTo(1);
+        assertThat(outboxEvents(video, EventTypes.VIDEO_APPEAL_DENIED)).isZero();
+    }
+
+    /** Two admins decide the same appeal from the same version: one decision stands, the other is refused. */
+    @Test
+    void anApproveAndADenyAtOnceLeaveExactlyOneDecision() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 30; round++) {
+                String owner = account();
+                String video = rejectedVideo(owner);
+                appeals.submit(video, owner, "please");
+                long seen = versionOf(video, owner);
+                CyclicBarrier start = new CyclicBarrier(2);
+                Future<Object> approve = pool.submit(() -> {
+                    start.await();
+                    return appeals.approve(video, "fair", seen, ADMIN);
+                });
+                Future<Object> deny = pool.submit(() -> {
+                    start.await();
+                    return appeals.deny(video, "no", seen, ADMIN);
+                });
+
+                int decided = 0;
+                for (Future<Object> call : List.of(approve, deny)) {
+                    try {
+                        call.get();
+                        decided++;
+                    } catch (java.util.concurrent.ExecutionException e) {
+                        assertThat(e.getCause())
+                                .isInstanceOfAny(
+                                        AppealExceptions.AppealNotPending.class,
+                                        AppealExceptions.AppealChanged.class,
+                                        org.springframework.dao.OptimisticLockingFailureException.class);
+                    }
+                }
+                assertThat(decided).isEqualTo(1);
+                assertThat(outboxEvents(video, EventTypes.VIDEO_APPEAL_APPROVED)
+                                + outboxEvents(video, EventTypes.VIDEO_APPEAL_DENIED))
+                        .isEqualTo(1);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void thePendingListIsOldestFirstAndHonoursItsLimit() {
+        List<String> inOrder = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            String owner = account();
+            String video = rejectedVideo(owner);
+            appeals.submit(video, owner, "appeal " + i);
+            // Far older than anything another test leaves pending, and 3 > 2 > 1 years ago in this order.
+            jdbc.update(
+                    "UPDATE appeal.appeal SET updated_at = now() - (?::int * interval '1 year') - interval '100 years'"
+                            + " WHERE video_id = ?::uuid",
+                    3 - i,
+                    video);
+            inOrder.add(video);
+        }
+
+        assertThat(appeals.listPending(3)).extracting(AppealView::videoId).containsExactlyElementsOf(inOrder);
+        assertThat(appeals.listPending(2)).extracting(AppealView::videoId).containsExactlyElementsOf(inOrder.subList(0, 2));
+        assertThat(appeals.listPending(0)).hasSize(1);
+        assertThat(appeals.listPending(Integer.MAX_VALUE)).hasSizeLessThanOrEqualTo(AppealService.MAX_PENDING_PAGE);
     }
 
     /** Moves the denial back in time, as if it had been decided that long ago. */
