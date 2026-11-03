@@ -60,7 +60,7 @@ class VideoLifecycleReactionListenerTest {
 
         listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_REINSTATED));
 
-        verify(videoService).restoreIfValid("v1");
+        verify(videoService).restoreAfterReinstatement("v1");
     }
 
     @Test
@@ -80,7 +80,7 @@ class VideoLifecycleReactionListenerTest {
 
         listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_REINSTATED));
 
-        verify(videoService, never()).restoreIfValid(anyString());
+        verify(videoService, never()).restoreAfterReinstatement(anyString());
     }
 
     @Test

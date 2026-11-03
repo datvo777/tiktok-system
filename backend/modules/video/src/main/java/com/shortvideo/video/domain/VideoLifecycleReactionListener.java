@@ -74,7 +74,7 @@ class VideoLifecycleReactionListener {
                 };
                 case EventTypes.VIDEO_MODERATION_REINSTATED -> videoId -> {
                     if (!moderationBlocks(videoId)) {
-                        videoService.restoreIfValid(videoId);
+                        videoService.restoreAfterReinstatement(videoId);
                     }
                 };
                 default -> null; // not relevant to the lifecycle reaction

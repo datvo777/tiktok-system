@@ -168,17 +168,26 @@ public class VideoEntity {
     }
 
     /**
-     * REJECTED_RETAINED/QUARANTINED -> ACTIVE, only if the underlying assets are
-     * still verifiably present (brief section 18: "asset lifecycle returns to
-     * ACTIVE if valid"). An invalid restore is a no-op, not an error: the video
-     * stays exactly where it was.
+     * REJECTED_RETAINED -> ACTIVE after a successful appeal, only if the underlying assets are still
+     * verifiably present (brief section 18: "asset lifecycle returns to ACTIVE if valid"). A quarantine
+     * is an admin hold independent of moderation, so a reinstatement leaves it in place; only
+     * {@link #releaseQuarantine} lifts it. An invalid restore is a no-op, not an error: the video stays
+     * exactly where it was.
      */
-    public boolean restoreIfValid(boolean assetsValid) {
-        if (this.assetLifecycleState != AssetLifecycleState.REJECTED_RETAINED
-                && this.assetLifecycleState != AssetLifecycleState.QUARANTINED) {
-            return false;
-        }
-        if (!assetsValid) {
+    public boolean restoreAfterReinstatement(boolean assetsValid) {
+        return moveToActive(AssetLifecycleState.REJECTED_RETAINED, assetsValid);
+    }
+
+    /**
+     * QUARANTINED -> ACTIVE, only if the underlying assets are still verifiably present. Refuses any
+     * other state, so an admin restore can never lift a rejection's retention.
+     */
+    public boolean releaseQuarantine(boolean assetsValid) {
+        return moveToActive(AssetLifecycleState.QUARANTINED, assetsValid);
+    }
+
+    private boolean moveToActive(AssetLifecycleState from, boolean assetsValid) {
+        if (this.assetLifecycleState != from || !assetsValid) {
             return false;
         }
         this.assetLifecycleState = AssetLifecycleState.ACTIVE;

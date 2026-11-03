@@ -438,11 +438,10 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
 
     /**
      * Reacts to {@code video.moderation.reinstated} (brief section 18: "asset
-     * lifecycle returns to ACTIVE if valid"). Also used directly by the admin
-     * un-quarantine action, which shares the same "restore only if still valid"
-     * semantics.
+     * lifecycle returns to ACTIVE if valid"). Leaves an admin quarantine alone: that hold is lifted only
+     * by {@link #restoreFromQuarantine}, which also clears its revocation.
      */
-    void restoreIfValid(String videoId) {
+    void restoreAfterReinstatement(String videoId) {
         VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
         if (video == null) {
             return;
@@ -457,7 +456,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
 
         transactions.executeWithoutResult(status -> {
             VideoEntity fresh = repository.findById(UUID.fromString(videoId)).orElse(null);
-            if (fresh == null || !fresh.restoreIfValid(assetsValid)) {
+            if (fresh == null || !fresh.restoreAfterReinstatement(assetsValid)) {
                 return;
             }
             appendLifecycleSnapshotEvent(repository.saveAndFlush(fresh));
@@ -505,7 +504,7 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
                     .findById(UUID.fromString(videoId))
                     .orElseThrow(() -> new VideoExceptions.VideoNotFound("No such video"));
             long previousVersion = fresh.getAggregateVersion();
-            if (!fresh.restoreIfValid(assetsValid)) {
+            if (!fresh.releaseQuarantine(assetsValid)) {
                 throw new VideoExceptions.VideoNotReady("Assets are not verifiably present; cannot restore");
             }
             VideoEntity saved = repository.saveAndFlush(fresh);
