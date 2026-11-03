@@ -17,8 +17,10 @@ export function AppealsQueue() {
   const queryClient = useQueryClient();
   const pushToast = useToast();
 
-  const [index, setIndex] = useState(0);
-  const [decisionReason, setDecisionReason] = useState('');
+  // The selection is the appeal, not its position: the list is refetched every 15s and shifts when
+  // another admin decides an item, which would otherwise move this onto a different appeal.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ videoId: '', version: -1, text: '' });
 
   const appeals = useQuery({
     queryKey: ['pending-appeals'],
@@ -27,29 +29,52 @@ export function AppealsQueue() {
   });
 
   const items = useMemo(() => appeals.data ?? [], [appeals.data]);
-  const current = items[Math.min(index, Math.max(0, items.length - 1))] ?? null;
+  const index = Math.max(
+    0,
+    items.findIndex((item) => item.videoId === selectedId),
+  );
+  const current = items[index] ?? null;
+
+  // A rationale belongs to the appeal, at the version, that it was typed against. If either changed
+  // (another admin decided it, the creator resubmitted) it is dropped rather than applied to what the
+  // admin has not read.
+  const decisionReason =
+    current && draft.videoId === current.videoId && draft.version === current.version ? draft.text : '';
 
   function afterDecision(label: string) {
     return () => {
       pushToast('success', `${label}.`);
-      setDecisionReason('');
-      setIndex(0);
+      setDraft({ videoId: '', version: -1, text: '' });
+      setSelectedId(null);
       void queryClient.invalidateQueries({ queryKey: ['pending-appeals'] });
       void queryClient.invalidateQueries({ queryKey: ['queue-health'] });
     };
   }
 
+  // Bound to the appeal and version on screen at the click, not to whatever is current when it runs.
+  const decision = () => ({
+    videoId: current!.videoId,
+    version: current!.version,
+    reason: decisionReason.trim(),
+  });
+
   const approveMutation = useMutation({
-    mutationFn: () => approveAppeal(current!.videoId, decisionReason.trim()),
+    mutationFn: (d: ReturnType<typeof decision>) => approveAppeal(d.videoId, d.reason, d.version),
     onSuccess: afterDecision('Appeal approved'),
-    onError: (error) => pushToast('error', `Approve appeal failed: ${(error as Error).message}`),
+    onError: (error) => failed('Approve appeal', error),
   });
 
   const denyMutation = useMutation({
-    mutationFn: () => denyAppeal(current!.videoId, decisionReason.trim()),
+    mutationFn: (d: ReturnType<typeof decision>) => denyAppeal(d.videoId, d.reason, d.version),
     onSuccess: afterDecision('Appeal denied'),
-    onError: (error) => pushToast('error', `Deny appeal failed: ${(error as Error).message}`),
+    onError: (error) => failed('Deny appeal', error),
   });
+
+  function failed(action: string, error: unknown) {
+    pushToast('error', `${action} failed: ${(error as Error).message}`);
+    // A 409 means the appeal moved on (decided elsewhere, or resubmitted); show what it is now.
+    void queryClient.invalidateQueries({ queryKey: ['pending-appeals'] });
+  }
 
   const busy = approveMutation.isPending || denyMutation.isPending;
   const canDecide = current !== null && decisionReason.trim().length > 0 && !busy;
@@ -63,7 +88,7 @@ export function AppealsQueue() {
             {current && (
               <>
                 {' '}
-                · item <b>{Math.min(index + 1, items.length)}</b> of <b>{items.length}</b>
+                · item <b>{index + 1}</b> of <b>{items.length}</b>
               </>
             )}
           </div>
@@ -126,10 +151,12 @@ export function AppealsQueue() {
             <span className="field-label">Decision reason — required, shown to the creator</span>
             <input
               value={decisionReason}
-              maxLength={200}
+              maxLength={500}
               placeholder="Why this appeal succeeds or fails"
               disabled={!current}
-              onChange={(e) => setDecisionReason(e.target.value)}
+              onChange={(e) =>
+                setDraft({ videoId: current!.videoId, version: current!.version, text: e.target.value })
+              }
             />
           </label>
         </div>
@@ -137,10 +164,18 @@ export function AppealsQueue() {
         <div className="rail-sec">
           <span className="rail-label">Decision</span>
           <div className="decide">
-            <button className="btn-ok" disabled={!canDecide} onClick={() => approveMutation.mutate()}>
+            <button
+              className="btn-ok"
+              disabled={!canDecide}
+              onClick={() => approveMutation.mutate(decision())}
+            >
               Uphold appeal
             </button>
-            <button className="btn-crit" disabled={!canDecide} onClick={() => denyMutation.mutate()}>
+            <button
+              className="btn-crit"
+              disabled={!canDecide}
+              onClick={() => denyMutation.mutate(decision())}
+            >
               Deny
             </button>
           </div>
@@ -153,12 +188,12 @@ export function AppealsQueue() {
           <div className="rail-sec">
             <span className="rail-label">Queue</span>
             <div className="btn-row">
-              <button disabled={index === 0} onClick={() => setIndex((i) => Math.max(0, i - 1))}>
+              <button disabled={index === 0} onClick={() => setSelectedId(items[index - 1]!.videoId)}>
                 ← Previous
               </button>
               <button
                 disabled={index >= items.length - 1}
-                onClick={() => setIndex((i) => Math.min(items.length - 1, i + 1))}
+                onClick={() => setSelectedId(items[index + 1]!.videoId)}
               >
                 Next →
               </button>

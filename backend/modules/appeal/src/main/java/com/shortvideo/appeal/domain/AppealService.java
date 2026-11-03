@@ -95,9 +95,13 @@ public class AppealService {
         return toView(saved);
     }
 
+    /**
+     * @param expectedVersion the {@link AppealView#version()} the admin read; a decision is refused if the
+     *                        appeal has changed since, e.g. the creator resubmitted it with a new rationale
+     */
     @Transactional
-    public AppealView approve(String videoId, String decisionReason, String actorAccountId) {
-        AppealEntity entity = find(videoId);
+    public AppealView approve(String videoId, String decisionReason, long expectedVersion, String actorAccountId) {
+        AppealEntity entity = findDecidable(videoId, expectedVersion, actorAccountId);
         if (!entity.approve(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
@@ -109,8 +113,8 @@ public class AppealService {
     }
 
     @Transactional
-    public AppealView deny(String videoId, String decisionReason, String actorAccountId) {
-        AppealEntity entity = find(videoId);
+    public AppealView deny(String videoId, String decisionReason, long expectedVersion, String actorAccountId) {
+        AppealEntity entity = findDecidable(videoId, expectedVersion, actorAccountId);
         if (!entity.deny(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
@@ -137,7 +141,7 @@ public class AppealService {
         return repository
                 .findById(UUID.fromString(videoId))
                 .map(AppealService::toView)
-                .orElseGet(() -> new AppealView(videoId, callerAccountId, AppealState.NONE, null, null, null));
+                .orElseGet(() -> new AppealView(videoId, callerAccountId, AppealState.NONE, null, null, null, 0));
     }
 
     /** Hard ceiling on one response, however large the queue or the requested limit. */
@@ -167,6 +171,25 @@ public class AppealService {
         if (remaining.isPositive()) {
             throw new AppealExceptions.ResubmitTooSoon(remaining);
         }
+    }
+
+    /**
+     * The appeal an admin may decide now: not their own, still awaiting a decision, and unchanged since
+     * they read it. {@code @Version} alone only refuses two writes racing; it cannot tell that this
+     * decision was made on a copy that is no longer current.
+     */
+    private AppealEntity findDecidable(String videoId, long expectedVersion, String actorAccountId) {
+        AppealEntity entity = find(videoId);
+        if (entity.getCreatorId().toString().equals(actorAccountId)) {
+            throw new AppealExceptions.OwnAppeal("An admin may not decide an appeal of their own video");
+        }
+        if (!entity.isAwaitingDecision()) {
+            throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
+        }
+        if (entity.getAggregateVersion() != expectedVersion) {
+            throw new AppealExceptions.AppealChanged("Appeal changed since it was loaded; review it again");
+        }
+        return entity;
     }
 
     private AppealEntity find(String videoId) {
@@ -205,6 +228,7 @@ public class AppealService {
                 entity.getState(),
                 entity.getReason(),
                 entity.getDecisionReason(),
-                entity.getUpdatedAt());
+                entity.getUpdatedAt(),
+                entity.getAggregateVersion());
     }
 }

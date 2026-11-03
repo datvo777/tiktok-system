@@ -105,7 +105,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/AppealId'
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/DecisionRequest' }
@@ -115,10 +115,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AppealResponse' }
-        '403': { $ref: '#/components/responses/Problem' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: >
+            Not an admin, or the appeal is for the caller's own video.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409':
-          description: The appeal is not awaiting a decision
+          description: >
+            The appeal is not awaiting a decision, or it changed since the caller
+            loaded it (expectedVersion no longer matches).
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -130,7 +138,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/AppealId'
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/DecisionRequest' }
@@ -140,10 +148,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AppealResponse' }
-        '403': { $ref: '#/components/responses/Problem' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: >
+            Not an admin, or the appeal is for the caller's own video.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409':
-          description: The appeal is not awaiting a decision
+          description: >
+            The appeal is not awaiting a decision, or it changed since the caller
+            loaded it (expectedVersion no longer matches).
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -188,12 +204,21 @@ components:
 
     DecisionRequest:
       type: object
+      required: [reason, expectedVersion]
       properties:
-        reason: { type: string, maxLength: 1000 }
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Shown to the creator and recorded in the audit trail.
+        expectedVersion:
+          type: integer
+          format: int64
+          description: The version of the appeal the admin was shown.
 
     AppealResponse:
       type: object
-      required: [videoId, state]
+      required: [videoId, state, version]
       properties:
         videoId: { type: string, format: uuid }
         state:
@@ -204,6 +229,10 @@ components:
           enum: [NONE, UNDER_APPEAL, REVIEWING, APPROVED, DENIED, ESCALATED]
         reason: { type: [string, 'null'] }
         decisionReason: { type: [string, 'null'] }
+        version:
+          type: integer
+          format: int64
+          description: Changes whenever the appeal does; send it back as expectedVersion when deciding.
 
     Problem:
       type: object

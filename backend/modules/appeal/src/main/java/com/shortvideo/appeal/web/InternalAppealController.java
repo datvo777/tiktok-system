@@ -5,6 +5,7 @@ import com.shortvideo.appeal.domain.AppealView;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import java.util.List;
@@ -52,9 +53,9 @@ public class InternalAppealController {
     public AppealDtos.AppealResponse approve(
             @PathVariable UUID appealId,
             @AuthenticationPrincipal AuthenticatedAccount caller,
-            @RequestBody(required = false) AppealDtos.DecisionRequest request) {
+            @Valid @RequestBody AppealDtos.DecisionRequest request) {
         AppealView view = appealService.approve(
-                appealId.toString(), request == null ? null : request.reason(), caller.accountId());
+                appealId.toString(), request.reason(), request.expectedVersion(), caller.accountId());
         return AppealDtos.AppealResponse.from(view);
     }
 
@@ -64,9 +65,9 @@ public class InternalAppealController {
     public AppealDtos.AppealResponse deny(
             @PathVariable UUID appealId,
             @AuthenticationPrincipal AuthenticatedAccount caller,
-            @RequestBody(required = false) AppealDtos.DecisionRequest request) {
+            @Valid @RequestBody AppealDtos.DecisionRequest request) {
         AppealView view = appealService.deny(
-                appealId.toString(), request == null ? null : request.reason(), caller.accountId());
+                appealId.toString(), request.reason(), request.expectedVersion(), caller.accountId());
         return AppealDtos.AppealResponse.from(view);
     }
 }

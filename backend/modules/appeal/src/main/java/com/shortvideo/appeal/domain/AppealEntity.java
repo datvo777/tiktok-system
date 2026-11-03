@@ -90,9 +90,13 @@ public class AppealEntity implements Persistable<UUID> {
         return true;
     }
 
+    public boolean isAwaitingDecision() {
+        return state == AppealState.UNDER_APPEAL || state == AppealState.REVIEWING;
+    }
+
     /** UNDER_APPEAL/REVIEWING -> APPROVED. */
     public boolean approve(String decisionReason) {
-        if (state != AppealState.UNDER_APPEAL && state != AppealState.REVIEWING) {
+        if (!isAwaitingDecision()) {
             return false;
         }
         this.state = AppealState.APPROVED;
@@ -103,7 +107,7 @@ public class AppealEntity implements Persistable<UUID> {
 
     /** UNDER_APPEAL/REVIEWING -> DENIED. */
     public boolean deny(String decisionReason) {
-        if (state != AppealState.UNDER_APPEAL && state != AppealState.REVIEWING) {
+        if (!isAwaitingDecision()) {
             return false;
         }
         this.state = AppealState.DENIED;

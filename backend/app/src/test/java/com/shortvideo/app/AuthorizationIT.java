@@ -3,6 +3,7 @@ package com.shortvideo.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.shortvideo.shared.security.JwtService;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -335,6 +336,29 @@ class AuthorizationIT {
 
         assertRefused(getStatus("/internal/v1/not-a-route-yet", token), "unlisted GET");
         assertRefused(postStatus("/internal/v1/videos/" + SOME_ID + "/some-new-action", token, null), "unlisted POST");
+    }
+
+    /** The reason is what the creator is shown, and the version is what keeps a decision to what was read. */
+    @Test
+    void anAppealDecisionWithoutAReasonOrTheVersionItWasMadeOnIsRejected() {
+        String token = tokenFor(Set.of("USER", "ADMIN"));
+
+        for (String verb : List.of("approve", "deny")) {
+            String path = "/internal/v1/appeals/" + SOME_ID + "/" + verb;
+            assertThat(postStatus(path, token, null)).as(verb + " without a body").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(postStatus(path, token, Map.of("expectedVersion", 0)))
+                    .as(verb + " without a reason")
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(postStatus(path, token, Map.of("reason", "  ", "expectedVersion", 0)))
+                    .as(verb + " with a blank reason")
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(postStatus(path, token, Map.of("reason", "because")))
+                    .as(verb + " without a version")
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(postStatus(path, token, Map.of("reason", "x".repeat(501), "expectedVersion", 0)))
+                    .as(verb + " with a reason over the limit")
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+        }
     }
 
     @Test

@@ -14,6 +14,16 @@ public final class AppealExceptions {
         public AppealNotPending(String message) { super(message); }
     }
 
+    /** The appeal changed after the admin loaded it, so the decision would rest on content they have not read. */
+    public static class AppealChanged extends RuntimeException {
+        public AppealChanged(String message) { super(message); }
+    }
+
+    /** An admin tried to decide an appeal of their own video. */
+    public static class OwnAppeal extends RuntimeException {
+        public OwnAppeal(String message) { super(message); }
+    }
+
     /** A denied appeal was resubmitted before its cooldown ended; answered 429 with Retry-After. */
     public static class ResubmitTooSoon extends RuntimeException {
         private final java.time.Duration retryAfter;

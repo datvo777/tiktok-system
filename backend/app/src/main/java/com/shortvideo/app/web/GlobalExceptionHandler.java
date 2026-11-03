@@ -365,9 +365,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.FORBIDDEN, "Forbidden", e.getMessage());
     }
 
-    @ExceptionHandler({AppealExceptions.NotEligibleForAppeal.class, AppealExceptions.AppealNotPending.class})
+    @ExceptionHandler({
+        AppealExceptions.NotEligibleForAppeal.class,
+        AppealExceptions.AppealNotPending.class,
+        AppealExceptions.AppealChanged.class
+    })
     public ProblemDetail appealInvalid(RuntimeException e) {
         return problem(HttpStatus.CONFLICT, "Appeal invalid", e.getMessage());
+    }
+
+    @ExceptionHandler(AppealExceptions.OwnAppeal.class)
+    public ProblemDetail appealOwn(AppealExceptions.OwnAppeal e) {
+        return problem(HttpStatus.FORBIDDEN, "Conflict of interest", e.getMessage());
     }
 
     @ExceptionHandler(AppealExceptions.ResubmitTooSoon.class)

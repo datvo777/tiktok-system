@@ -71,6 +71,11 @@ class AppealSubmitIT {
         return UUID.randomUUID().toString();
     }
 
+    /** The version an admin reading the appeal now would send back with a decision. */
+    private long versionOf(String video, String owner) {
+        return appeals.getStatus(video, owner).version();
+    }
+
     @Test
     void theOwnerOfARejectedVideoCanAppealIt() {
         String owner = account();
@@ -111,6 +116,51 @@ class AppealSubmitIT {
                 .isInstanceOf(AppealExceptions.NotEligibleForAppeal.class);
     }
 
+    @Test
+    void anAdminCannotDecideAnAppealOfTheirOwnVideo() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        appeals.submit(video, owner, "mine");
+
+        assertThatThrownBy(() -> appeals.approve(video, "fine by me", versionOf(video, owner), owner))
+                .isInstanceOf(AppealExceptions.OwnAppeal.class);
+        assertThatThrownBy(() -> appeals.deny(video, "no", versionOf(video, owner), owner))
+                .isInstanceOf(AppealExceptions.OwnAppeal.class);
+        assertThat(appeals.getStatus(video, owner).state()).isEqualTo(AppealState.UNDER_APPEAL);
+    }
+
+    @Test
+    void aDecisionMadeOnAVersionThatIsNoLongerCurrentIsRefused() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        appeals.submit(video, owner, "first");
+        long seen = versionOf(video, owner);
+
+        // The creator's appeal is withdrawn from under the admin and filed again with a new rationale.
+        jdbc.update("UPDATE appeal.appeal SET reason = 'rewritten', aggregate_version = aggregate_version + 1"
+                + " WHERE video_id = ?::uuid", video);
+
+        assertThatThrownBy(() -> appeals.approve(video, "ok", seen, ADMIN))
+                .isInstanceOf(AppealExceptions.AppealChanged.class);
+        assertThatThrownBy(() -> appeals.deny(video, "no", seen, ADMIN))
+                .isInstanceOf(AppealExceptions.AppealChanged.class);
+        assertThat(appeals.getStatus(video, owner).state()).isEqualTo(AppealState.UNDER_APPEAL);
+
+        assertThat(appeals.approve(video, "ok", versionOf(video, owner), ADMIN).state())
+                .isEqualTo(AppealState.APPROVED);
+    }
+
+    @Test
+    void anAppealAlreadyDecidedIsNotAwaitingADecisionEvenOnItsCurrentVersion() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        appeals.submit(video, owner, "first");
+        appeals.deny(video, "no", versionOf(video, owner), ADMIN);
+
+        assertThatThrownBy(() -> appeals.approve(video, "changed my mind", versionOf(video, owner), ADMIN))
+                .isInstanceOf(AppealExceptions.AppealNotPending.class);
+    }
+
     /** Moves the denial back in time, as if it had been decided that long ago. */
     private void deniedAgo(String video, String age) {
         jdbc.update(
@@ -122,7 +172,7 @@ class AppealSubmitIT {
         String owner = account();
         String video = rejectedVideo(owner);
         appeals.submit(video, owner, "first");
-        appeals.deny(video, "no", ADMIN);
+        appeals.deny(video, "no", versionOf(video, owner), ADMIN);
 
         assertThatThrownBy(() -> appeals.submit(video, owner, "right away"))
                 .isInstanceOfSatisfying(AppealExceptions.ResubmitTooSoon.class, e -> assertThat(e.retryAfter())
@@ -143,7 +193,7 @@ class AppealSubmitIT {
         String owner = account();
         String video = rejectedVideo(owner);
         appeals.submit(video, owner, "first");
-        appeals.deny(video, "no", ADMIN);
+        appeals.deny(video, "no", versionOf(video, owner), ADMIN);
         deniedAgo(video, "2 days");
 
         var view = appeals.submit(video, owner, "second try");
@@ -162,7 +212,7 @@ class AppealSubmitIT {
         String owner = account();
         String video = rejectedVideo(owner);
         appeals.submit(video, owner, "first");
-        appeals.approve(video, "fair", ADMIN);
+        appeals.approve(video, "fair", versionOf(video, owner), ADMIN);
         moderation.reinstateFromAppeal(video);
         reject(video);
 

@@ -196,6 +196,8 @@ const pendingAppealSchema = s.object({
   state: s.string,
   reason: s.nullable(s.string),
   decisionReason: s.nullable(s.string),
+  /** Sent back with a decision so it is refused if the appeal changed after it was loaded. */
+  version: s.number,
 });
 export type PendingAppeal = Infer<typeof pendingAppealSchema>;
 
@@ -206,12 +208,16 @@ export async function listPendingAppeals(): Promise<PendingAppeal[]> {
   );
 }
 
-export async function approveAppeal(appealId: string, reason: string): Promise<void> {
-  await requestNoContent(`/internal/v1/appeals/${appealId}/approve`, jsonBody({ reason }));
+export async function approveAppeal(
+  appealId: string,
+  reason: string,
+  expectedVersion: number,
+): Promise<void> {
+  await requestNoContent(`/internal/v1/appeals/${appealId}/approve`, jsonBody({ reason, expectedVersion }));
 }
 
-export async function denyAppeal(appealId: string, reason: string): Promise<void> {
-  await requestNoContent(`/internal/v1/appeals/${appealId}/deny`, jsonBody({ reason }));
+export async function denyAppeal(appealId: string, reason: string, expectedVersion: number): Promise<void> {
+  await requestNoContent(`/internal/v1/appeals/${appealId}/deny`, jsonBody({ reason, expectedVersion }));
 }
 
 // ------------------------------------------------------------------- reports
