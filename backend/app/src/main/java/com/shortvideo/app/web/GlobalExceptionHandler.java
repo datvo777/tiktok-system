@@ -360,8 +360,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                         "You have changed this too many times recently. Try again later."));
     }
 
-    @ExceptionHandler({PublicationExceptions.NotVideoOwner.class, AppealExceptions.NotVideoOwner.class})
-    public ProblemDetail notPublicationOwner(RuntimeException e) {
+    @ExceptionHandler(PublicationExceptions.NotVideoOwner.class)
+    public ProblemDetail notPublicationOwner(PublicationExceptions.NotVideoOwner e) {
         return problem(HttpStatus.FORBIDDEN, "Forbidden", e.getMessage());
     }
 

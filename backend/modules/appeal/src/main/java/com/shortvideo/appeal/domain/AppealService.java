@@ -176,7 +176,7 @@ public class AppealService {
     }
 
     private void append(AppealEntity entity, String eventType, String reason) {
-        var payload = new AppealEvents.AppealDecided(
+        var payload = new AppealEvents.AppealStateChanged(
                 entity.getVideoId().toString(),
                 entity.getCreatorId().toString(),
                 entity.getState().name(),

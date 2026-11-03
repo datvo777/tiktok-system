@@ -6,10 +6,6 @@ public final class AppealExceptions {
         public AppealNotFound(String message) { super(message); }
     }
 
-    public static class NotVideoOwner extends RuntimeException {
-        public NotVideoOwner(String message) { super(message); }
-    }
-
     public static class NotEligibleForAppeal extends RuntimeException {
         public NotEligibleForAppeal(String message) { super(message); }
     }

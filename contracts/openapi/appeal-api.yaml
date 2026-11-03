@@ -1,0 +1,217 @@
+openapi: 3.1.0
+info:
+  title: Short Video Platform — Appeal API
+  version: v1
+  description: >
+    A creator appeals a rejected video; an admin approves or denies the appeal.
+    The build fails when a controller and this document disagree (brief
+    section 2), so change both in the same commit. There is one appeal per
+    video, so the video id is also the appeal id.
+
+servers:
+  - url: http://localhost:5173
+    description: Vite dev server (proxies /api, /internal and /media to the backend)
+  - url: http://localhost:8080
+    description: Backend directly (no cookie-bearing browser flows)
+
+paths:
+  /api/v1/videos/{videoId}/appeals:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    post:
+      summary: Owner appeals a rejected video
+      description: >
+        Allowed while the video is rejected and no appeal is awaiting a decision.
+        A previously denied appeal may be submitted again once the cooldown
+        (shortvideo.appeal.resubmit-cooldown, 24h by default) has passed; an
+        approved one may be submitted again if the video is rejected again.
+      operationId: submitAppeal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitRequest' }
+      responses:
+        '200':
+          description: The appeal is now awaiting a decision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppealResponse' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404':
+          description: >
+            No such video, or it belongs to someone else. Both answer alike so the
+            response does not confirm that a video exists to a non-owner.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: >
+            The video is not rejected, an appeal is already awaiting a decision, or a
+            concurrent submission for the same video was admitted first.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429':
+          description: A denied appeal was resubmitted before its cooldown ended
+          headers:
+            Retry-After:
+              description: Seconds until the video may be appealed again
+              schema: { type: integer }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    get:
+      summary: Owner checks the appeal status of one of their own videos
+      description: A video never appealed reads as state NONE, not as a 404.
+      operationId: getAppealStatus
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppealResponse' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /internal/v1/appeals/pending:
+    get:
+      summary: List appeals awaiting a decision (admin)
+      description: Oldest first.
+      operationId: listPendingAppeals
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AppealResponse' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /internal/v1/appeals/{appealId}/approve:
+    post:
+      summary: Approve an appeal (admin)
+      description: >
+        Moderation reinstates the video in reaction to the resulting event, if the
+        video is still rejected.
+      operationId: approveAppeal
+      parameters:
+        - $ref: '#/components/parameters/AppealId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecisionRequest' }
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppealResponse' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409':
+          description: The appeal is not awaiting a decision
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /internal/v1/appeals/{appealId}/deny:
+    post:
+      summary: Deny an appeal (admin)
+      operationId: denyAppeal
+      parameters:
+        - $ref: '#/components/parameters/AppealId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecisionRequest' }
+      responses:
+        '200':
+          description: Denied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppealResponse' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409':
+          description: The appeal is not awaiting a decision
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sv_session
+
+  parameters:
+    VideoId:
+      name: videoId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AppealId:
+      name: appealId
+      in: path
+      required: true
+      description: The video's id; there is one appeal per video.
+      schema: { type: string, format: uuid }
+
+  responses:
+    Problem:
+      description: RFC 7807 problem detail
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    SubmitRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+
+    DecisionRequest:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 1000 }
+
+    AppealResponse:
+      type: object
+      required: [videoId, state]
+      properties:
+        videoId: { type: string, format: uuid }
+        state:
+          type: string
+          description: >
+            REVIEWING and ESCALATED are defined by the brief but no action
+            produces them yet.
+          enum: [NONE, UNDER_APPEAL, REVIEWING, APPROVED, DENIED, ESCALATED]
+        reason: { type: [string, 'null'] }
+        decisionReason: { type: [string, 'null'] }
+
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+security:
+  - bearerAuth: []
