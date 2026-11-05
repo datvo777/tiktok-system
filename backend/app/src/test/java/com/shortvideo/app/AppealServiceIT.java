@@ -81,6 +81,11 @@ class AppealServiceIT {
                 type);
     }
 
+    /** The moderation version of the rejection the video is under now. */
+    private long rejectionVersion(String video) {
+        return moderation.findDecision(video).orElseThrow().aggregateVersion();
+    }
+
     /** The version an admin reading the appeal now would send back with a decision. */
     private long versionOf(String video, String owner) {
         return appeals.getStatus(video, owner).version();
@@ -306,13 +311,120 @@ class AppealServiceIT {
         String video = rejectedVideo(owner);
         appeals.submit(video, owner, "first");
         appeals.approve(video, "fair", versionOf(video, owner), ADMIN);
-        moderation.reinstateFromAppeal(video);
+        moderation.reinstateFromAppeal(video, rejectionVersion(video));
         reject(video);
 
         var view = appeals.submit(video, owner, "rejected again");
 
         assertThat(view.state()).isEqualTo(AppealState.UNDER_APPEAL);
         assertThat(view.reason()).isEqualTo("rejected again");
+    }
+
+    @Test
+    void anAppealCannotBeApprovedOnceTheVideoWasReinstatedAndRejectedAgain() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        appeals.submit(video, owner, "first");
+        moderation.approve(video, ADMIN);
+        reject(video);
+
+        assertThatThrownBy(() -> appeals.approve(video, "fair", versionOf(video, owner), ADMIN))
+                .isInstanceOf(AppealExceptions.RejectionChanged.class);
+
+        assertThat(appeals.getStatus(video, owner).state()).isEqualTo(AppealState.UNDER_APPEAL);
+        assertThat(outboxEvents(video, EventTypes.VIDEO_APPEAL_APPROVED)).isZero();
+        // It can still be turned down, which is how an admin clears a case that no longer applies.
+        assertThat(appeals.deny(video, "superseded", versionOf(video, owner), ADMIN).state())
+                .isEqualTo(AppealState.DENIED);
+    }
+
+    @Test
+    void anAppealCannotBeApprovedOnceTheRejectionWasReclassified() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        appeals.submit(video, owner, "first");
+        reject(video);
+
+        assertThatThrownBy(() -> appeals.approve(video, "fair", versionOf(video, owner), ADMIN))
+                .isInstanceOf(AppealExceptions.RejectionChanged.class);
+    }
+
+    /** An approval delivered late must reverse the rejection it was decided against, not a later one. */
+    @Test
+    void anApprovalDeliveredAfterTheVideoWasRejectedAgainReinstatesNothing() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        long appealed = rejectionVersion(video);
+        moderation.approve(video, ADMIN);
+        reject(video);
+
+        assertThat(moderation.reinstateFromAppeal(video, appealed)).isFalse();
+
+        assertThat(moderation.findDecision(video).orElseThrow().state()).isEqualTo("REJECTED");
+    }
+
+    @Test
+    void anApprovalAtTheRejectionItNamesReinstatesTheVideoOnce() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        appeals.submit(video, owner, "first");
+        appeals.approve(video, "fair", versionOf(video, owner), ADMIN);
+        long appealed = rejectionVersion(video);
+
+        assertThat(moderation.reinstateFromAppeal(video, appealed)).isTrue();
+        assertThat(moderation.reinstateFromAppeal(video, appealed)).isFalse();
+
+        assertThat(moderation.findDecision(video).orElseThrow().state()).isEqualTo("REINSTATED");
+    }
+
+    @Test
+    void theSweepFindsAnApprovedAppealWithTheRejectionItWasFiledAgainst() {
+        String owner = account();
+        String video = rejectedVideo(owner);
+        long appealed = rejectionVersion(video);
+        appeals.submit(video, owner, "first");
+        appeals.approve(video, "fair", versionOf(video, owner), ADMIN);
+        java.time.Instant now = java.time.Instant.now();
+
+        var found = appeals.findApprovedPage(now.minusSeconds(3600), now.plusSeconds(3600), null, 1000);
+
+        assertThat(found).anySatisfy(a -> {
+            assertThat(a.videoId()).isEqualTo(video);
+            assertThat(a.moderationVersion()).isEqualTo(appealed);
+            assertThat(a.decidedAt()).isBetween(now.minusSeconds(3600), now.plusSeconds(1));
+        });
+        assertThat(appeals.findApprovedPage(now.plusSeconds(60), now.plusSeconds(3600), null, 1000))
+                .extracting(com.shortvideo.appeal.api.AppealDirectory.ApprovedAppealView::videoId)
+                .doesNotContain(video);
+    }
+
+    /** The cursor is the last row's (decision time, video id): a page boundary must neither repeat nor skip one. */
+    @Test
+    void theSweepPagesThroughApprovedAppealsInDecisionOrderWithoutRepeatingOrSkipping() {
+        java.time.Instant from = java.time.Instant.now().minusSeconds(1);
+        List<String> approved = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            String owner = account();
+            String video = rejectedVideo(owner);
+            appeals.submit(video, owner, "first");
+            appeals.approve(video, "fair", versionOf(video, owner), ADMIN);
+            approved.add(video);
+        }
+        java.time.Instant to = java.time.Instant.now().plusSeconds(3600);
+
+        List<String> seen = new ArrayList<>();
+        com.shortvideo.appeal.api.AppealDirectory.ApprovedAppealView cursor = null;
+        while (true) {
+            var page = appeals.findApprovedPage(from, to, cursor, 1);
+            if (page.isEmpty()) {
+                break;
+            }
+            cursor = page.get(page.size() - 1);
+            seen.add(cursor.videoId());
+        }
+
+        assertThat(seen).doesNotHaveDuplicates().containsAll(approved);
+        assertThat(approved.stream().map(seen::indexOf).toList()).isSorted();
     }
 
     /** Both requests find no row and insert one; the loser must be told 409, not hit the catch-all. */

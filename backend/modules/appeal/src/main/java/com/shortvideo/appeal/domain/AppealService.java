@@ -1,6 +1,8 @@
 package com.shortvideo.appeal.domain;
 
+import com.shortvideo.appeal.api.AppealDirectory;
 import com.shortvideo.appeal.api.AppealState;
+import com.shortvideo.moderation.api.ModerationDecisionView;
 import com.shortvideo.moderation.api.ModerationDirectory;
 import com.shortvideo.shared.audit.AdminAction;
 import com.shortvideo.shared.audit.AdminActionRecorder;
@@ -32,7 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
  * respective modules elsewhere in this system.
  */
 @Service
-public class AppealService {
+public class AppealService implements AppealDirectory {
 
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "appeal";
@@ -70,18 +72,15 @@ public class AppealService {
             throw new AppealExceptions.AppealNotFound("No such video");
         }
 
-        String moderationState = moderationDirectory
+        ModerationDecisionView decision = moderationDirectory
                 .findDecision(videoId)
-                .map(d -> d.state())
-                .orElse("PENDING");
-        if (!"REJECTED".equals(moderationState)) {
-            throw new AppealExceptions.NotEligibleForAppeal("Only a rejected video may be appealed");
-        }
+                .filter(d -> "REJECTED".equals(d.state()))
+                .orElseThrow(() -> new AppealExceptions.NotEligibleForAppeal("Only a rejected video may be appealed"));
 
         UUID id = UUID.fromString(videoId);
         AppealEntity entity = repository.findById(id).orElseGet(() -> new AppealEntity(id, UUID.fromString(callerAccountId)));
         refuseWhileCoolingDown(entity);
-        if (!entity.submit(reason)) {
+        if (!entity.submit(reason, decision.aggregateVersion())) {
             throw new AppealExceptions.NotEligibleForAppeal("An appeal is already under review for this video");
         }
         AppealEntity saved;
@@ -102,6 +101,7 @@ public class AppealService {
     @Transactional
     public AppealView approve(String videoId, String decisionReason, long expectedVersion, String actorAccountId) {
         AppealEntity entity = findDecidable(videoId, expectedVersion, actorAccountId);
+        refuseIfRejectionChanged(entity);
         if (!entity.approve(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
@@ -192,6 +192,35 @@ public class AppealService {
         return entity;
     }
 
+    /**
+     * An approval reverses one rejection. If the video has since been reinstated, or rejected again or
+     * reclassified, that rejection is gone, and approving would either do nothing while telling the
+     * creator it had worked or reinstate a decision nobody reviewed. The admin can still deny it.
+     */
+    private void refuseIfRejectionChanged(AppealEntity entity) {
+        boolean sameRejection = moderationDirectory
+                .findDecision(entity.getVideoId().toString())
+                .filter(d -> "REJECTED".equals(d.state()) && d.aggregateVersion() == entity.getModerationVersion())
+                .isPresent();
+        if (!sameRejection) {
+            throw new AppealExceptions.RejectionChanged(
+                    "The video's moderation decision changed after this appeal was filed; deny it and let the creator appeal again");
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ApprovedAppealView> findApprovedPage(
+            Instant decidedFrom, Instant decidedTo, ApprovedAppealView after, int limit) {
+        Instant afterAt = after == null ? decidedFrom : after.decidedAt();
+        UUID afterId = after == null ? new UUID(0, 0) : UUID.fromString(after.videoId());
+        return repository
+                .findApprovedBetweenAfter(decidedFrom, decidedTo, afterAt, afterId, PageRequest.of(0, limit))
+                .stream()
+                .map(a -> new ApprovedAppealView(a.getVideoId().toString(), a.getModerationVersion(), a.getDecidedAt()))
+                .toList();
+    }
+
     private AppealEntity find(String videoId) {
         return repository
                 .findById(UUID.fromString(videoId))
@@ -204,6 +233,7 @@ public class AppealService {
                 entity.getCreatorId().toString(),
                 entity.getState().name(),
                 entity.getAggregateVersion(),
+                entity.getModerationVersion(),
                 reason);
 
         outboxWriter.append(new EventEnvelope<>(
