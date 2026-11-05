@@ -368,7 +368,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler({
         AppealExceptions.NotEligibleForAppeal.class,
         AppealExceptions.AppealNotPending.class,
-        AppealExceptions.AppealChanged.class
+        AppealExceptions.AppealChanged.class,
+        AppealExceptions.RejectionChanged.class
     })
     public ProblemDetail appealInvalid(RuntimeException e) {
         return problem(HttpStatus.CONFLICT, "Appeal invalid", e.getMessage());

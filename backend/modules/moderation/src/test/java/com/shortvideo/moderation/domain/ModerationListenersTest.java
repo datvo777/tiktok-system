@@ -2,6 +2,7 @@ package com.shortvideo.moderation.domain;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -160,18 +161,31 @@ class ModerationListenersTest {
     void anApprovedAppealReinstatesTheVideo() throws Exception {
         when(inbox.claim(anyString(), any())).thenReturn(true);
 
-        appealDecision.onVideoEvent(event(EventTypes.VIDEO_APPEAL_APPROVED, Map.of("videoId", "v1")));
+        appealDecision.onVideoEvent(
+                event(EventTypes.VIDEO_APPEAL_APPROVED, Map.of("videoId", "v1", "moderationVersion", 3)));
 
-        verify(service).reinstateFromAppeal("v1");
+        verify(service).reinstateFromAppeal("v1", 3L);
+    }
+
+    @Test
+    void anApprovalWithoutTheRejectionItReversesIsMalformedAndReinstatesNothing() {
+        when(inbox.claim(anyString(), any())).thenReturn(true);
+
+        assertThatThrownBy(() -> appealDecision.onVideoEvent(
+                        event(EventTypes.VIDEO_APPEAL_APPROVED, Map.of("videoId", "v1"))))
+                .hasRootCauseInstanceOf(IllegalArgumentException.class);
+
+        verify(service, never()).reinstateFromAppeal(anyString(), anyLong());
     }
 
     @Test
     void aRedeliveredAppealDecisionReinstatesNothing() throws Exception {
         when(inbox.claim(anyString(), any())).thenReturn(false);
 
-        appealDecision.onVideoEvent(event(EventTypes.VIDEO_APPEAL_APPROVED, Map.of("videoId", "v1")));
+        appealDecision.onVideoEvent(
+                event(EventTypes.VIDEO_APPEAL_APPROVED, Map.of("videoId", "v1", "moderationVersion", 3)));
 
-        verify(service, never()).reinstateFromAppeal(anyString());
+        verify(service, never()).reinstateFromAppeal(anyString(), anyLong());
     }
 
     @Test

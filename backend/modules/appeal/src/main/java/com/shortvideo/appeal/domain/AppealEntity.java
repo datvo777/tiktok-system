@@ -42,6 +42,10 @@ public class AppealEntity implements Persistable<UUID> {
     @Column(name = "decision_reason", length = 1000)
     private String decisionReason;
 
+    /** Moderation aggregate version of the rejection this appeal was filed against; 0 before the first. */
+    @Column(name = "moderation_version", nullable = false)
+    private long moderationVersion;
+
     /** Optimistic concurrency and the aggregate version carried by events (Rule 10). */
     @Version
     @Column(name = "aggregate_version", nullable = false)
@@ -77,14 +81,16 @@ public class AppealEntity implements Persistable<UUID> {
     /**
      * NONE/DENIED/APPROVED -> UNDER_APPEAL. A decided appeal is finished, so it may be opened again: a
      * denied one because the creator may try once more, an approved one because the video can be
-     * rejected again after it was reinstated. The caller has already checked the video is rejected now.
+     * rejected again after it was reinstated. The caller has already checked the video is rejected now,
+     * and passes the version of that rejection so a decision can later be matched to it.
      */
-    public boolean submit(String reason) {
+    public boolean submit(String reason, long moderationVersion) {
         if (state != AppealState.NONE && state != AppealState.DENIED && state != AppealState.APPROVED) {
             return false;
         }
         this.state = AppealState.UNDER_APPEAL;
         this.reason = reason;
+        this.moderationVersion = moderationVersion;
         this.decisionReason = null;
         this.updatedAt = Instant.now();
         return true;
@@ -131,6 +137,7 @@ public class AppealEntity implements Persistable<UUID> {
     public AppealState getState() { return state; }
     public String getReason() { return reason; }
     public String getDecisionReason() { return decisionReason; }
+    public long getModerationVersion() { return moderationVersion; }
     public long getAggregateVersion() { return aggregateVersion; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

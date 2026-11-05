@@ -19,6 +19,11 @@ public final class AppealExceptions {
         public AppealChanged(String message) { super(message); }
     }
 
+    /** The video is no longer rejected as it was when the appeal was filed, so approving would reverse a different decision. */
+    public static class RejectionChanged extends RuntimeException {
+        public RejectionChanged(String message) { super(message); }
+    }
+
     /** An admin tried to decide an appeal of their own video. */
     public static class OwnAppeal extends RuntimeException {
         public OwnAppeal(String message) { super(message); }

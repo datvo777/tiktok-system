@@ -57,7 +57,10 @@ class AppealDecisionListener {
                     return;
                 }
                 Map<String, Object> p = envelope.payload();
-                moderationService.reinstateFromAppeal(Payloads.required(p, "videoId"));
+                // A missing version is a malformed event, not a legacy one to reinstate unconditionally:
+                // that would reverse whatever rejection the video is under now.
+                moderationService.reinstateFromAppeal(
+                        Payloads.required(p, "videoId"), Long.parseLong(Payloads.required(p, "moderationVersion")));
             });
         } catch (Exception e) {
             log.warn("Failed to apply video.appeal.approved; will retry on redelivery", e);

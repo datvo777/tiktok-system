@@ -17,4 +17,13 @@ public interface ModerationBackfill {
      * @throws IllegalStateException if there is no moderation record for the video yet
      */
     boolean requestReview(String videoId);
+
+    /**
+     * Reinstates a video whose appeal was approved, if it is still under the rejection the appeal was
+     * filed against. Idempotent.
+     *
+     * @param moderationVersion the moderation version of that rejection, as recorded on the appeal
+     * @return true if the video was reinstated now; false if it was no longer under that rejection
+     */
+    boolean reinstateFromAppeal(String videoId, long moderationVersion);
 }

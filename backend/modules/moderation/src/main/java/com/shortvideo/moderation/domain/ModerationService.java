@@ -259,16 +259,21 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
 
     /**
      * Reacts to an approved appeal (brief section 18, Milestone 6): reinstates
-     * only if the video is still REJECTED. If moderation was already reinstated
-     * or changed by another path in the meantime, this is a safe no-op — the
-     * appeal-approval workflow exists specifically to reverse a REJECTED
-     * decision, not to force one.
+     * only if the video is still under the rejection the appeal was filed against,
+     * which {@code moderationVersion} names. If moderation was already reinstated,
+     * rejected again or reclassified in the meantime, this is a safe no-op — the
+     * appeal-approval workflow exists specifically to reverse the decision it
+     * reviewed, not to force one, and a redelivered approval must not reverse a
+     * later rejection.
      */
+    @Override
     @Transactional
-    public void reinstateFromAppeal(String videoId) {
+    public boolean reinstateFromAppeal(String videoId, long moderationVersion) {
         ModerationEntity record = repository.findById(UUID.fromString(videoId)).orElse(null);
-        if (record == null || record.getState() != ModerationState.REJECTED) {
-            return;
+        if (record == null
+                || record.getState() != ModerationState.REJECTED
+                || record.getAggregateVersion() != moderationVersion) {
+            return false;
         }
         long previousVersion = record.getAggregateVersion();
         record.approve(); // REJECTED -> REINSTATED
@@ -278,6 +283,7 @@ public class ModerationService implements ModerationDirectory, ModerationBackfil
         append(saved, EventTypes.VIDEO_MODERATION_REINSTATED, null, null);
         revocationWriter.clear(new RevocationClearCommand(
                 RevocationSubjects.VIDEO, saved.getVideoId().toString(), REJECTION_SOURCE, previousVersion));
+        return true;
     }
 
     @Override
