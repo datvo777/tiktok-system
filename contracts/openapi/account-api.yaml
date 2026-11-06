@@ -162,7 +162,13 @@ components:
       required: [accountId, token, expiresAt]
       properties:
         accountId: { type: string, format: uuid }
-        token: { type: string }
+        token:
+          type: string
+          description: >-
+            Bearer token for non-browser API clients. Browser clients should
+            ignore it and rely on the HttpOnly session cookie set alongside:
+            a copy in JavaScript is only somewhere for an XSS to steal it from.
+            Revoked by POST /auth/logout, so it does not outlive the session.
         expiresAt: { type: string, format: date-time }
 
     AccountResponse:

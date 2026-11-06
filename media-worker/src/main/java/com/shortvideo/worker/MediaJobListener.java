@@ -42,7 +42,13 @@ public class MediaJobListener {
             log.info("Starting transcode job {}", job.jobId());
             handler.handle(job, envelope.correlationId());
         } catch (Exception e) {
-            log.error("Failed to handle transcode command", e);
+            // handler.handle() classifies its own failures and reports them on
+            // media.results.v1 itself. What reaches this catch is a malformed
+            // envelope, or a result the broker did not acknowledge. Rethrow so the
+            // container's error handler redelivers the command and then routes it to
+            // the DLT instead of silently dropping it.
+            log.error("Failed to decode/handle transcode command", e);
+            throw new RuntimeException(e);
         }
     }
 }

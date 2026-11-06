@@ -12,20 +12,36 @@ spring:
       # The Video module owns idempotence via its inbox; the worker still commits
       # only after a job completes.
       enable-auto-commit: false
+      # A poll hands the listener this many commands, which it then runs one after another before
+      # polling again. The default of 500 lets a backlog of long jobs add up past max.poll.interval.ms,
+      # which evicts the consumer from the group and runs every one of them again. One at a time also
+      # leaves the commands behind it on the partition for another instance to pick up.
+      max-poll-records: 1
+      properties:
+        # The listener runs the whole transcode before returning to poll(). The default of 5
+        # minutes is shorter than worker.job-timeout (15), so a long job got the consumer evicted
+        # from the group, never committed, and was redelivered and run again.
+        max.poll.interval.ms: ${WORKER_MAX_POLL_INTERVAL_MS:1800000}
 
 server:
   port: 8090
 
 shortvideo:
   worker:
+    # Jobs in flight per instance (one consumer thread each). Each ffmpeg uses every core it is
+    # given, so raise this only with CPU to match; media.jobs.v1 has three partitions, so more
+    # than three gains nothing.
     max-concurrent-jobs: ${WORKER_MAX_CONCURRENT_JOBS:2}
     job-timeout: ${WORKER_JOB_TIMEOUT_SECONDS:900}s
     ffmpeg-path: ffmpeg
     ffprobe-path: ffprobe
   minio:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-    access-key: ${MINIO_ACCESS_KEY:minioadmin}
-    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    # Scoped service account rather than root: this process feeds attacker-supplied
+    # bytes to ffmpeg, so it is the last one that should hold cluster-wide
+    # credentials. minio-init mints it.
+    access-key: ${MINIO_APP_ACCESS_KEY:short-video-app}
+    secret-key: ${MINIO_APP_SECRET_KEY:short-video-app-secret}
     bucket: ${MINIO_BUCKET:short-video}
 
 management:

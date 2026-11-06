@@ -3,16 +3,18 @@ package com.shortvideo.eligibility.domain;
 import com.shortvideo.eligibility.api.AccountEligibilityView;
 import com.shortvideo.eligibility.api.EligibilityCorrector;
 import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.ReconciliationFailureTracker;
 import com.shortvideo.eligibility.api.VideoEligibilityView;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class EligibilityProjectorService implements EligibilityDirectory, EligibilityCorrector {
+public class EligibilityProjectorService implements EligibilityDirectory, EligibilityCorrector, ReconciliationFailureTracker {
 
     private final EligibilityRepository repository;
 
@@ -41,6 +43,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
                 sourceVersion,
                 Timestamp.from(Instant.now()));
         repository.recomputeEligibility(videoId);
+    }
+
+    /** Never affects {@code is_video_eligible} (Rule 12), so unlike the other three sources this skips recompute. */
+    @Transactional
+    void applyMetadata(String videoId, String creatorId, String title, String description, long sourceVersion) {
+        repository.upsertMetadata(videoId, creatorId, title, description, sourceVersion, Timestamp.from(Instant.now()));
     }
 
     @Transactional
@@ -82,6 +90,12 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
 
     @Override
     @Transactional(readOnly = true)
+    public List<VideoEligibilityView> findVideoEligibilities(Collection<String> videoIds) {
+        return repository.findVideos(videoIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<AccountEligibilityView> findAccountEligibility(String accountId) {
         return repository.findAccount(accountId);
     }
@@ -94,14 +108,14 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
 
     @Override
     @Transactional(readOnly = true)
-    public List<String> allTrackedVideoIds(int limit) {
-        return repository.allVideoIds(limit);
+    public List<VideoEligibilityView> findEligibleVideosWithEligibleCreators(int limit) {
+        return repository.findEligibleWithEligibleCreator(limit);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public List<String> allTrackedAccountIds(int limit) {
-        return repository.allAccountIds(limit);
+    public List<String> allTrackedVideoIds(int limit) {
+        return repository.allVideoIds(limit);
     }
 
     /**
@@ -138,5 +152,26 @@ public class EligibilityProjectorService implements EligibilityDirectory, Eligib
     @Override
     public void correctAccount(String accountId, String accountState, long sourceVersion) {
         applyAccountState(accountId, accountState, sourceVersion);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, Integer> streaks(String kind) {
+        return repository.reconciliationStreaks(kind);
+    }
+
+    @Override
+    @Transactional
+    public int recordFailure(String kind, String id, String error) {
+        String trimmed = error == null ? null : error.substring(0, Math.min(error.length(), 500));
+        return repository.recordReconciliationFailure(kind, id, trimmed, Timestamp.from(Instant.now()));
+    }
+
+    @Override
+    @Transactional
+    public void clear(String kind, Collection<String> ids) {
+        if (!ids.isEmpty()) {
+            repository.clearReconciliationFailures(kind, ids);
+        }
     }
 }

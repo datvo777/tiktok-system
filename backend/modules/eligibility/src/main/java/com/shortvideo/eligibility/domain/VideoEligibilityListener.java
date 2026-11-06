@@ -4,14 +4,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Projects processing/durability/asset-lifecycle/legal state — the Video
@@ -32,38 +34,57 @@ class VideoEligibilityListener {
     private final InboxGuard inbox;
     private final EligibilityProjectorService projector;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transaction;
 
-    VideoEligibilityListener(InboxGuard inbox, EligibilityProjectorService projector, ObjectMapper objectMapper) {
+    VideoEligibilityListener(InboxGuard inbox, EligibilityProjectorService projector, ObjectMapper objectMapper, TransactionTemplate transaction) {
         this.inbox = inbox;
         this.projector = projector;
         this.objectMapper = objectMapper;
+        this.transaction = transaction;
     }
 
+    /**
+     * Not {@code @Transactional}: this topic carries every video event and each listener wants only
+     * some types, so the event is decoded and matched to a handler first, and a transaction (with its
+     * pooled connection and its inbox row) is opened only for an event this listener acts on.
+     */
     @KafkaListener(topics = Topics.VIDEO_EVENTS, groupId = "eligibility-video-projector")
-    @Transactional
     public void onVideoEvent(String payload) {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
-            if (!inbox.claim(CONSUMER, envelope.eventId())) {
+            Consumer<EventEnvelope<Map<String, Object>>> handler = switch (envelope.eventType()) {
+                case EventTypes.VIDEO_METADATA_SET -> this::applyMetadata;
+                case EventTypes.VIDEO_PROCESSING_READY -> this::applyReady;
+                case EventTypes.VIDEO_PROCESSING_FAILED -> this::applyFailed;
+                case EventTypes.VIDEO_LIFECYCLE_CHANGED -> this::applyLifecycleChanged;
+                default -> null; // not relevant to this projector
+            };
+            if (handler == null) {
                 return;
             }
-            switch (envelope.eventType()) {
-                case EventTypes.VIDEO_PROCESSING_READY -> applyReady(envelope);
-                case EventTypes.VIDEO_PROCESSING_FAILED -> applyFailed(envelope);
-                case EventTypes.VIDEO_LIFECYCLE_CHANGED -> applyLifecycleChanged(envelope);
-                default -> { /* not relevant to this projector */ }
-            }
+            transaction.executeWithoutResult(status -> {
+                if (!inbox.claim(CONSUMER, envelope.eventId())) {
+                    return;
+                }
+                handler.accept(envelope);
+            });
         } catch (Exception e) {
             log.warn("Failed to project video eligibility event; will retry on redelivery", e);
             throw new RuntimeException(e);
         }
     }
 
+    private void applyMetadata(EventEnvelope<Map<String, Object>> envelope) {
+        Map<String, Object> p = envelope.payload();
+        projector.applyMetadata(
+                Payloads.required(p, "videoId"), Payloads.required(p, "ownerAccountId"), str(p, "title"), str(p, "description"), envelope.aggregateVersion());
+    }
+
     private void applyReady(EventEnvelope<Map<String, Object>> envelope) {
         Map<String, Object> p = envelope.payload();
         projector.applyProcessing(
-                str(p, "videoId"),
-                str(p, "ownerAccountId"),
+                Payloads.required(p, "videoId"),
+                Payloads.required(p, "ownerAccountId"),
                 "READY",
                 (Integer) p.get("processingVersion"),
                 "DURABLE",
@@ -75,14 +96,14 @@ class VideoEligibilityListener {
     private void applyLifecycleChanged(EventEnvelope<Map<String, Object>> envelope) {
         Map<String, Object> p = envelope.payload();
         projector.applyAssetLifecycle(
-                str(p, "videoId"), str(p, "ownerAccountId"), str(p, "assetLifecycleState"), envelope.aggregateVersion());
+                Payloads.required(p, "videoId"), Payloads.required(p, "ownerAccountId"), str(p, "assetLifecycleState"), envelope.aggregateVersion());
     }
 
     private void applyFailed(EventEnvelope<Map<String, Object>> envelope) {
         Map<String, Object> p = envelope.payload();
         projector.applyProcessing(
-                str(p, "videoId"),
-                str(p, "ownerAccountId"),
+                Payloads.required(p, "videoId"),
+                Payloads.required(p, "ownerAccountId"),
                 "FAILED",
                 (Integer) p.get("processingVersion"),
                 "PENDING",

@@ -63,6 +63,39 @@ public class OutboxRepository {
             WHERE event_id = ? AND status = 'CLAIMED' AND claim_token = ?
             """;
 
+    private static final String FINALISE_BATCH = """
+            UPDATE platform.outbox_event
+            SET status = 'PUBLISHED', published_at = now(), claimed_by = NULL,
+                claim_token = NULL, claimed_until = NULL
+            WHERE event_id = ANY (?) AND status = 'CLAIMED' AND claim_token = ?
+            """;
+
+    /**
+     * Gives back rows this relay claimed but deliberately did not send, without counting an attempt
+     * (the claim already incremented it): they were held behind an earlier event of the same
+     * aggregate that failed.
+     */
+    private static final String RELEASE = """
+            UPDATE platform.outbox_event
+            SET status = 'RETRY', available_at = ?, attempt_count = attempt_count - 1,
+                claimed_by = NULL, claim_token = NULL, claimed_until = NULL
+            WHERE event_id = ANY (?) AND status = 'CLAIMED' AND claim_token = ?
+            """;
+
+    /**
+     * A claim whose lease ran out with the attempt budget already spent: the relay claimed this row
+     * that many times and never got as far as recording an outcome, which is what a payload that
+     * kills the relay looks like. {@code recordFailure} cannot catch it because it only runs in a
+     * relay that survived the send.
+     */
+    private static final String BURY_ABANDONED = """
+            UPDATE platform.outbox_event
+            SET status = 'DEAD',
+                last_error = 'relay claimed this event ' || attempt_count || ' times without recording an outcome',
+                claimed_by = NULL, claim_token = NULL, claimed_until = NULL
+            WHERE status = 'CLAIMED' AND claimed_until < now() AND attempt_count >= ?
+            """;
+
     private static final RowMapper<OutboxRecord> MAPPER = (rs, i) -> new OutboxRecord(
             rs.getObject("event_id", UUID.class),
             rs.getString("aggregate_type"),
@@ -90,6 +123,61 @@ public class OutboxRepository {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean markPublished(UUID eventId, UUID claimToken) {
         return jdbc.update(FINALISE, eventId, claimToken) == 1;
+    }
+
+    /**
+     * One statement for everything the broker acknowledged, rather than a round trip per event.
+     * The claim-token check still applies to every row.
+     *
+     * @return how many rows this relay still owned and finalised; fewer than {@code eventIds.size()}
+     *     means some claims were lost to another relay
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int markPublishedBatch(List<UUID> eventIds, UUID claimToken) {
+        if (eventIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.update(connection -> {
+            var statement = connection.prepareStatement(FINALISE_BATCH);
+            statement.setArray(1, connection.createArrayOf("uuid", eventIds.toArray()));
+            statement.setObject(2, claimToken);
+            return statement;
+        });
+    }
+
+    /**
+     * Returns held-back rows to the queue, available again at {@code availableAt}: the same moment as
+     * the failed event they were held behind, so the two come back together and in order.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int release(List<UUID> eventIds, UUID claimToken, Instant availableAt) {
+        if (eventIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.update(connection -> {
+            var statement = connection.prepareStatement(RELEASE);
+            statement.setTimestamp(1, Timestamp.from(availableAt));
+            statement.setArray(2, connection.createArrayOf("uuid", eventIds.toArray()));
+            statement.setObject(3, claimToken);
+            return statement;
+        });
+    }
+
+    /**
+     * Moves events to DEAD that the relay keeps claiming but never settles (see {@link #BURY_ABANDONED}).
+     * Run before each claim, so such a row is stopped rather than claimed once more.
+     *
+     * @return how many rows were buried
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int buryAbandoned(int maxAttempts) {
+        return jdbc.update(BURY_ABANDONED, maxAttempts);
+    }
+
+    /** Events the relay gave up on; served by the partial dead index. */
+    public long countDead() {
+        Long count = jdbc.queryForObject("SELECT count(*) FROM platform.outbox_event WHERE status = 'DEAD'", Long.class);
+        return count == null ? 0 : count;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
