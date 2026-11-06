@@ -1,7 +1,9 @@
 package com.shortvideo.video.domain;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -57,10 +59,11 @@ class VideoLifecycleReactionListenerTest {
     void aReinstatementRestoresTheAssetOnceTheBlockIsLifted() throws Exception {
         when(inbox.claim(anyString(), any())).thenReturn(true);
         moderationBlock(false);
+        when(videoService.assetsVerifiablyPresent("v1")).thenReturn(true);
 
         listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_REINSTATED));
 
-        verify(videoService).restoreAfterReinstatement("v1");
+        verify(videoService).restoreAfterReinstatement("v1", true);
     }
 
     @Test
@@ -80,7 +83,32 @@ class VideoLifecycleReactionListenerTest {
 
         listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_REINSTATED));
 
-        verify(videoService, never()).restoreAfterReinstatement(anyString());
+        verify(videoService, never()).restoreAfterReinstatement(anyString(), anyBoolean());
+        verify(videoService, never()).assetsVerifiablyPresent(anyString());
+    }
+
+    @Test
+    void theObjectStoreIsAskedBeforeTheTransactionOpens() throws Exception {
+        when(inbox.claim(anyString(), any())).thenReturn(true);
+        moderationBlock(false);
+        when(videoService.assetsVerifiablyPresent("v1")).thenReturn(true);
+
+        listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_REINSTATED));
+
+        var order = inOrder(videoService, transactionManager);
+        order.verify(videoService).assetsVerifiablyPresent("v1");
+        order.verify(transactionManager).getTransaction(any());
+    }
+
+    @Test
+    void anAssetThatIsNotThereIsReportedToTheServiceNotRestored() throws Exception {
+        when(inbox.claim(anyString(), any())).thenReturn(true);
+        moderationBlock(false);
+        when(videoService.assetsVerifiablyPresent("v1")).thenReturn(false);
+
+        listener.onVideoEvent(event(EventTypes.VIDEO_MODERATION_REINSTATED));
+
+        verify(videoService).restoreAfterReinstatement("v1", false);
     }
 
     @Test

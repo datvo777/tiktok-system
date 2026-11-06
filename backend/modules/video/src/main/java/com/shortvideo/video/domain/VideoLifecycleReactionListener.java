@@ -72,11 +72,17 @@ class VideoLifecycleReactionListener {
                         videoService.retainAsRejected(videoId);
                     }
                 };
-                case EventTypes.VIDEO_MODERATION_REINSTATED -> videoId -> {
-                    if (!moderationBlocks(videoId)) {
-                        videoService.restoreAfterReinstatement(videoId);
-                    }
-                };
+                case EventTypes.VIDEO_MODERATION_REINSTATED -> {
+                    // Checked before the transaction below opens: it stats every asset in MinIO, and the
+                    // inbox row would otherwise hold a pooled connection for the length of that call.
+                    String id = Payloads.required(envelope.payload(), "videoId");
+                    boolean assetsValid = !moderationBlocks(id) && videoService.assetsVerifiablyPresent(id);
+                    yield (Consumer<String>) videoId -> {
+                        if (!moderationBlocks(videoId)) {
+                            videoService.restoreAfterReinstatement(videoId, assetsValid);
+                        }
+                    };
+                }
                 default -> null; // not relevant to the lifecycle reaction
             };
             if (handler == null) {

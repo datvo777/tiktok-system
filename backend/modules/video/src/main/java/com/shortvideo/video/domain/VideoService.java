@@ -437,30 +437,44 @@ public class VideoService implements VideoDraftRegistrar, VideoPlaybackDirectory
     }
 
     /**
+     * Whether the video's files are all still in the object store. Not transactional, and not to be
+     * called inside a transaction: it stats every asset in MinIO, and holding a pooled connection
+     * across that network I/O is what turns a slow object store into connection-pool exhaustion.
+     * A missing video has nothing to restore, so it reads as not valid.
+     */
+    boolean assetsVerifiablyPresent(String videoId) {
+        VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
+        return video != null
+                && assetVerifier.verify(
+                        video.getMasterPlaylistKey(),
+                        video.getVariantPlaylists(),
+                        video.getSegmentCount() == null ? 0 : video.getSegmentCount());
+    }
+
+    /**
      * Reacts to {@code video.moderation.reinstated} (brief section 18: "asset
      * lifecycle returns to ACTIVE if valid"). Leaves an admin quarantine alone: that hold is lifted only
      * by {@link #restoreFromQuarantine}, which also clears its revocation.
+     *
+     * @param assetsValid the result of {@link #assetsVerifiablyPresent}, taken by the caller before it
+     *                    opened the transaction this runs in
      */
-    void restoreAfterReinstatement(String videoId) {
+    @Transactional
+    void restoreAfterReinstatement(String videoId, boolean assetsValid) {
         VideoEntity video = repository.findById(UUID.fromString(videoId)).orElse(null);
         if (video == null) {
             return;
         }
-        // Outside the transaction: verify() stats every asset in MinIO, and holding
-        // a pooled connection across that network I/O is what turns a slow object
-        // store into connection-pool exhaustion. See restoreFromQuarantine.
-        boolean assetsValid = assetVerifier.verify(
-                video.getMasterPlaylistKey(),
-                video.getVariantPlaylists(),
-                video.getSegmentCount() == null ? 0 : video.getSegmentCount());
-
-        transactions.executeWithoutResult(status -> {
-            VideoEntity fresh = repository.findById(UUID.fromString(videoId)).orElse(null);
-            if (fresh == null || !fresh.restoreAfterReinstatement(assetsValid)) {
-                return;
-            }
-            appendLifecycleSnapshotEvent(repository.saveAndFlush(fresh));
-        });
+        if (!assetsValid && video.getAssetLifecycleState() == AssetLifecycleState.REJECTED_RETAINED) {
+            // Not an error to retry: the files are not there. But the video was reinstated and will not
+            // be served, and nothing else says so, so it is counted and logged for someone to look at.
+            meters.counter("video.restore.skipped", "reason", "assets_missing").increment();
+            log.warn("Video {} was reinstated but its assets are not verifiably present; leaving it retained", videoId);
+            return;
+        }
+        if (video.restoreAfterReinstatement(assetsValid)) {
+            appendLifecycleSnapshotEvent(repository.saveAndFlush(video));
+        }
     }
 
     /** Admin lifecycle hold, independent of moderation (brief section 18, Milestone 6). */

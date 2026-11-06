@@ -746,4 +746,70 @@ class VideoServiceTest {
                 .isInstanceOf(NullPointerException.class);
         assertThat(video.getProcessingState()).isEqualTo(ProcessingState.TRANSCODING);
     }
+
+    private double restoreSkipped() {
+        return METERS.counter("video.restore.skipped", "reason", "assets_missing").count();
+    }
+
+    private static VideoEntity retainedVideo() {
+        VideoEntity video = new VideoEntity(UUID.randomUUID(), UUID.randomUUID(), "title", "desc");
+        video.retainAsRejected();
+        return video;
+    }
+
+    @Test
+    void aReinstatedVideoWhoseAssetsAreGoneStaysRetainedAndIsCounted() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        VideoService service = serviceWithVerifier(
+                repository, outbox, mock(SupersededAssetJpaRepository.class),
+                mock(MinioAssetVerifier.class), mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        VideoEntity video = retainedVideo();
+        when(repository.findById(video.getVideoId())).thenReturn(Optional.of(video));
+        double before = restoreSkipped();
+
+        service.restoreAfterReinstatement(video.getVideoId().toString(), false);
+
+        assertThat(video.getAssetLifecycleState()).isEqualTo(com.shortvideo.video.api.AssetLifecycleState.REJECTED_RETAINED);
+        assertThat(restoreSkipped() - before).isEqualTo(1.0);
+        org.mockito.Mockito.verifyNoInteractions(outbox);
+    }
+
+    @Test
+    void aReinstatedVideoWhoseAssetsAreThereIsRestoredAndAnnounced() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        var outbox = mock(com.shortvideo.shared.outbox.OutboxWriter.class);
+        VideoService service = serviceWithVerifier(
+                repository, outbox, mock(SupersededAssetJpaRepository.class),
+                mock(MinioAssetVerifier.class), mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        VideoEntity video = retainedVideo();
+        when(repository.findById(video.getVideoId())).thenReturn(Optional.of(video));
+        when(repository.saveAndFlush(video)).thenReturn(video);
+        double before = restoreSkipped();
+
+        service.restoreAfterReinstatement(video.getVideoId().toString(), true);
+
+        assertThat(video.getAssetLifecycleState()).isEqualTo(com.shortvideo.video.api.AssetLifecycleState.ACTIVE);
+        assertThat(restoreSkipped() - before).isZero();
+        var event = org.mockito.ArgumentCaptor.forClass(com.shortvideo.shared.events.EventEnvelope.class);
+        org.mockito.Mockito.verify(outbox).append(event.capture());
+        assertThat(event.getValue().eventType()).isEqualTo(com.shortvideo.shared.events.EventTypes.VIDEO_LIFECYCLE_CHANGED);
+    }
+
+    @Test
+    void aQuarantinedVideoIsNotCountedAsASkippedRestoreWhenItsAssetsAreGone() {
+        VideoJpaRepository repository = mock(VideoJpaRepository.class);
+        VideoService service = serviceWithVerifier(
+                repository, mock(com.shortvideo.shared.outbox.OutboxWriter.class), mock(SupersededAssetJpaRepository.class),
+                mock(MinioAssetVerifier.class), mock(com.shortvideo.shared.audit.AdminActionRecorder.class));
+        VideoEntity video = retainedVideo();
+        video.quarantine();
+        when(repository.findById(video.getVideoId())).thenReturn(Optional.of(video));
+        double before = restoreSkipped();
+
+        service.restoreAfterReinstatement(video.getVideoId().toString(), false);
+
+        assertThat(restoreSkipped() - before).isZero();
+        assertThat(video.getAssetLifecycleState()).isEqualTo(com.shortvideo.video.api.AssetLifecycleState.QUARANTINED);
+    }
 }
