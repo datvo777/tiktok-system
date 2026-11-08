@@ -8,7 +8,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -18,7 +17,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -29,14 +27,10 @@ import org.springframework.test.context.DynamicPropertySource;
  * <p>Needs Redis as well as PostgreSQL — the rate limiter and the logout deny-list
  * both live there, and mocking them would test the mock rather than the behaviour.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class SessionLifecycleIT {
+class SessionLifecycleIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         // Low enough to trip deliberately within a test, without a sleep.
         registry.add("shortvideo.login-rate-limit.enabled", () -> "true");
         registry.add("shortvideo.login-rate-limit.max-attempts-per-ip", () -> "6");

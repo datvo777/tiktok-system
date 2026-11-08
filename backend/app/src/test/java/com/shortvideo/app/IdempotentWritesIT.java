@@ -13,7 +13,6 @@ import java.util.concurrent.Future;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -24,7 +23,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -37,14 +35,10 @@ import org.springframework.test.context.DynamicPropertySource;
  * why these run over HTTP against the real database: a repeated report and two first
  * saves racing must both succeed, as their comments promise.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class IdempotentWritesIT {
+class IdempotentWritesIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
     }
 

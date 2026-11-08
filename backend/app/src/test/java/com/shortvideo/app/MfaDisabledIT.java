@@ -7,7 +7,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
@@ -16,19 +15,14 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /** With {@code shortvideo.mfa.enabled} off, which is the default, nothing about signing in or /internal changes. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class MfaDisabledIT {
+class MfaDisabledIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
         registry.add("shortvideo.register-rate-limit.enabled", () -> "false");
     }

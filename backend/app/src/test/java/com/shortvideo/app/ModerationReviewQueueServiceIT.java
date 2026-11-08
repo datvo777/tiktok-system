@@ -8,9 +8,7 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -21,14 +19,10 @@ import org.springframework.test.context.DynamicPropertySource;
  * <p>The queue and the queueing update are native SQL (a row-comparison keyset seek, and a
  * conditional update that must not move the aggregate version), which mocks cannot vouch for.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class ModerationReviewQueueServiceIT {
+class ModerationReviewQueueServiceIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         registry.add("shortvideo.moderation.queue-mode", () -> "INTENT_GATED");
     }
 

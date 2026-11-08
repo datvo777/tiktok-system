@@ -19,25 +19,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Submitting an appeal against real PostgreSQL: who may, when, and what happens when the same
  * creator submits twice at once or appeals a video that was reinstated and then rejected again.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class AppealServiceIT {
-
-    @DynamicPropertySource
-    static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
-    }
+class AppealServiceIT extends AbstractDatabaseIT {
 
     @Autowired AppealService appeals;
     @Autowired ModerationService moderation;
@@ -253,10 +241,20 @@ class AppealServiceIT {
             inOrder.add(video);
         }
 
-        assertThat(appeals.listPending(3)).extracting(AppealView::videoId).containsExactlyElementsOf(inOrder);
-        assertThat(appeals.listPending(2)).extracting(AppealView::videoId).containsExactlyElementsOf(inOrder.subList(0, 2));
-        assertThat(appeals.listPending(0)).hasSize(1);
-        assertThat(appeals.listPending(Integer.MAX_VALUE)).hasSizeLessThanOrEqualTo(AppealService.MAX_PENDING_PAGE);
+        try {
+            assertThat(appeals.listPending(3)).extracting(AppealView::videoId).containsExactlyElementsOf(inOrder);
+            assertThat(appeals.listPending(2))
+                    .extracting(AppealView::videoId)
+                    .containsExactlyElementsOf(inOrder.subList(0, 2));
+            assertThat(appeals.listPending(0)).hasSize(1);
+            assertThat(appeals.listPending(Integer.MAX_VALUE)).hasSizeLessThanOrEqualTo(AppealService.MAX_PENDING_PAGE);
+        } finally {
+            // They stay PENDING and a century old. Left behind, they would head the list on the next run
+            // against the same database and push that run's own three out of the first three.
+            for (String video : inOrder) {
+                jdbc.update("DELETE FROM appeal.appeal WHERE video_id = ?::uuid", video);
+            }
+        }
     }
 
     /** Moves the denial back in time, as if it had been decided that long ago. */

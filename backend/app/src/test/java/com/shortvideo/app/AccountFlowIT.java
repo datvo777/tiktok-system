@@ -7,7 +7,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
@@ -17,7 +16,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -29,18 +27,10 @@ import org.springframework.test.context.DynamicPropertySource;
  * cannot send headers. A test that passed a header here would "prove" a path the
  * browser can never exercise.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class AccountFlowIT {
+class AccountFlowIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        // Testcontainers by default; TEST_POSTGRES_URL points at an existing
-        // database instead. See TestDatabase.
-        TestDatabase.register(registry);
-        // Not reachable in this test; nothing here publishes, and the relay is off
-        // under the "test" profile.
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         // These tests log in repeatedly from one address; throttling is exercised
         // deliberately in SessionLifecycleIT instead.
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");

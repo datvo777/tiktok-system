@@ -43,6 +43,13 @@ public final class TestDatabase {
      * database was supplied.
      */
     public static void register(DynamicPropertyRegistry registry) {
+        // Spring keeps every distinct test context alive until the JVM ends, and each one holds its
+        // own connection pool to this one database. The production pool (20, all opened up front)
+        // used up PostgreSQL's 100 connections after about five contexts and failed the rest of the
+        // run with "too many clients". Tests need few connections at a time, so open one and grow on
+        // demand; the concurrency tests use at most four.
+        registry.add("spring.datasource.hikari.minimum-idle", () -> "1");
+        registry.add("spring.datasource.hikari.maximum-pool-size", () -> "10");
         if (usesExternalDatabase()) {
             registry.add("spring.datasource.url", () -> System.getenv(URL_ENV));
             registry.add("spring.datasource.username", () -> envOrDefault("TEST_POSTGRES_USER", "short_video_app"));
@@ -60,7 +67,10 @@ public final class TestDatabase {
             container = new PostgreSQLContainer<>("postgres:17.4-alpine")
                     .withDatabaseName("short_video")
                     .withUsername("short_video_app")
-                    .withPassword("short_video_app");
+                    .withPassword("short_video_app")
+                    // Replaces the image command, so fsync=off (the container's own default) is repeated.
+                    // The raised limit is headroom for a suite that keeps many contexts open.
+                    .withCommand("postgres", "-c", "fsync=off", "-c", "max_connections=300");
             container.start();
         }
         return container;

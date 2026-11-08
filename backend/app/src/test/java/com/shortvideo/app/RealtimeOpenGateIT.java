@@ -12,14 +12,12 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -28,14 +26,10 @@ import org.springframework.test.context.DynamicPropertySource;
  * refusal is a 503 with a Retry-After, and it comes even for a request that carries no session at
  * all, which proves it never reached the filter that talks to Redis and PostgreSQL.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class RealtimeOpenGateIT {
+class RealtimeOpenGateIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
         registry.add("shortvideo.register-rate-limit.enabled", () -> "false");
         registry.add("shortvideo.realtime.enabled", () -> "true");

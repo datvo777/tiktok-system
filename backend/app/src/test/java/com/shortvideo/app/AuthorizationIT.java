@@ -21,7 +21,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -37,16 +36,10 @@ import org.springframework.test.context.DynamicPropertySource;
  * <p>Each test names the status it expects and why, so a future change that
  * regresses one produces a failure that explains itself.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class AuthorizationIT {
+class AuthorizationIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        // Not reachable in this test; nothing here publishes, and the relay is off
-        // under the "test" profile.
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         // The rate limiter would otherwise throttle the repeated logins these
         // tests perform. Its own behaviour is covered by LoginRateLimiterIT.
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");

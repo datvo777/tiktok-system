@@ -14,11 +14,7 @@ import com.shortvideo.shared.revocation.RevocationSubjects;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -26,15 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * the moderation block, and that it refuses rather than report a video reinstated while the block
  * that the media gateway reads is still in force.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class ModerationReinstatementServiceIT {
-
-    @DynamicPropertySource
-    static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
-    }
+class ModerationReinstatementServiceIT extends AbstractDatabaseIT {
 
     @Autowired ModerationService moderation;
     @Autowired DurableRevocationWriter writer;

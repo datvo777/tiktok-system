@@ -8,27 +8,15 @@ import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * A relay that dies while sending an event never gets to record a failure, so the event is
  * reclaimed after each lease and its attempt count climbs without anything ever marking it DEAD.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class OutboxAbandonedClaimIT {
+class OutboxAbandonedClaimIT extends AbstractDatabaseIT {
 
     private static final int MAX_ATTEMPTS = 10;
-
-    @DynamicPropertySource
-    static void datasource(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
-    }
 
     @Autowired
     JdbcTemplate jdbc;

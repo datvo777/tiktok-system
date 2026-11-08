@@ -7,11 +7,7 @@ import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -28,15 +24,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * aborted transaction does not throw, so {@link #aRedeliveryIsRefusedAndItsTransactionStillCommits}
  * only guards against that changing.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class InboxGuardIT {
-
-    @DynamicPropertySource
-    static void datasource(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
-    }
+class InboxGuardIT extends AbstractDatabaseIT {
 
     @Autowired InboxGuard inbox;
     @Autowired TransactionTemplate transaction;

@@ -7,7 +7,6 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ApplicationContext;
@@ -17,7 +16,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.ReflectionUtils;
@@ -27,14 +25,10 @@ import org.springframework.util.ReflectionUtils;
  * passed, exactly once, and never while the failure is recent or not terminal. The selection
  * query is JPQL with a NOT EXISTS, so it is only meaningfully checked against PostgreSQL.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class FailedSourceCleanupIT {
+class FailedSourceCleanupIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
     }
 

@@ -22,7 +22,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -30,7 +29,6 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -41,16 +39,12 @@ import org.springframework.test.context.DynamicPropertySource;
  * <p>Events are pushed into {@link SseRegistry} directly. The Kafka leg (notification.created
  * reaching the registry) is covered by {@code RealtimeListenerTest}; nothing here needs a broker.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class RealtimeStreamIT {
+class RealtimeStreamIT extends AbstractDatabaseIT {
 
     private static final int GLOBAL_LIMIT = 6;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
         registry.add("shortvideo.register-rate-limit.enabled", () -> "false");
         registry.add("shortvideo.realtime.enabled", () -> "true");

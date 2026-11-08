@@ -12,7 +12,6 @@ import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,7 +22,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -31,17 +29,13 @@ import org.springframework.test.context.DynamicPropertySource;
  * The second factor end to end, with the factor switched on: enrolling, signing in with a code, what the
  * session may reach, and the ways a code or a pending sign-in can be refused.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class MfaFlowIT {
+class MfaFlowIT extends AbstractDatabaseIT {
 
     private static final String PASSWORD = "correct-horse-battery";
     private static final String ADMIN_ONLY_ROUTE = "/internal/v1/videos/pending";
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
         registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
         registry.add("shortvideo.register-rate-limit.enabled", () -> "false");
         registry.add("shortvideo.mfa.enabled", () -> "true");

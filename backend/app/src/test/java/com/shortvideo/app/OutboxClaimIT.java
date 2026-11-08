@@ -19,11 +19,7 @@ import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * What a claim picks, against the real table: the oldest claimable rows first whichever source they
@@ -32,19 +28,11 @@ import org.springframework.test.context.DynamicPropertySource;
  * <p>The database is shared with other tests, so every row here is dated far in the past: they sort
  * ahead of anything else, and a batch never reaches a row it does not own.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class OutboxClaimIT {
+class OutboxClaimIT extends AbstractDatabaseIT {
 
     private static final String AGGREGATE_TYPE = "CLAIM_IT";
     private static final Instant EPOCH = Instant.parse("2000-01-01T00:00:00Z");
     private static final long LEASE_SECONDS = 60;
-
-    @DynamicPropertySource
-    static void datasource(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
-    }
 
     @Autowired
     JdbcTemplate jdbc;

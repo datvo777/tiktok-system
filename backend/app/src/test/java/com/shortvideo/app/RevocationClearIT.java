@@ -15,11 +15,7 @@ import com.shortvideo.shared.revocation.RevocationSubjects;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -27,15 +23,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * block, so a caller that is wrong about it must find out: otherwise its own record says the subject
  * is reinstated while the table the media gateway reads still says blocked.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-class RevocationClearIT {
-
-    @DynamicPropertySource
-    static void properties(DynamicPropertyRegistry registry) {
-        TestDatabase.register(registry);
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
-    }
+class RevocationClearIT extends AbstractDatabaseIT {
 
     @Autowired DurableRevocationWriter writer;
     @Autowired DurableRevocationReader reader;
