@@ -21,19 +21,51 @@ public class OutboxRepository {
      *
      * <p>occurred_at alone is not a total order — two events can share a timestamp —
      * so ties break on (aggregate_id, aggregate_version).
+     *
+     * <p>Picking the rows takes two steps so that its cost follows the batch size, not the backlog.
+     * {@code candidates} reads the first {@code n} rows of each source (ready, and expired
+     * leases) in index order and stops there; {@code top} keeps the first {@code n} of those.
+     * Written as one query with an OR, the planner has to read and sort every claimable row first
+     * (see V49). Only then does {@code selected} lock the rows, because FOR UPDATE cannot be applied
+     * to a UNION.
+     *
+     * <p>{@code selected} repeats the state test: a row can be claimed by someone else between
+     * the two steps, and re-checking is what stops it being claimed twice. Because the lock is
+     * taken after the choice, a claimer that finds some of its rows locked returns fewer than
+     * {@code n} rows rather than reaching past them. With one relay that never happens; with several
+     * the relay's "fewer than a full batch, so stop" test would stop it early and it would pick up
+     * again at the next poll.
      */
     private static final String CLAIM = """
-            WITH selected AS (
+            WITH candidates AS (
+                (SELECT event_id, occurred_at, aggregate_id, aggregate_version
+                 FROM platform.outbox_event
+                 WHERE status IN ('PENDING', 'RETRY') AND available_at <= now()
+                 ORDER BY occurred_at, aggregate_id, aggregate_version
+                 LIMIT ?)
+                UNION ALL
+                (SELECT event_id, occurred_at, aggregate_id, aggregate_version
+                 FROM platform.outbox_event
+                 WHERE status = 'CLAIMED' AND claimed_until < now() AND available_at <= now()
+                 ORDER BY occurred_at, aggregate_id, aggregate_version
+                 LIMIT ?)
+            ),
+            top AS (
                 SELECT event_id
-                FROM platform.outbox_event
-                WHERE (
-                    status IN ('PENDING', 'RETRY')
-                    OR (status = 'CLAIMED' AND claimed_until < now())
-                )
-                  AND available_at <= now()
+                FROM candidates
                 ORDER BY occurred_at, aggregate_id, aggregate_version
-                FOR UPDATE SKIP LOCKED
                 LIMIT ?
+            ),
+            selected AS (
+                SELECT o.event_id
+                FROM platform.outbox_event o
+                JOIN top USING (event_id)
+                WHERE (
+                    o.status IN ('PENDING', 'RETRY')
+                    OR (o.status = 'CLAIMED' AND o.claimed_until < now())
+                )
+                  AND o.available_at <= now()
+                FOR UPDATE OF o SKIP LOCKED
             )
             UPDATE platform.outbox_event o
             SET status = 'CLAIMED',
@@ -116,7 +148,8 @@ public class OutboxRepository {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public List<OutboxRecord> claimBatch(String relayId, UUID claimToken, int batchSize, long leaseSeconds) {
-        return jdbc.query(CLAIM, MAPPER, batchSize, relayId, claimToken, (double) leaseSeconds);
+        // batchSize bounds each of the three LIMITs in CLAIM.
+        return jdbc.query(CLAIM, MAPPER, batchSize, batchSize, batchSize, relayId, claimToken, (double) leaseSeconds);
     }
 
     /** @return true when this relay still owned the claim and the row was finalised. */
