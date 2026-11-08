@@ -26,6 +26,21 @@ groups:
             The relay gave up publishing these. Consumers (search, eligibility, notifications) are
             missing them until an operator republishes. See platform.outbox_event WHERE status = 'DEAD'.
 
+      - alert: OutboxBacklogGrowing
+        # The relay has fallen behind (Kafka slow or down, relay stopped or disabled): consumers see
+        # events this late. A single failing event also lands here until it goes DEAD (retry backoff is
+        # capped at shortvideo.outbox.max-backoff, 5m by default), then OutboxEventsDead takes over.
+        expr: outbox_oldest_waiting_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oldest unpublished outbox event is {{ $value | humanizeDuration }} old"
+          description: >-
+            Events are reaching consumers late. Check that the relay is running and Kafka is reachable
+            (outbox.events.failed, relay logs). If the relay is healthy but slow, the claim query is the
+            next suspect: EXPLAIN it against platform.outbox_event (outbox_event_ready_idx).
+
       - alert: UploadCleanupFailing
         # Failed with nothing reaped in the same window: stuck, not just one bad session.
         expr: increase(upload_cleanup_failed_total[30m]) > 0 and increase(upload_cleanup_reaped_total[30m]) == 0

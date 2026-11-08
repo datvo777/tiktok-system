@@ -12,48 +12,26 @@ import java.util.function.LongSupplier;
  * about rows already sitting there. Nothing replays or removes a DEAD row, so this is read from the
  * table, and an alert on it above zero is how an operator learns that consumers are missing an event.
  *
- * <p>The count is cached briefly so a scrape every few seconds does not become a query every few
- * seconds; if the database cannot answer, the last known value is kept rather than reporting zero.
+ * <p>The count is cached briefly (see {@link CachedReading}).
  */
 public class OutboxDeadGauge implements MeterBinder {
 
     public static final String NAME = "outbox.dead.rows";
 
-    private final LongSupplier counter;
-    private final long ttlNanos;
-    private long cached;
-    private long readAt;
-    private boolean read;
+    private final CachedReading reading;
 
     public OutboxDeadGauge(OutboxRepository repository, Duration ttl) {
         this(repository::countDead, ttl);
     }
 
     OutboxDeadGauge(LongSupplier counter, Duration ttl) {
-        this.counter = counter;
-        this.ttlNanos = ttl.toNanos();
+        this.reading = new CachedReading(counter::getAsLong, ttl);
     }
 
     @Override
     public void bindTo(MeterRegistry registry) {
-        Gauge.builder(NAME, this, OutboxDeadGauge::current)
+        Gauge.builder(NAME, reading, CachedReading::current)
                 .description("Outbox events in DEAD status, awaiting an operator")
                 .register(registry);
-    }
-
-    private synchronized double current() {
-        long now = System.nanoTime();
-        if (!read || now - readAt >= ttlNanos) {
-            try {
-                cached = counter.getAsLong();
-                read = true;
-            } catch (RuntimeException e) {
-                if (!read) {
-                    throw e;
-                }
-            }
-            readAt = now;
-        }
-        return cached;
     }
 }

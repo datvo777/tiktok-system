@@ -18,9 +18,10 @@ import org.springframework.stereotype.Component;
  *
  * <p>Nothing did this before: {@link OutboxRepository} only claims, finalises
  * and fails rows, so every event ever published stayed in the table forever.
- * That never produced wrong behaviour — {@code outbox_event_claimable_idx} is
- * a partial index that already excludes {@code PUBLISHED} rows, so the
- * relay's own claim query stays fast regardless of table size — but the
+ * That never produced wrong behaviour — {@code outbox_event_ready_idx} and
+ * {@code outbox_event_reclaim_idx} are partial indexes that already exclude
+ * {@code PUBLISHED} rows, so the relay's own claim query stays fast
+ * regardless of table size — but the
  * primary key, the {@code (aggregate_type, aggregate_id, aggregate_version)}
  * unique index and the {@code payload} column all grow without bound, which
  * is unnecessary disk, backup and autovacuum cost with no corresponding

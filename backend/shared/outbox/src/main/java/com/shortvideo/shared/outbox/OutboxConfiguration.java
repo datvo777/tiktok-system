@@ -19,6 +19,12 @@ public class OutboxConfiguration {
         return new OutboxDeadGauge(repository, java.time.Duration.ofSeconds(30));
     }
 
+    /** Always on too: a stopped or disabled relay is exactly when the backlog grows. */
+    @Bean
+    public OutboxBacklogGauge outboxBacklogGauge(OutboxRepository repository) {
+        return new OutboxBacklogGauge(repository, java.time.Duration.ofSeconds(30));
+    }
+
     /** One relay process locally. Disable in tests that assert on raw outbox rows. */
     @Bean
     @ConditionalOnProperty(prefix = "shortvideo.outbox", name = "enabled", havingValue = "true", matchIfMissing = true)

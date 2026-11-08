@@ -213,6 +213,30 @@ public class OutboxRepository {
         return count == null ? 0 : count;
     }
 
+    /**
+     * Age in seconds of the oldest event that is waiting to be sent: ready or retrying, or claimed
+     * with the lease already run out (a relay that died mid-batch leaves those behind). The two
+     * halves are the claim's two sources, each read from the first entry of its own index.
+     * Measured against the database clock, like the claim.
+     *
+     * @return 0 when nothing is waiting
+     */
+    public double oldestWaitingSeconds() {
+        Double age = jdbc.queryForObject("""
+                SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(oldest)), 0)::float8
+                FROM (
+                    SELECT min(occurred_at) AS oldest
+                    FROM platform.outbox_event
+                    WHERE status IN ('PENDING', 'RETRY')
+                    UNION ALL
+                    SELECT min(occurred_at)
+                    FROM platform.outbox_event
+                    WHERE status = 'CLAIMED' AND claimed_until < now()
+                ) sources
+                """, Double.class);
+        return age == null ? 0 : Math.max(0, age);
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean markFailed(UUID eventId, UUID claimToken, String error, Instant retryAt, boolean dead) {
         String status = dead ? "DEAD" : "RETRY";
