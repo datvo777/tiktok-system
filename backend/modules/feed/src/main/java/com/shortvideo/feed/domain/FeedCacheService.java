@@ -2,6 +2,7 @@ package com.shortvideo.feed.domain;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,12 +22,10 @@ class FeedCacheService {
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
-    private final FeedProperties properties;
 
-    FeedCacheService(StringRedisTemplate redis, ObjectMapper objectMapper, FeedProperties properties) {
+    FeedCacheService(StringRedisTemplate redis, ObjectMapper objectMapper) {
         this.redis = redis;
         this.objectMapper = objectMapper;
-        this.properties = properties;
     }
 
     /**
@@ -45,9 +44,9 @@ class FeedCacheService {
         }
     }
 
-    void putRanking(String viewerId, List<FeedItemView> ranking) {
+    void putRanking(String viewerId, List<FeedItemView> ranking, Duration ttl) {
         try {
-            redis.opsForValue().set(key(viewerId), objectMapper.writeValueAsString(ranking), properties.getCacheTtl());
+            redis.opsForValue().set(key(viewerId), objectMapper.writeValueAsString(ranking), ttl);
         } catch (Exception e) {
             log.debug("Feed cache write failed; ranking will be recomputed next time: {}", e.getMessage());
         }

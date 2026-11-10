@@ -39,14 +39,16 @@ import org.springframework.stereotype.Service;
  * surrounding transaction. That was ~1,400 round trips and ~1,000 separate
  * connection acquisitions from a 20-connection pool for a single uncached request,
  * which is what made the feed the first thing to fall over under concurrency. Every
- * collaborator is now asked once for the whole page instead, so the cost is four
- * queries regardless of pool size.
+ * collaborator is now asked once for the whole page instead, so the cost is a fixed
+ * handful of queries (see {@link #rank}) regardless of pool size.
  *
  * <p><b>Stable ordering.</b> The exploration term used to be drawn from
  * {@code ThreadLocalRandom} on every request, so each page was ranked against a
  * different random draw: a video could appear on both page 0 and page 1, or on
  * neither. The ranking is now computed once per viewer, seeded deterministically
- * and cached whole, and pages are slices of that one ordering.
+ * and cached whole, and pages are slices of that one ordering. A signed-in
+ * viewer's ranking is also frozen for the length of a session (page 0 starts it),
+ * because their own watching reorders it.
  */
 @Service
 public class FeedService {
@@ -90,10 +92,25 @@ public class FeedService {
         // times the cost.
         String identity = viewerId == null ? ANONYMOUS : viewerId;
         String cacheKey = scope == Scope.FOLLOWING ? identity + ":following" : identity;
-        List<FeedItemView> ranking = cache.getRanking(cacheKey);
+
+        // A signed-in viewer's ranking depends on what they have watched, and
+        // watching moves videos to the "seen" tier at the end. If a later page were
+        // cut from a ranking recomputed after that, the offsets would no longer line
+        // up with what page 0 showed and the unseen videos in between would be
+        // skipped. So page 0 -- the viewer opening the feed -- always starts a new
+        // ranking, and the pages after it keep slicing that one for the session TTL
+        // instead of the short cache TTL, which is shorter than a page of scrolling.
+        // Signed-out viewers have no seen tier, so their shared ranking keeps the
+        // short TTL.
+        boolean sessionRanking = viewerId != null;
+        List<FeedItemView> ranking = sessionRanking && page == 0 ? null : cache.getRanking(cacheKey);
+        boolean fromCache = ranking != null;
         if (ranking == null) {
             ranking = rank(viewerId, identity, scope);
-            cache.putRanking(cacheKey, ranking);
+            cache.putRanking(
+                    cacheKey,
+                    ranking,
+                    sessionRanking ? properties.getRankingSessionTtl() : properties.getCacheTtl());
         }
 
         int pageSize = properties.getPageSize();
@@ -101,9 +118,34 @@ public class FeedService {
         // would produce a negative offset, which subList rejects with an exception.
         int from = (int) Math.min((long) page * pageSize, ranking.size());
         int to = Math.min(from + pageSize, ranking.size());
+        List<FeedItemView> items = List.copyOf(ranking.subList(from, to));
+        if (fromCache && sessionRanking) {
+            // The ranking can now outlive a moderation decision by minutes. Dropping
+            // revoked rows from the slice, rather than from the stored ranking, keeps
+            // the offsets stable. The gateway still re-authorizes playback (Rule 12);
+            // this only spares the viewer a video that will not play.
+            items = withoutRevoked(items);
+        }
         // hasMore lets the client stop paging instead of walking into empty pages
         // forever, which is what it had to do when only the items were returned.
-        return new FeedPage(List.copyOf(ranking.subList(from, to)), to < ranking.size());
+        return new FeedPage(items, to < ranking.size());
+    }
+
+    private List<FeedItemView> withoutRevoked(List<FeedItemView> items) {
+        if (items.isEmpty()) {
+            return items;
+        }
+        Set<String> revokedVideos = revocationReader.activeAmong(
+                RevocationSubjects.VIDEO, items.stream().map(FeedItemView::videoId).toList());
+        Set<String> revokedCreators = revocationReader.activeAmong(
+                RevocationSubjects.ACCOUNT,
+                items.stream().map(FeedItemView::creatorId).collect(Collectors.toSet()));
+        if (revokedVideos.isEmpty() && revokedCreators.isEmpty()) {
+            return items;
+        }
+        return items.stream()
+                .filter(i -> !revokedVideos.contains(i.videoId()) && !revokedCreators.contains(i.creatorId()))
+                .toList();
     }
 
     /**
@@ -144,15 +186,15 @@ public class FeedService {
                 new FeedItemView(view.videoId(), view.creatorId(), view.title(), view.description()));
     }
 
-    /**
-     * Four queries total: candidates (joined to creator eligibility), video
-     * revocations, account revocations, social counts, and the viewer's follows —
-     * the last two being one query each over the whole candidate set.
-     */
     /** Cache key and exploration seed for a viewer with no account. */
     private static final String ANONYMOUS = "anonymous";
 
     /**
+     * Seven queries for a signed-out viewer, nine for a signed-in one, however
+     * large the pool: candidates (joined to creator eligibility), video
+     * revocations, account revocations, four for social counts (likes, comments,
+     * shares, views), and for a signed-in viewer their follows and watch history.
+     *
      * @param viewerId null for a signed-out viewer; the follow and watch-history
      *     queries are skipped rather than run against a fabricated id.
      * @param identity the same value, or {@link #ANONYMOUS}, for seeding the

@@ -10,6 +10,17 @@ public class FeedProperties {
     private int candidatePoolSize = 200;
     private int pageSize = 20;
     private Duration cacheTtl = Duration.ofSeconds(30);
+
+    /**
+     * How long a signed-in viewer's ranking is kept for the pages that follow
+     * page 0. {@link #cacheTtl} is far shorter than the time it takes to scroll
+     * through a page, so with it alone every page was cut from a fresh ranking in
+     * which the videos just watched had dropped to the "seen" tier -- shifting
+     * the offsets and skipping the unseen videos in between. Page 0 starts a new
+     * ranking; this is how long later pages may keep slicing it.
+     */
+    private Duration rankingSessionTtl = Duration.ofMinutes(30);
+
     private double freshnessWeight = 10;
     private double likeWeight = 1;
     private double commentWeight = 2;
@@ -31,6 +42,8 @@ public class FeedProperties {
     public void setPageSize(int pageSize) { this.pageSize = pageSize; }
     public Duration getCacheTtl() { return cacheTtl; }
     public void setCacheTtl(Duration cacheTtl) { this.cacheTtl = cacheTtl; }
+    public Duration getRankingSessionTtl() { return rankingSessionTtl; }
+    public void setRankingSessionTtl(Duration rankingSessionTtl) { this.rankingSessionTtl = rankingSessionTtl; }
     public double getFreshnessWeight() { return freshnessWeight; }
     public void setFreshnessWeight(double freshnessWeight) { this.freshnessWeight = freshnessWeight; }
     public double getLikeWeight() { return likeWeight; }

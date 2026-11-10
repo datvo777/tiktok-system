@@ -176,6 +176,9 @@ shortvideo:
     candidate-pool-size: 200
     page-size: 20
     cache-ttl: 30s
+    # Signed-in viewers: how long pages after the first keep slicing the ranking
+    # that page 0 produced (see FeedProperties#rankingSessionTtl).
+    ranking-session-ttl: 30m
     freshness-weight: 10
     like-weight: 1
     comment-weight: 2
