@@ -204,6 +204,17 @@ class EligibilityRepository {
     /**
      * As {@link #FIND_ELIGIBLE_WITH_ELIGIBLE_CREATOR}, restricted to the given
      * creators. Served by {@code video_eligibility_creator_idx}.
+     *
+     * <p>{@code ORDER BY v.updated_at + interval '0'} is deliberate; do not
+     * "simplify" it to {@code ORDER BY v.updated_at}. With the plain column the
+     * planner assumes the followed creators' videos are spread evenly through time
+     * and walks {@code video_eligibility_eligible_updated_idx} newest-first,
+     * filtering by creator. For creators who have not posted in a while that
+     * discards over a million rows (about 1.3 s measured on 1.5M videos). The
+     * expression is not the indexed column, so that scan can no longer supply the
+     * order, and the planner reads the followed creators' rows through
+     * {@code video_eligibility_creator_idx} and sorts them (about 12-85 ms). The
+     * result is identical. See docs/following-feed-query-benchmark.md.
      */
     private static final String FIND_ELIGIBLE_BY_CREATORS = """
             SELECT v.video_id, v.creator_id, v.title, v.description, v.processing_state, v.processing_version, v.durability_state,
@@ -215,7 +226,7 @@ class EligibilityRepository {
             WHERE v.creator_id = ANY(?)
               AND v.is_video_eligible = true
               AND a.is_account_eligible = true
-            ORDER BY v.updated_at DESC
+            ORDER BY v.updated_at + interval '0' DESC
             LIMIT ?
             """;
 
