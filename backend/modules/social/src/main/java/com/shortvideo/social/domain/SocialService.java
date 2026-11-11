@@ -344,6 +344,12 @@ public class SocialService implements SocialDirectory {
         return repository.followedAmong(followerId, creatorIds);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> followedCreators(String followerId, int limit) {
+        return repository.followedCreators(followerId, limit);
+    }
+
     private VideoEligibilityView requireEligible(String videoId) {
         return eligibilityDirectory
                 .findVideoEligibility(videoId)

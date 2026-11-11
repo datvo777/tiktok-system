@@ -9,6 +9,13 @@ public class FeedProperties {
 
     private int candidatePoolSize = 200;
     private int pageSize = 20;
+
+    /**
+     * How many followed creators the Following feed draws candidates from, most
+     * recently followed first. Bounds the {@code ANY(?)} list for an account that
+     * follows a very large number of creators.
+     */
+    private int followingCreatorLimit = 500;
     private Duration cacheTtl = Duration.ofSeconds(30);
 
     /**
@@ -38,6 +45,8 @@ public class FeedProperties {
 
     public int getCandidatePoolSize() { return candidatePoolSize; }
     public void setCandidatePoolSize(int candidatePoolSize) { this.candidatePoolSize = candidatePoolSize; }
+    public int getFollowingCreatorLimit() { return followingCreatorLimit; }
+    public void setFollowingCreatorLimit(int followingCreatorLimit) { this.followingCreatorLimit = followingCreatorLimit; }
     public int getPageSize() { return pageSize; }
     public void setPageSize(int pageSize) { this.pageSize = pageSize; }
     public Duration getCacheTtl() { return cacheTtl; }

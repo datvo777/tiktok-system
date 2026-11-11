@@ -31,6 +31,12 @@ public interface SocialDirectory {
     Set<String> followedAmong(String followerId, Collection<String> creatorIds);
 
     /**
+     * The creators this viewer follows, most recently followed first, at most
+     * {@code limit} of them.
+     */
+    Set<String> followedCreators(String followerId, int limit);
+
+    /**
      * Which of {@code videoIds} this viewer has already been shown.
      *
      * <p>The feed had no notion of this at all, so a ranking recomputed after its

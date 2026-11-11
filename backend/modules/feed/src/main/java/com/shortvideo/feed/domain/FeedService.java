@@ -202,8 +202,24 @@ public class FeedService {
      *     ranking.
      */
     private List<FeedItemView> rank(String viewerId, String identity, Scope scope) {
-        List<VideoEligibilityView> candidates =
-                eligibilityDirectory.findEligibleVideosWithEligibleCreators(properties.getCandidatePoolSize());
+        // The Following scope is defined by who made a video, so it takes its
+        // candidates from the followed creators directly. Filtering the newest-N
+        // pool instead drops a followed creator's older videos as soon as other
+        // creators have posted N newer ones.
+        Set<String> followedCreators = null;
+        List<VideoEligibilityView> candidates;
+        if (scope == Scope.FOLLOWING) {
+            if (viewerId == null) {
+                return List.of(); // nobody to follow
+            }
+            followedCreators = socialDirectory.followedCreators(viewerId, properties.getFollowingCreatorLimit());
+            candidates = followedCreators.isEmpty()
+                    ? List.of()
+                    : eligibilityDirectory.findEligibleVideosByCreators(
+                            followedCreators, properties.getCandidatePoolSize());
+        } else {
+            candidates = eligibilityDirectory.findEligibleVideosWithEligibleCreators(properties.getCandidatePoolSize());
+        }
         if (candidates.isEmpty()) {
             return List.of();
         }
@@ -218,7 +234,9 @@ public class FeedService {
         // Two queries a signed-out viewer has no answer to: they follow nobody and
         // have no watch history worth keying to a browser. Skipped rather than
         // asked with a placeholder id.
-        Set<String> followed = viewerId == null ? Set.of() : socialDirectory.followedAmong(viewerId, creatorIds);
+        Set<String> followed = followedCreators != null
+                ? followedCreators
+                : viewerId == null ? Set.of() : socialDirectory.followedAmong(viewerId, creatorIds);
         // One more batched query, for the same reason as the others: the feed had
         // no idea what this viewer had already watched, so it kept serving it.
         Set<String> seen = viewerId == null ? Set.of() : socialDirectory.viewedAmong(viewerId, videoIds);
@@ -234,9 +252,6 @@ public class FeedService {
         for (VideoEligibilityView video : candidates) {
             if (revokedVideos.contains(video.videoId()) || revokedCreators.contains(video.creatorId())) {
                 continue; // brief section 15: filter by revocation
-            }
-            if (scope == Scope.FOLLOWING && !followed.contains(video.creatorId())) {
-                continue; // this scope is a filter, not a boost
             }
             SocialCounts videoCounts =
                     counts.getOrDefault(video.videoId(), new SocialCounts(video.videoId(), 0, 0, 0, 0));

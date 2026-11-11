@@ -47,6 +47,16 @@ public interface EligibilityDirectory {
      */
     List<VideoEligibilityView> findEligibleVideosWithEligibleCreators(int limit);
 
+    /**
+     * As {@link #findEligibleVideosWithEligibleCreators}, but only videos by the
+     * given creators, newest first. A scope that is defined by who made a video
+     * (the Following feed) cannot be answered by filtering the newest-N pool:
+     * once other creators have posted {@code limit} newer videos, a followed
+     * creator's older ones are not in it. Same eligibility rules, so unknown
+     * still denies (Rule 9).
+     */
+    List<VideoEligibilityView> findEligibleVideosByCreators(Collection<String> creatorIds, int limit);
+
     /** Every video this projection currently tracks, eligible or not (brief section 20, Milestone 5). */
     List<String> allTrackedVideoIds(int limit);
 }

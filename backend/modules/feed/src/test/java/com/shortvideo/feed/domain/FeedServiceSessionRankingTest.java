@@ -121,6 +121,32 @@ class FeedServiceSessionRankingTest {
         assertThat(cache.lastTtl).isEqualTo(Duration.ofMinutes(30));
     }
 
+    /**
+     * The Following scope used to filter the newest-N pool, so a followed creator's
+     * video older than the N newest from everyone else never appeared.
+     */
+    @Test
+    void followingDrawsCandidatesFromTheFollowedCreatorsNotTheNewestPool() {
+        VideoEligibilityView old = video("old-one", Instant.now().minusSeconds(86_400L * 30));
+        when(social.followedCreators(VIEWER, properties.getFollowingCreatorLimit()))
+                .thenReturn(Set.of(old.creatorId()));
+        when(eligibility.findEligibleVideosByCreators(Set.of(old.creatorId()), properties.getCandidatePoolSize()))
+                .thenReturn(List.of(old));
+
+        List<String> page = ids(service.feed(VIEWER, 0, FeedService.Scope.FOLLOWING));
+
+        assertThat(page).containsExactly("old-one");
+    }
+
+    @Test
+    void followingWithNoFollowedCreatorsIsEmptyAndSkipsTheCandidateQuery() {
+        when(social.followedCreators(VIEWER, properties.getFollowingCreatorLimit())).thenReturn(Set.of());
+
+        assertThat(service.feed(VIEWER, 0, FeedService.Scope.FOLLOWING).items()).isEmpty();
+        org.mockito.Mockito.verify(eligibility, org.mockito.Mockito.never())
+                .findEligibleVideosByCreators(anyCollection(), anyInt());
+    }
+
     private List<String> freshnessOrder() {
         List<String> order = new ArrayList<>();
         for (int i = 0; i < VIDEOS; i++) {

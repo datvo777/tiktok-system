@@ -165,6 +165,13 @@ class SocialRepository {
             WHERE follower_id = ? AND followee_id = ANY(?)
             """;
 
+    private static final String FOLLOWED_CREATORS = """
+            SELECT followee_id FROM social.follow
+            WHERE follower_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """;
+
     /**
      * Upsert: a rewatch bumps this viewer's row rather than adding one, and
      * {@code completed} latches true once they have watched it through, so a
@@ -471,6 +478,12 @@ class SocialRepository {
         UUID[] ids = creatorIds.stream().map(UUID::fromString).toArray(UUID[]::new);
         return new HashSet<>(
                 jdbc.queryForList(FOLLOWED_AMONG, String.class, UUID.fromString(followerId), ids));
+    }
+
+    Set<String> followedCreators(String followerId, int limit) {
+        // LinkedHashSet keeps the newest-first order the query asked for.
+        return new java.util.LinkedHashSet<>(
+                jdbc.queryForList(FOLLOWED_CREATORS, String.class, UUID.fromString(followerId), limit));
     }
 
     long followerCount(String accountId) {

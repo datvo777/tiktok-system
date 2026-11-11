@@ -201,6 +201,24 @@ class EligibilityRepository {
             LIMIT ?
             """;
 
+    /**
+     * As {@link #FIND_ELIGIBLE_WITH_ELIGIBLE_CREATOR}, restricted to the given
+     * creators. Served by {@code video_eligibility_creator_idx}.
+     */
+    private static final String FIND_ELIGIBLE_BY_CREATORS = """
+            SELECT v.video_id, v.creator_id, v.title, v.description, v.processing_state, v.processing_version, v.durability_state,
+                   v.moderation_state, v.publication_state, v.publication_intent_requested, v.asset_lifecycle_state,
+                   v.legal_serving_state, v.is_video_eligible, v.processing_version_source,
+                   v.moderation_version_source, v.publication_version_source, v.metadata_version_source, v.updated_at
+            FROM eligibility.video_eligibility v
+            JOIN eligibility.account_eligibility a ON a.account_id = v.creator_id
+            WHERE v.creator_id = ANY(?)
+              AND v.is_video_eligible = true
+              AND a.is_account_eligible = true
+            ORDER BY v.updated_at DESC
+            LIMIT ?
+            """;
+
     private final JdbcTemplate jdbc;
 
     EligibilityRepository(JdbcTemplate jdbc) {
@@ -297,6 +315,17 @@ class EligibilityRepository {
 
     java.util.List<VideoEligibilityView> findEligibleWithEligibleCreator(int limit) {
         return jdbc.query(FIND_ELIGIBLE_WITH_ELIGIBLE_CREATOR, EligibilityRepository::mapVideo, limit);
+    }
+
+    java.util.List<VideoEligibilityView> findEligibleByCreators(java.util.Collection<String> creatorIds, int limit) {
+        if (creatorIds.isEmpty()) {
+            return java.util.List.of();
+        }
+        return jdbc.query(
+                FIND_ELIGIBLE_BY_CREATORS,
+                EligibilityRepository::mapVideo,
+                (Object) creatorIds.toArray(String[]::new),
+                limit);
     }
 
     java.util.List<String> allVideoIds(int limit) {
