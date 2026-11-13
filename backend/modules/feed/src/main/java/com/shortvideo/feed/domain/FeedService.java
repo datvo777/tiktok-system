@@ -14,6 +14,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
@@ -59,6 +63,7 @@ public class FeedService {
     private final FeedScorer scorer;
     private final FeedCacheService cache;
     private final FeedProperties properties;
+    private final ConcurrentMap<String, CompletableFuture<List<FeedItemView>>> inFlight = new ConcurrentHashMap<>();
 
     public FeedService(
             EligibilityDirectory eligibilityDirectory,
@@ -106,11 +111,9 @@ public class FeedService {
         List<FeedItemView> ranking = sessionRanking && page == 0 ? null : cache.getRanking(cacheKey);
         boolean fromCache = ranking != null;
         if (ranking == null) {
-            ranking = rank(viewerId, identity, scope);
-            cache.putRanking(
-                    cacheKey,
-                    ranking,
-                    sessionRanking ? properties.getRankingSessionTtl() : properties.getCacheTtl());
+            ranking = viewerId == null
+                    ? rankSharedOnce(cacheKey, scope)
+                    : rankAndCache(viewerId, identity, scope, cacheKey);
         }
 
         int pageSize = properties.getPageSize();
@@ -129,6 +132,57 @@ public class FeedService {
         // hasMore lets the client stop paging instead of walking into empty pages
         // forever, which is what it had to do when only the items were returned.
         return new FeedPage(items, to < ranking.size());
+    }
+
+    private List<FeedItemView> rankAndCache(String viewerId, String identity, Scope scope, String cacheKey) {
+        List<FeedItemView> ranking = rank(viewerId, identity, scope);
+        cache.putRanking(
+                cacheKey,
+                ranking,
+                viewerId != null ? properties.getRankingSessionTtl() : properties.getCacheTtl());
+        return ranking;
+    }
+
+    /**
+     * Single-flight for the ranking every signed-out viewer shares. When its short TTL
+     * lapses, a burst of requests all miss at once, and without coordination each one
+     * runs the whole ranking for the same answer. The first caller becomes the leader
+     * and computes it; callers arriving while it runs wait on the same future instead
+     * of querying again. Signed-in viewers never come through here: their page 0
+     * deliberately starts a fresh ranking and their key is theirs alone.
+     *
+     * <p>The leader reads the cache once more before computing, so a caller that missed
+     * just before another leader finished does not become a second leader and repeat
+     * the work. This only coalesces callers inside one instance; each instance still
+     * computes once per expiry, which is bounded and needs no distributed lock. If the
+     * leader fails, the waiting callers fail with it rather than all retrying at once.
+     */
+    private List<FeedItemView> rankSharedOnce(String cacheKey, Scope scope) {
+        CompletableFuture<List<FeedItemView>> mine = new CompletableFuture<>();
+        CompletableFuture<List<FeedItemView>> leader = inFlight.putIfAbsent(cacheKey, mine);
+        if (leader != null) {
+            try {
+                return leader.join();
+            } catch (CompletionException e) {
+                if (e.getCause() instanceof RuntimeException cause) {
+                    throw cause;
+                }
+                throw e;
+            }
+        }
+        try {
+            List<FeedItemView> ranking = cache.getRanking(cacheKey);
+            if (ranking == null) {
+                ranking = rankAndCache(null, ANONYMOUS, scope, cacheKey);
+            }
+            mine.complete(ranking);
+            return ranking;
+        } catch (RuntimeException | Error e) {
+            mine.completeExceptionally(e);
+            throw e;
+        } finally {
+            inFlight.remove(cacheKey, mine);
+        }
     }
 
     private List<FeedItemView> withoutRevoked(List<FeedItemView> items) {

@@ -115,12 +115,12 @@ class FeedAuthenticationIT extends AbstractAuthRedisIT {
     // ------------------------------------------------------------------ H5
 
     /**
-     * Characterisation, not a requirement: nothing coordinates concurrent misses, so each
-     * one runs the whole ranking. When single-flight is added this should drop to 1 and the
-     * assertion flips with it.
+     * Single-flight: signed-out viewers share one ranking, so when its cache entry is missing
+     * and many requests arrive together, one computes it and the rest wait for that result
+     * instead of each running the whole ranking.
      */
     @Test
-    void concurrentMissesEachRecomputeTheRanking() throws Exception {
+    void concurrentMissesOnTheSharedRankingComputeItOnce() throws Exception {
         redis.delete("feed:ranking:anonymous");
         org.mockito.Mockito.clearInvocations(eligibility);
         // Hold each computation open so the requests genuinely overlap.
@@ -151,7 +151,7 @@ class FeedAuthenticationIT extends AbstractAuthRedisIT {
             pool.shutdownNow();
         }
 
-        assertThat(invocations(eligibility, "findEligibleVideosWithEligibleCreators")).isGreaterThan(1);
+        assertThat(invocations(eligibility, "findEligibleVideosWithEligibleCreators")).isEqualTo(1);
     }
 
     // ------------------------------------------------------------------ H6
