@@ -56,21 +56,29 @@ public class MediaGatewayController {
         MediaObjectStreamer.PreparedStream prepared =
                 streamer.prepare(key, request.getHeader(HttpHeaders.RANGE));
 
-        HttpStatus status = prepared.partial() ? HttpStatus.PARTIAL_CONTENT : HttpStatus.OK;
-        ResponseEntity.BodyBuilder response = ResponseEntity.status(status)
-                .contentType(contentTypeFor(key.assetPath()))
-                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
-                .contentLength(prepared.contentLength())
-                // No shared or browser cache may hold media that must be
-                // reauthorized on every request (brief section 8).
-                .cacheControl(CacheControl.noStore().cachePrivate());
-        if (prepared.partial()) {
-            response.header(HttpHeaders.CONTENT_RANGE, prepared.contentRange());
-        }
+        // prepare() has taken a stream slot that only the body gives back. If anything below fails the
+        // body never runs, and a slot lost this way is lost until the process restarts.
+        try {
+            HttpStatus status = prepared.partial() ? HttpStatus.PARTIAL_CONTENT : HttpStatus.OK;
+            ResponseEntity.BodyBuilder response = ResponseEntity.status(status)
+                    .contentType(contentTypeFor(key.assetPath()))
+                    .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                    .contentLength(prepared.contentLength())
+                    // No shared or browser cache may hold media that must be
+                    // reauthorized on every request (brief section 8).
+                    .cacheControl(CacheControl.noStore().cachePrivate());
+            if (prepared.partial()) {
+                response.header(HttpHeaders.CONTENT_RANGE, prepared.contentRange());
+            }
 
-        log.debug("Streaming {} bytes ({}) for viewer {} on {}",
-                prepared.contentLength(), status, viewer.accountId(), key.objectKey());
-        return response.body(prepared.body());
+            // viewer is null for a signed-out viewer, who is identified by the device cookie instead.
+            log.debug("Streaming {} bytes ({}) for viewer {} on {}",
+                    prepared.contentLength(), status, viewer == null ? "device" : viewer.accountId(), key.objectKey());
+            return response.body(prepared.body());
+        } catch (RuntimeException | Error e) {
+            prepared.release().run();
+            throw e;
+        }
     }
 
     private MediaType contentTypeFor(String assetPath) {

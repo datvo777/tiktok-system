@@ -1,8 +1,11 @@
 package com.shortvideo.search.config;
 
+import java.net.http.HttpClient;
+import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 /**
@@ -16,8 +19,19 @@ import org.springframework.web.client.RestClient;
 @Configuration
 class OpenSearchConfig {
 
+    /**
+     * Timeouts are explicit because the JDK client has none by default: a hung OpenSearch
+     * would otherwise hold a request thread (search) or a listener thread (indexing)
+     * indefinitely, instead of failing into the 503 / redelivery paths built for it.
+     */
     @Bean
-    RestClient openSearchClient(@Value("${shortvideo.opensearch.endpoint}") String endpoint) {
-        return RestClient.builder().baseUrl(endpoint).build();
+    RestClient openSearchClient(
+            @Value("${shortvideo.opensearch.endpoint}") String endpoint,
+            @Value("${shortvideo.opensearch.connect-timeout:2s}") Duration connectTimeout,
+            @Value("${shortvideo.opensearch.read-timeout:5s}") Duration readTimeout) {
+        JdkClientHttpRequestFactory requestFactory =
+                new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(connectTimeout).build());
+        requestFactory.setReadTimeout(readTimeout);
+        return RestClient.builder().baseUrl(endpoint).requestFactory(requestFactory).build();
     }
 }

@@ -1,0 +1,42 @@
+# Single-node KRaft broker with SASL/SCRAM and ACLs. Rendered by broker-entrypoint.sh, which
+# fills in the @...@ placeholders from the container environment.
+#
+#   INTERNAL    9092   SASL_PLAINTEXT  containers on the compose network (kafka-init, kafka-ui, inter-broker)
+#   CONTROLLER  9093   SASL_PLAINTEXT  quorum traffic; never published to the host
+#   HOST       29092   SASL_SSL        the only listener published, and only on 127.0.0.1
+#
+# INTERNAL and CONTROLLER skip TLS because they never leave the compose network; they still
+# require a SCRAM login, so nothing anonymous gets in on any listener.
+process.roles=broker,controller
+node.id=1
+controller.quorum.voters=1@kafka:9093
+listeners=INTERNAL://:9092,CONTROLLER://:9093,HOST://:29092
+advertised.listeners=INTERNAL://kafka:9092,HOST://localhost:29092
+listener.security.protocol.map=INTERNAL:SASL_PLAINTEXT,CONTROLLER:SASL_PLAINTEXT,HOST:SASL_SSL
+inter.broker.listener.name=INTERNAL
+controller.listener.names=CONTROLLER
+
+sasl.enabled.mechanisms=SCRAM-SHA-512
+sasl.mechanism.inter.broker.protocol=SCRAM-SHA-512
+sasl.mechanism.controller.protocol=SCRAM-SHA-512
+# The broker's own identity on each listener. Clients use their own credentials; these are what
+# the broker presents to itself and to the controller.
+listener.name.internal.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="@ADMIN_PASSWORD@";
+listener.name.controller.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="@ADMIN_PASSWORD@";
+listener.name.host.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="@ADMIN_PASSWORD@";
+
+listener.name.host.ssl.keystore.type=PEM
+listener.name.host.ssl.keystore.location=/etc/kafka/secrets/broker.pem
+
+# Deny by default. Only admin bypasses ACLs; every other principal gets exactly what
+# init-topics-and-acls.sh grants.
+authorizer.class.name=org.apache.kafka.metadata.authorizer.StandardAuthorizer
+allow.everyone.if.no.acl.found=false
+super.users=User:admin
+
+log.dirs=/tmp/kraft-combined-logs
+offsets.topic.replication.factor=1
+transaction.state.log.replication.factor=1
+transaction.state.log.min.isr=1
+group.initial.rebalance.delay.ms=0
+auto.create.topics.enable=false

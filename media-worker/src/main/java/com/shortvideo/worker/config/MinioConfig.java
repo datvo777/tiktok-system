@@ -16,10 +16,14 @@ public class MinioConfig {
 
     @Bean
     public MinioClient minioClient(MinioProperties properties) {
-        return MinioClient.builder()
+        MinioClient client = MinioClient.builder()
                 .endpoint(properties.getEndpoint())
                 .credentials(properties.getAccessKey(), properties.getSecretKey())
                 .build();
+        // The client's own default is five minutes for each of connect, write and read, so a MinIO
+        // that stops answering would hold a worker slot for that long before the first retry.
+        client.setTimeout(10_000, 60_000, 60_000);
+        return client;
     }
 
     public static class MinioProperties {

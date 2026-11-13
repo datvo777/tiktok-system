@@ -11,6 +11,14 @@ import java.util.List;
  */
 public final class VideoEvents {
 
+    /**
+     * Fired once, at draft creation (brief section 7.1) — title/description never
+     * change afterward, so unlike the other events here this is the only signal a
+     * consumer (the eligibility projector) will ever see for this video's metadata.
+     */
+    public record VideoMetadataSet(
+            String videoId, String ownerAccountId, String title, String description, long aggregateVersion) {}
+
     public record VideoProcessingReady(
             String videoId,
             String ownerAccountId,

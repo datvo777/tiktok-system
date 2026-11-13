@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -12,7 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Brief section 17: fed by account.events.v1 through this consumer's durable inbox. */
 @Component
@@ -26,27 +27,34 @@ class AccountEligibilityListener {
     private final InboxGuard inbox;
     private final EligibilityProjectorService projector;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transaction;
 
-    AccountEligibilityListener(InboxGuard inbox, EligibilityProjectorService projector, ObjectMapper objectMapper) {
+    AccountEligibilityListener(InboxGuard inbox, EligibilityProjectorService projector, ObjectMapper objectMapper, TransactionTemplate transaction) {
         this.inbox = inbox;
         this.projector = projector;
         this.objectMapper = objectMapper;
+        this.transaction = transaction;
     }
 
+    /**
+     * Not {@code @Transactional}: this topic carries more than the state changes this projector wants, so the
+     * event is decoded and matched first, and a transaction (with its
+     * pooled connection and its inbox row) is opened only for an event this listener acts on.
+     */
     @KafkaListener(topics = Topics.ACCOUNT_EVENTS, groupId = "eligibility-account-projector")
-    @Transactional
     public void onAccountEvent(String payload) {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
             if (!RELEVANT.contains(envelope.eventType())) {
                 return;
             }
-            if (!inbox.claim(CONSUMER, envelope.eventId())) {
-                return;
-            }
-            Map<String, Object> p = envelope.payload();
-            String state = String.valueOf(p.get("state"));
-            projector.applyAccountState(envelope.aggregateId(), state, envelope.aggregateVersion());
+            transaction.executeWithoutResult(status -> {
+                if (!inbox.claim(CONSUMER, envelope.eventId())) {
+                    return;
+                }
+                String state = Payloads.required(envelope.payload(), "state");
+                projector.applyAccountState(envelope.aggregateId(), state, envelope.aggregateVersion());
+            });
         } catch (Exception e) {
             log.warn("Failed to project account eligibility event; will retry on redelivery", e);
             throw new RuntimeException(e);

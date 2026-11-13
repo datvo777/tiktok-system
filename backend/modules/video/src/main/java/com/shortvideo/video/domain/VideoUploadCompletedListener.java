@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shortvideo.shared.events.EnvelopeCodec;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
+import com.shortvideo.shared.events.Payloads;
 import com.shortvideo.shared.events.Topics;
 import com.shortvideo.shared.inbox.InboxGuard;
 import java.util.Map;
@@ -11,7 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Consumes {@code video.upload.completed} from the Upload module (brief section
@@ -28,26 +29,35 @@ class VideoUploadCompletedListener {
     private final InboxGuard inbox;
     private final VideoService videoService;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transaction;
 
-    VideoUploadCompletedListener(InboxGuard inbox, VideoService videoService, ObjectMapper objectMapper) {
+    VideoUploadCompletedListener(InboxGuard inbox, VideoService videoService, ObjectMapper objectMapper, TransactionTemplate transaction) {
         this.inbox = inbox;
         this.videoService = videoService;
         this.objectMapper = objectMapper;
+        this.transaction = transaction;
     }
 
+    /**
+     * Not {@code @Transactional}: this topic carries every video event and each listener wants only
+     * a few types, so decoding and filtering happen first and a transaction (and its pooled
+     * connection) is opened only for an event this listener acts on. The inbox claim and the
+     * business update share that one transaction, as the inbox requires.
+     */
     @KafkaListener(topics = Topics.VIDEO_EVENTS, groupId = "video-upload-completed-listener")
-    @Transactional
     public void onVideoEvent(String payload) {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
             if (!EventTypes.VIDEO_UPLOAD_COMPLETED.equals(envelope.eventType())) {
                 return;
             }
-            if (!inbox.claim(CONSUMER, envelope.eventId())) {
-                return;
-            }
-            Map<String, Object> p = envelope.payload();
-            videoService.dispatchProcessing((String) p.get("videoId"), (String) p.get("sourceObjectKey"));
+            transaction.executeWithoutResult(status -> {
+                if (!inbox.claim(CONSUMER, envelope.eventId())) {
+                    return;
+                }
+                Map<String, Object> p = envelope.payload();
+                videoService.dispatchProcessing(Payloads.required(p, "videoId"), Payloads.required(p, "sourceObjectKey"));
+            });
         } catch (Exception e) {
             log.warn("Failed to apply video.upload.completed; will retry on redelivery", e);
             throw new RuntimeException(e);
