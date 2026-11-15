@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
 class FeedCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(FeedCacheService.class);
-    private static final TypeReference<List<FeedItemView>> LIST_TYPE = new TypeReference<>() {};
+    private static final TypeReference<List<FeedRef>> LIST_TYPE = new TypeReference<>() {};
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
@@ -33,8 +33,13 @@ class FeedCacheService {
      * Caching page slices separately let two pages of the same feed come from two
      * different rankings, which is how a video could show up on both page 0 and
      * page 1 — or on neither.
+     *
+     * <p>Only {@link FeedRef}s are stored. A signed-in viewer's ranking lives for the
+     * session TTL, so the memory it holds is that key size times every viewer active
+     * in that window; carrying the title and description made each key tens of
+     * kilobytes, up to a megabyte with full-length descriptions.
      */
-    List<FeedItemView> getRanking(String viewerId) {
+    List<FeedRef> getRanking(String viewerId) {
         try {
             String json = redis.opsForValue().get(key(viewerId));
             return json == null ? null : objectMapper.readValue(json, LIST_TYPE);
@@ -44,7 +49,7 @@ class FeedCacheService {
         }
     }
 
-    void putRanking(String viewerId, List<FeedItemView> ranking, Duration ttl) {
+    void putRanking(String viewerId, List<FeedRef> ranking, Duration ttl) {
         try {
             redis.opsForValue().set(key(viewerId), objectMapper.writeValueAsString(ranking), ttl);
         } catch (Exception e) {

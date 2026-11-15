@@ -63,7 +63,7 @@ public class FeedService {
     private final FeedScorer scorer;
     private final FeedCacheService cache;
     private final FeedProperties properties;
-    private final ConcurrentMap<String, CompletableFuture<List<FeedItemView>>> inFlight = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CompletableFuture<Ranked>> inFlight = new ConcurrentHashMap<>();
 
     public FeedService(
             EligibilityDirectory eligibilityDirectory,
@@ -108,7 +108,11 @@ public class FeedService {
         // Signed-out viewers have no seen tier, so their shared ranking keeps the
         // short TTL.
         boolean sessionRanking = viewerId != null;
-        List<FeedItemView> ranking = sessionRanking && page == 0 ? null : cache.getRanking(cacheKey);
+        Ranked ranking = null;
+        if (!(sessionRanking && page == 0)) {
+            List<FeedRef> cached = cache.getRanking(cacheKey);
+            ranking = cached == null ? null : Ranked.cached(cached);
+        }
         boolean fromCache = ranking != null;
         if (ranking == null) {
             ranking = viewerId == null
@@ -121,7 +125,7 @@ public class FeedService {
         // would produce a negative offset, which subList rejects with an exception.
         int from = (int) Math.min((long) page * pageSize, ranking.size());
         int to = Math.min(from + pageSize, ranking.size());
-        List<FeedItemView> items = List.copyOf(ranking.subList(from, to));
+        List<FeedItemView> items = ranking.slice(from, to, this::hydrate);
         if (fromCache && sessionRanking) {
             // The ranking can now outlive a moderation decision by minutes. Dropping
             // revoked rows from the slice, rather than from the stored ranking, keeps
@@ -134,13 +138,38 @@ public class FeedService {
         return new FeedPage(items, to < ranking.size());
     }
 
-    private List<FeedItemView> rankAndCache(String viewerId, String identity, Scope scope, String cacheKey) {
-        List<FeedItemView> ranking = rank(viewerId, identity, scope);
+    private Ranked rankAndCache(String viewerId, String identity, Scope scope, String cacheKey) {
+        List<FeedItemView> rows = rank(viewerId, identity, scope);
+        Ranked ranking = Ranked.computed(rows);
         cache.putRanking(
                 cacheKey,
-                ranking,
+                ranking.refs(),
                 viewerId != null ? properties.getRankingSessionTtl() : properties.getCacheTtl());
         return ranking;
+    }
+
+    /**
+     * Turns the cached references of one page back into rows, in ranking order. A
+     * video the projection no longer knows, or no longer finds eligible, is left out
+     * of the slice rather than the ranking, so the offsets of later pages hold. One
+     * primary-key lookup for the whole page.
+     */
+    private List<FeedItemView> hydrate(List<FeedRef> refs) {
+        if (refs.isEmpty()) {
+            return List.of();
+        }
+        Map<String, VideoEligibilityView> byId = eligibilityDirectory
+                .findVideoEligibilities(refs.stream().map(FeedRef::videoId).toList())
+                .stream()
+                .collect(Collectors.toMap(VideoEligibilityView::videoId, v -> v, (a, b) -> a));
+        List<FeedItemView> items = new ArrayList<>(refs.size());
+        for (FeedRef ref : refs) {
+            VideoEligibilityView video = byId.get(ref.videoId());
+            if (video != null && video.isVideoEligible()) {
+                items.add(new FeedItemView(video.videoId(), video.creatorId(), video.title(), video.description()));
+            }
+        }
+        return items;
     }
 
     /**
@@ -157,9 +186,9 @@ public class FeedService {
      * computes once per expiry, which is bounded and needs no distributed lock. If the
      * leader fails, the waiting callers fail with it rather than all retrying at once.
      */
-    private List<FeedItemView> rankSharedOnce(String cacheKey, Scope scope) {
-        CompletableFuture<List<FeedItemView>> mine = new CompletableFuture<>();
-        CompletableFuture<List<FeedItemView>> leader = inFlight.putIfAbsent(cacheKey, mine);
+    private Ranked rankSharedOnce(String cacheKey, Scope scope) {
+        CompletableFuture<Ranked> mine = new CompletableFuture<>();
+        CompletableFuture<Ranked> leader = inFlight.putIfAbsent(cacheKey, mine);
         if (leader != null) {
             try {
                 return leader.join();
@@ -171,10 +200,8 @@ public class FeedService {
             }
         }
         try {
-            List<FeedItemView> ranking = cache.getRanking(cacheKey);
-            if (ranking == null) {
-                ranking = rankAndCache(null, ANONYMOUS, scope, cacheKey);
-            }
+            List<FeedRef> cached = cache.getRanking(cacheKey);
+            Ranked ranking = cached != null ? Ranked.cached(cached) : rankAndCache(null, ANONYMOUS, scope, cacheKey);
             mine.complete(ranking);
             return ranking;
         } catch (RuntimeException | Error e) {
@@ -349,6 +376,30 @@ public class FeedService {
 
     /** One page of the viewer's ranking, plus whether another page exists. */
     public record FeedPage(List<FeedItemView> items, boolean hasMore) {}
+
+    /**
+     * A ranking in memory. One just computed already holds its rows, so serving its
+     * page needs no lookup; one read back from the cache holds only references and
+     * its page is hydrated.
+     */
+    private record Ranked(List<FeedRef> refs, List<FeedItemView> rows) {
+        static Ranked computed(List<FeedItemView> rows) {
+            return new Ranked(rows.stream().map(r -> new FeedRef(r.videoId(), r.creatorId())).toList(), rows);
+        }
+
+        static Ranked cached(List<FeedRef> refs) {
+            return new Ranked(refs, null);
+        }
+
+        int size() {
+            return refs.size();
+        }
+
+        List<FeedItemView> slice(
+                int from, int to, java.util.function.Function<List<FeedRef>, List<FeedItemView>> hydrate) {
+            return rows != null ? List.copyOf(rows.subList(from, to)) : hydrate.apply(refs.subList(from, to));
+        }
+    }
 
     private record ScoredCandidate(
             String videoId, String creatorId, String title, String description, double score, boolean alreadySeen) {}

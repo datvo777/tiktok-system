@@ -16,6 +16,7 @@ import com.shortvideo.social.api.SocialDirectory;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -43,6 +44,7 @@ class FeedServiceSessionRankingTest {
     private final Set<String> revokedVideos = new HashSet<>();
     private final FeedProperties properties = new FeedProperties();
     private final ClockedCache cache = new ClockedCache();
+    private final List<VideoEligibilityView> candidates = new ArrayList<>();
     private FeedService service;
 
     @BeforeEach
@@ -55,12 +57,17 @@ class FeedServiceSessionRankingTest {
         properties.setRankingSessionTtl(Duration.ofMinutes(30));
 
         Instant now = Instant.now();
-        List<VideoEligibilityView> candidates = new ArrayList<>();
+        candidates.clear();
         for (int i = 0; i < VIDEOS; i++) {
             // v00 is the freshest, so it ranks first.
             candidates.add(video(String.format("v%02d", i), now.minusSeconds(60L * i)));
         }
         when(eligibility.findEligibleVideosWithEligibleCreators(anyInt())).thenReturn(candidates);
+        // The projection the cached references are hydrated from.
+        when(eligibility.findVideoEligibilities(anyCollection())).thenAnswer(inv -> {
+            Collection<String> wanted = inv.getArgument(0);
+            return candidates.stream().filter(v -> wanted.contains(v.videoId())).toList();
+        });
         when(social.engagementForAll(anyCollection())).thenReturn(Map.of());
         when(social.followedAmong(anyString(), anyCollection())).thenReturn(Set.of());
         when(social.viewedAmong(anyString(), anyCollection())).thenAnswer(inv -> viewed);
@@ -110,6 +117,37 @@ class FeedServiceSessionRankingTest {
         List<String> second = ids(service.feed(VIEWER, 1));
 
         assertThat(second).doesNotContain(revoked).hasSize(19);
+    }
+
+    @Test
+    void aCachedRankingHoldsReferencesOnlyAndPagesCarryTheCurrentMetadata() {
+        service.feed(VIEWER, 0);
+        assertThat(cache.values.get(VIEWER)).allSatisfy(ref -> assertThat(ref).isInstanceOf(FeedRef.class));
+
+        // A title edited after page 0 shows on the next page; the key held no copy.
+        candidates.set(25, new VideoEligibilityView(
+                "v25", "creator-v25", "renamed", "d", null, null, null, null, null, false, null, null, true, 0, 0, 0, 0,
+                candidates.get(25).updatedAt()));
+
+        assertThat(service.feed(VIEWER, 1).items())
+                .filteredOn(i -> i.videoId().equals("v25"))
+                .extracting(FeedItemView::title)
+                .containsExactly("renamed");
+    }
+
+    @Test
+    void aVideoThatStoppedBeingEligibleIsDroppedFromALaterPageWithoutShiftingTheOffsets() {
+        service.feed(VIEWER, 0);
+        VideoEligibilityView v25 = candidates.get(25);
+        candidates.set(25, new VideoEligibilityView(
+                "v25", v25.creatorId(), "t", "d", null, null, null, null, null, false, null, null, false, 0, 0, 0, 0,
+                v25.updatedAt()));
+
+        assertThat(ids(service.feed(VIEWER, 1)))
+                .doesNotContain("v25")
+                .hasSize(19)
+                .contains("v20", "v39");
+        assertThat(ids(service.feed(VIEWER, 2))).containsExactlyElementsOf(freshnessOrder().subList(40, 60));
     }
 
     @Test
@@ -167,7 +205,7 @@ class FeedServiceSessionRankingTest {
 
     /** In-memory stand-in for the Redis cache whose expiry follows a manual clock. */
     private static class ClockedCache extends FeedCacheService {
-        private final Map<String, List<FeedItemView>> values = new HashMap<>();
+        private final Map<String, List<FeedRef>> values = new HashMap<>();
         private final Map<String, Duration> expiresAt = new HashMap<>();
         private Duration now = Duration.ZERO;
         Duration lastTtl;
@@ -181,13 +219,13 @@ class FeedServiceSessionRankingTest {
         }
 
         @Override
-        List<FeedItemView> getRanking(String viewerId) {
+        List<FeedRef> getRanking(String viewerId) {
             Duration expiry = expiresAt.get(viewerId);
             return expiry == null || expiry.compareTo(now) <= 0 ? null : values.get(viewerId);
         }
 
         @Override
-        void putRanking(String viewerId, List<FeedItemView> ranking, Duration ttl) {
+        void putRanking(String viewerId, List<FeedRef> ranking, Duration ttl) {
             values.put(viewerId, ranking);
             expiresAt.put(viewerId, now.plus(ttl));
             lastTtl = ttl;
