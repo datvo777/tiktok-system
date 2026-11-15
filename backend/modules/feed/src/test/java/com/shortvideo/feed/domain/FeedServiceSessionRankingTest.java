@@ -61,7 +61,7 @@ class FeedServiceSessionRankingTest {
             candidates.add(video(String.format("v%02d", i), now.minusSeconds(60L * i)));
         }
         when(eligibility.findEligibleVideosWithEligibleCreators(anyInt())).thenReturn(candidates);
-        when(social.countsForAll(anyCollection())).thenReturn(Map.of());
+        when(social.engagementForAll(anyCollection())).thenReturn(Map.of());
         when(social.followedAmong(anyString(), anyCollection())).thenReturn(Set.of());
         when(social.viewedAmong(anyString(), anyCollection())).thenAnswer(inv -> viewed);
         when(revocations.activeAmong(eq(RevocationSubjects.ACCOUNT), anyCollection())).thenReturn(Set.of());

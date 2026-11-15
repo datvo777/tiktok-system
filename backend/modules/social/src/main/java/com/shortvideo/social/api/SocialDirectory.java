@@ -15,14 +15,17 @@ public interface SocialDirectory {
     boolean isFollowing(String followerId, String followeeId);
 
     /**
-     * Batched form of {@link #countsFor} for ranking a whole candidate page. The
+     * The counts a ranking scores on, for a whole candidate page at once. The
      * per-video form issued two {@code count(*)} subqueries per candidate; over a
      * 200-video pool that was 200 round trips for what one grouped query answers.
+     * Only likes and comments: the share and view counts are display-only, and
+     * counting views over the whole pool was the most expensive of the four
+     * queries this used to run.
      *
      * @return counts keyed by videoId. A video with no likes and no comments is
      *     present with zeros rather than absent, so callers need no null handling.
      */
-    Map<String, SocialCounts> countsForAll(Collection<String> videoIds);
+    Map<String, EngagementCounts> engagementForAll(Collection<String> videoIds);
 
     /**
      * Batched form of {@link #isFollowing}: which of {@code creatorIds} this viewer

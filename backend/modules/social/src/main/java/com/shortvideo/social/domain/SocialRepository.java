@@ -1,5 +1,6 @@
 package com.shortvideo.social.domain;
 
+import com.shortvideo.social.api.EngagementCounts;
 import com.shortvideo.social.api.SocialCounts;
 import java.sql.Array;
 import java.sql.ResultSet;
@@ -155,11 +156,6 @@ class SocialRepository {
             WHERE video_id = ANY(?) AND deleted_at IS NULL GROUP BY video_id
             """;
 
-    private static final String SHARE_COUNTS_FOR = """
-            SELECT video_id, count(*) AS c FROM social.video_share
-            WHERE video_id = ANY(?) GROUP BY video_id
-            """;
-
     private static final String FOLLOWED_AMONG = """
             SELECT followee_id FROM social.follow
             WHERE follower_id = ? AND followee_id = ANY(?)
@@ -189,11 +185,6 @@ class SocialRepository {
             """;
 
     /** Distinct viewers, not total plays: one person watching ten times is one view. */
-    private static final String VIEW_COUNTS_FOR = """
-            SELECT video_id, count(*) AS c FROM social.video_view
-            WHERE video_id = ANY(?) GROUP BY video_id
-            """;
-
     private static final String VIEW_COUNT = "SELECT count(*) FROM social.video_view WHERE video_id = ?";
 
     /** Which of these videos this viewer has already been shown. */
@@ -434,8 +425,8 @@ class SocialRepository {
         return Boolean.TRUE.equals(following);
     }
 
-    /** @return counts keyed by videoId, zero-filled for videos with no activity. */
-    Map<String, SocialCounts> countsForAll(Collection<String> videoIds) {
+    /** @return likes and comments keyed by videoId, zero-filled for videos with no activity. */
+    Map<String, EngagementCounts> engagementForAll(Collection<String> videoIds) {
         if (videoIds.isEmpty()) {
             return Map.of();
         }
@@ -443,19 +434,13 @@ class SocialRepository {
 
         Map<String, Long> likes = countBy(LIKE_COUNTS_FOR, ids);
         Map<String, Long> comments = countBy(COMMENT_COUNTS_FOR, ids);
-        Map<String, Long> shares = countBy(SHARE_COUNTS_FOR, ids);
-        Map<String, Long> views = countBy(VIEW_COUNTS_FOR, ids);
 
-        Map<String, SocialCounts> counts = new HashMap<>();
+        Map<String, EngagementCounts> counts = new HashMap<>();
         for (String videoId : videoIds) {
             counts.put(
                     videoId,
-                    new SocialCounts(
-                            videoId,
-                            likes.getOrDefault(videoId, 0L),
-                            comments.getOrDefault(videoId, 0L),
-                            shares.getOrDefault(videoId, 0L),
-                            views.getOrDefault(videoId, 0L)));
+                    new EngagementCounts(
+                            videoId, likes.getOrDefault(videoId, 0L), comments.getOrDefault(videoId, 0L)));
         }
         return counts;
     }

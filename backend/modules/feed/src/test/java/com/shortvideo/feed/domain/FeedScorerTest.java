@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 import com.shortvideo.eligibility.api.VideoEligibilityView;
-import com.shortvideo.social.api.SocialCounts;
+import com.shortvideo.social.api.EngagementCounts;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import org.junit.jupiter.api.Test;
@@ -64,7 +64,7 @@ class FeedScorerTest {
                 "ACTIVE", "CLEAR", true, 1, 1, 1, 1, updatedAt);
     }
 
-    private SocialCounts counts(long likes, long comments) {
-        return new SocialCounts("video-1", likes, comments, 0, 0);
+    private EngagementCounts counts(long likes, long comments) {
+        return new EngagementCounts("video-1", likes, comments);
     }
 }

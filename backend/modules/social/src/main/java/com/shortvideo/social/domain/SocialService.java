@@ -8,6 +8,7 @@ import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
+import com.shortvideo.social.api.EngagementCounts;
 import com.shortvideo.social.api.SocialCounts;
 import com.shortvideo.social.api.SocialDirectory;
 import java.time.Instant;
@@ -334,8 +335,8 @@ public class SocialService implements SocialDirectory {
 
     @Override
     @Transactional(readOnly = true)
-    public Map<String, SocialCounts> countsForAll(Collection<String> videoIds) {
-        return repository.countsForAll(videoIds);
+    public Map<String, EngagementCounts> engagementForAll(Collection<String> videoIds) {
+        return repository.engagementForAll(videoIds);
     }
 
     @Override

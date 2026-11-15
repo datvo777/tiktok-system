@@ -5,7 +5,7 @@ import com.shortvideo.eligibility.api.EligibilityDirectory;
 import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationSubjects;
-import com.shortvideo.social.api.SocialCounts;
+import com.shortvideo.social.api.EngagementCounts;
 import com.shortvideo.social.api.SocialDirectory;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -244,10 +244,10 @@ public class FeedService {
     private static final String ANONYMOUS = "anonymous";
 
     /**
-     * Seven queries for a signed-out viewer, nine for a signed-in one, however
+     * Five queries for a signed-out viewer, seven for a signed-in one, however
      * large the pool: candidates (joined to creator eligibility), video
-     * revocations, account revocations, four for social counts (likes, comments,
-     * shares, views), and for a signed-in viewer their follows and watch history.
+     * revocations, account revocations, two for the counts the score uses (likes
+     * and comments), and for a signed-in viewer their follows and watch history.
      *
      * @param viewerId null for a signed-out viewer; the follow and watch-history
      *     queries are skipped rather than run against a fabricated id.
@@ -284,7 +284,7 @@ public class FeedService {
 
         Set<String> revokedVideos = revocationReader.activeAmong(RevocationSubjects.VIDEO, videoIds);
         Set<String> revokedCreators = revocationReader.activeAmong(RevocationSubjects.ACCOUNT, creatorIds);
-        Map<String, SocialCounts> counts = socialDirectory.countsForAll(videoIds);
+        Map<String, EngagementCounts> counts = socialDirectory.engagementForAll(videoIds);
         // Two queries a signed-out viewer has no answer to: they follow nobody and
         // have no watch history worth keying to a browser. Skipped rather than
         // asked with a placeholder id.
@@ -307,8 +307,8 @@ public class FeedService {
             if (revokedVideos.contains(video.videoId()) || revokedCreators.contains(video.creatorId())) {
                 continue; // brief section 15: filter by revocation
             }
-            SocialCounts videoCounts =
-                    counts.getOrDefault(video.videoId(), new SocialCounts(video.videoId(), 0, 0, 0, 0));
+            EngagementCounts videoCounts =
+                    counts.getOrDefault(video.videoId(), new EngagementCounts(video.videoId(), 0, 0));
             double score =
                     scorer.score(video, videoCounts, followed.contains(video.creatorId()), exploration.nextDouble());
             scored.add(new ScoredCandidate(
