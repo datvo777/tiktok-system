@@ -179,6 +179,10 @@ shortvideo:
     # Signed-in viewers: how long pages after the first keep slicing the ranking
     # that page 0 produced (see FeedProperties#rankingSessionTtl).
     ranking-session-ttl: 30m
+    # A Redis of its own for the ranking cache (empty: share the main one). See
+    # FeedProperties#cacheRedisHost for why a deployment should set it.
+    cache-redis-host: ${REDIS_CACHE_HOST:}
+    cache-redis-port: ${REDIS_CACHE_PORT:6380}
     freshness-weight: 10
     like-weight: 1
     comment-weight: 2

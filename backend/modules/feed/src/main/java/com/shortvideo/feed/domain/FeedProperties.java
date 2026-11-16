@@ -1,6 +1,7 @@
 package com.shortvideo.feed.domain;
 
 import java.time.Duration;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** Brief section 15: "Do not build machine-learning ranking first. Use a rule-based feed." */
@@ -43,6 +44,20 @@ public class FeedProperties {
      */
     private Duration explorationRotation = Duration.ofHours(6);
 
+    /**
+     * A Redis for the ranking cache alone. Unset, the cache shares the application's
+     * Redis. Set, it gets its own instance, which is what a deployment should do:
+     * rankings are the one bulk, evictable namespace, and sharing an instance with
+     * the logout deny-list means memory pressure from rankings can evict a revoked
+     * session's entry and let the token work again.
+     */
+    private String cacheRedisHost = "";
+    private int cacheRedisPort = 6379;
+
+    public String getCacheRedisHost() { return cacheRedisHost; }
+    public void setCacheRedisHost(String cacheRedisHost) { this.cacheRedisHost = cacheRedisHost; }
+    public int getCacheRedisPort() { return cacheRedisPort; }
+    public void setCacheRedisPort(int cacheRedisPort) { this.cacheRedisPort = cacheRedisPort; }
     public int getCandidatePoolSize() { return candidatePoolSize; }
     public void setCandidatePoolSize(int candidatePoolSize) { this.candidatePoolSize = candidatePoolSize; }
     public int getFollowingCreatorLimit() { return followingCreatorLimit; }
@@ -59,7 +74,7 @@ public class FeedProperties {
     public void setLikeWeight(double likeWeight) { this.likeWeight = likeWeight; }
     public double getCommentWeight() { return commentWeight; }
     public void setCommentWeight(double commentWeight) { this.commentWeight = commentWeight; }
-    public double getFollowedCreatorBoost() { return followedCreatorBoost; }
+    public double getFollowedCreatorBoost() { return followedCreatorBoost;   }
     public void setFollowedCreatorBoost(double followedCreatorBoost) { this.followedCreatorBoost = followedCreatorBoost; }
     public double getExplorationWeight() { return explorationWeight; }
     public void setExplorationWeight(double explorationWeight) { this.explorationWeight = explorationWeight; }

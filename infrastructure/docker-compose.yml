@@ -32,18 +32,45 @@ services:
   redis:
     image: redis:7.4.2-alpine
     container_name: sv-redis
-    # No persistence: several keys here (session deny-list, rate limiter, feed
-    # cache) are pure TTL caches and fine to lose on restart. Revocation entries
+    # No persistence: the keys here (session deny-list, rate limiter) are TTL
+    # entries and fine to lose on restart. Revocation entries
     # (RevocationCache) are the one namespace that must never carry a TTL — a
     # deny entry expiring on its own would silently re-permit a video/account
     # nobody re-approved (brief section 16, Rule 12) — so they are rebuilt from
     # Postgres on startup and reconciled periodically instead.
     #
-    # maxmemory-policy=allkeys-lru, not noeviction (the server default): under
-    # memory pressure Redis should evict the least-recently-used key rather than
-    # start refusing writes. This is safe even for the un-TTL'd revocation keys,
-    # since RevocationCache.isDenied falls back to the durable Postgres check on
-    # any cache miss — eviction only costs a slower deny, never a wrong one.
+    # maxmemory-policy=noeviction: this instance holds state that cannot be
+    # rebuilt from anywhere -- the logout deny-list (session:revoked:*, TTL only, no
+    # Postgres copy; losing an entry makes a logged-out token valid again), the
+    # single-use refresh marker and the rate-limit counters. Evicting any of them is
+    # a wrong answer, not a slower one, so under pressure Redis must refuse writes
+    # (the callers surface or log it) rather than drop a key. Bulk, disposable data
+    # lives in redis-cache below. The un-TTL'd revocation keys are bounded by the
+    # number of restricted subjects, and RevocationCache falls back to Postgres on a
+    # miss, so they do not need eviction to stay small.
+    command:
+      [
+        "redis-server",
+        "--save", "",
+        "--appendonly", "no",
+        "--maxmemory", "128mb",
+        "--maxmemory-policy", "noeviction",
+      ]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # The feed's ranking cache and nothing else. A signed-in viewer's ranking lives for
+  # the session TTL, so this namespace grows with active viewers and is the one that
+  # reaches maxmemory first; allkeys-lru here costs a recomputed ranking, never a
+  # wrong answer. Kept apart from `redis` so that eviction cannot touch state there.
+  redis-cache:
+    image: redis:7.4.2-alpine
+    container_name: sv-redis-cache
     command:
       [
         "redis-server",
@@ -53,7 +80,7 @@ services:
         "--maxmemory-policy", "allkeys-lru",
       ]
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

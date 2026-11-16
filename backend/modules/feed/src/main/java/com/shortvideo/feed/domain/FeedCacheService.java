@@ -23,8 +23,8 @@ class FeedCacheService {
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
 
-    FeedCacheService(StringRedisTemplate redis, ObjectMapper objectMapper) {
-        this.redis = redis;
+    FeedCacheService(FeedCacheRedis cacheRedis, ObjectMapper objectMapper) {
+        this.redis = cacheRedis.template();
         this.objectMapper = objectMapper;
     }
 
