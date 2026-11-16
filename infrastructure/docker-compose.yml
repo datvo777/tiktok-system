@@ -39,15 +39,14 @@ services:
     # nobody re-approved (brief section 16, Rule 12) — so they are rebuilt from
     # Postgres on startup and reconciled periodically instead.
     #
-    # maxmemory-policy=noeviction: this instance holds state that cannot be
-    # rebuilt from anywhere -- the logout deny-list (session:revoked:*, TTL only, no
-    # Postgres copy; losing an entry makes a logged-out token valid again), the
-    # single-use refresh marker and the rate-limit counters. Evicting any of them is
-    # a wrong answer, not a slower one, so under pressure Redis must refuse writes
-    # (the callers surface or log it) rather than drop a key. Bulk, disposable data
-    # lives in redis-cache below. The un-TTL'd revocation keys are bounded by the
-    # number of restricted subjects, and RevocationCache falls back to Postgres on a
-    # miss, so they do not need eviction to stay small.
+    # maxmemory-policy=noeviction: this instance holds the rate-limit counters and the
+    # accelerators in front of durable state (session deny-list, revocation cache), which
+    # must be complete to be trusted -- a Redis miss on the deny-list means "not revoked"
+    # while the completeness marker is present. Evicting an entry would break that, so
+    # under pressure Redis refuses writes instead (callers surface or log it). The deny-list
+    # and revocations are also in PostgreSQL (platform.revoked_session, platform.revocation)
+    # and refilled after a restart or flush, so losing Redis costs queries, not correctness.
+    # Bulk, disposable data lives in redis-cache below.
     command:
       [
         "redis-server",

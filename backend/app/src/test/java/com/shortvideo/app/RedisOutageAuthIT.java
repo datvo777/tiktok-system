@@ -16,9 +16,10 @@ import org.testcontainers.containers.GenericContainer;
  * so this class owns its container and contains a single test: once Redis is gone nothing
  * after it in the class could rely on it.
  *
- * <p>The design being pinned: the logout deny-list is an accelerator that fails open (the
- * token is good for its remaining TTL anyway), while the account-level check falls back to
- * PostgreSQL and so still refuses a suspended account.
+ * <p>The design being pinned: the logout deny-list is written to PostgreSQL first and Redis only
+ * accelerates it, so with Redis gone a signed-out token is still refused (the lookup falls back to
+ * PostgreSQL), and so is a suspended account. It used to fail open here and honour the signed-out
+ * token for the rest of its lifetime.
  */
 class RedisOutageAuthIT extends AbstractAuthRedisIT {
 
@@ -37,7 +38,7 @@ class RedisOutageAuthIT extends AbstractAuthRedisIT {
     }
 
     @Test
-    void withRedisDownALoggedOutTokenWorksAgainButASuspendedAccountStaysRefusedAndTheFeedStillServes() {
+    void withRedisDownALoggedOutTokenAndASuspendedAccountStayRefusedAndTheFeedStillServes() {
         Session loggedOut = registerAndLogin();
         Session suspended = registerAndLogin();
         Session healthy = registerAndLogin();
@@ -52,9 +53,9 @@ class RedisOutageAuthIT extends AbstractAuthRedisIT {
 
         REDIS.stop();
 
-        // Fail-open by design: the deny-list cannot be read, so the logged-out token is honoured again.
-        assertThat(status(HttpMethod.GET, "/api/v1/auth/me", loggedOut.token())).isEqualTo(HttpStatus.OK);
-        // Fail-closed where it matters: the durable PostgreSQL record still refuses the suspended account.
+        // The cache cannot be read, so the deny-list asks PostgreSQL, which recorded the logout.
+        assertThat(status(HttpMethod.GET, "/api/v1/auth/me", loggedOut.token())).isEqualTo(HttpStatus.UNAUTHORIZED);
+        // And the durable PostgreSQL record still refuses the suspended account.
         assertThat(status(HttpMethod.GET, "/api/v1/auth/me", suspended.token())).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(status(HttpMethod.GET, "/api/v1/auth/me", healthy.token())).isEqualTo(HttpStatus.OK);
 
