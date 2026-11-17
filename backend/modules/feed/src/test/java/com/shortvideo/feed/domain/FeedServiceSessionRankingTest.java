@@ -211,7 +211,9 @@ class FeedServiceSessionRankingTest {
         Duration lastTtl;
 
         ClockedCache() {
-            super(null, null);
+            // The constructor reads the template off its Redis holder, so the holder cannot be null;
+            // this subclass overrides every method that would use the template.
+            super(mock(FeedCacheRedis.class), null);
         }
 
         void advance(Duration by) {
