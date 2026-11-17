@@ -1,5 +1,6 @@
 package com.shortvideo.moderation.domain;
 
+import com.shortvideo.moderation.api.PolicyCategory;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -25,8 +26,20 @@ public class ModerationEntity {
     @Column(name = "state", nullable = false, length = 30)
     private ModerationState state;
 
+    /** Optional elaboration. The authoritative reason is {@link #policyCategory}. */
     @Column(name = "reason", length = 200)
     private String reason;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "policy_category", length = 40)
+    private PolicyCategory policyCategory;
+
+    /**
+     * Denormalised from {@link PolicyCategory#tier()} so severity can be filtered
+     * and ordered in SQL without teaching the database the enum's mapping.
+     */
+    @Column(name = "policy_tier", length = 4)
+    private String policyTier;
 
     /** Optimistic concurrency and the aggregate version carried by events (Rule 10). */
     @Version
@@ -35,6 +48,26 @@ public class ModerationEntity {
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    /**
+     * When a person first needed to look at this. Null while the record is only being held;
+     * the review queue is the PENDING rows that have one.
+     */
+    @Column(name = "queued_at", updatable = false)
+    private Instant queuedAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "queue_reason", length = 20, updatable = false)
+    private QueueReason queueReason;
+
+    /**
+     * Set when the video was removed, taking the record out of the queue. Like the two columns
+     * above it is written by direct updates, never by saving the entity, and is not updatable
+     * through it: an entity loaded before one of those updates must not write its stale null back
+     * over it when it is saved for an unrelated reason such as an approval.
+     */
+    @Column(name = "closed_at", updatable = false)
+    private Instant closedAt;
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
@@ -50,17 +83,34 @@ public class ModerationEntity {
         this.updatedAt = now;
     }
 
+    /**
+     * Queues a record that has not been saved yet. Setting this before the first save keeps the
+     * insert at version 0; queueing an existing record goes through
+     * {@link ModerationJpaRepository#enqueue} so it does not bump the version either.
+     */
+    void enqueueOnCreate(QueueReason reason) {
+        this.queuedAt = this.createdAt;
+        this.queueReason = reason;
+    }
+
     /** PENDING -> APPROVED, or REJECTED -> REINSTATED (brief section 18 ties reinstatement to appeal approval; the local admin action is the same transition). */
     public boolean approve() {
         boolean wasRejected = this.state == ModerationState.REJECTED;
         this.state = wasRejected ? ModerationState.REINSTATED : ModerationState.APPROVED;
+        // The prior rejection's classification is cleared with it: leaving it
+        // behind would make an approved video look like it still carries a
+        // policy finding in every count that groups by category.
         this.reason = null;
+        this.policyCategory = null;
+        this.policyTier = null;
         this.updatedAt = Instant.now();
         return wasRejected;
     }
 
-    public void reject(String reason) {
+    public void reject(PolicyCategory policyCategory, String reason) {
         this.state = ModerationState.REJECTED;
+        this.policyCategory = policyCategory;
+        this.policyTier = policyCategory.tier();
         this.reason = reason;
         this.updatedAt = Instant.now();
     }
@@ -69,7 +119,12 @@ public class ModerationEntity {
     public UUID getCreatorId() { return creatorId; }
     public ModerationState getState() { return state; }
     public String getReason() { return reason; }
+    public PolicyCategory getPolicyCategory() { return policyCategory; }
+    public String getPolicyTier() { return policyTier; }
     public long getAggregateVersion() { return aggregateVersion; }
     public Instant getCreatedAt() { return createdAt; }
+    public Instant getQueuedAt() { return queuedAt; }
+    public QueueReason getQueueReason() { return queueReason; }
+    public Instant getClosedAt() { return closedAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

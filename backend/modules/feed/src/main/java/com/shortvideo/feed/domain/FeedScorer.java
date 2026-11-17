@@ -1,7 +1,7 @@
 package com.shortvideo.feed.domain;
 
 import com.shortvideo.eligibility.api.VideoEligibilityView;
-import com.shortvideo.social.api.SocialCounts;
+import com.shortvideo.social.api.EngagementCounts;
 import java.time.Duration;
 import java.time.Instant;
 import org.springframework.stereotype.Component;
@@ -21,7 +21,7 @@ class FeedScorer {
         this.properties = properties;
     }
 
-    double score(VideoEligibilityView video, SocialCounts counts, boolean followedCreator, double explorationSample) {
+    double score(VideoEligibilityView video, EngagementCounts counts, boolean followedCreator, double explorationSample) {
         double freshness = freshnessScore(video.updatedAt());
         double social = counts.likeCount() * properties.getLikeWeight() + counts.commentCount() * properties.getCommentWeight();
         double followBoost = followedCreator ? properties.getFollowedCreatorBoost() : 0;

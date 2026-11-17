@@ -70,7 +70,7 @@ class ModerationPublicationFlowIT {
 
     @Container
     @SuppressWarnings("resource")
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.9.0"));
+    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.8.0"));
 
     @Container
     @SuppressWarnings("resource")
@@ -128,10 +128,13 @@ class ModerationPublicationFlowIT {
         HttpHeaders adminAuth = registerAdminAndLogin(adminEmail);
 
         // 1. Upload and reach READY (worker played by hand, as in UploadTranscodeFlowIT).
-        ResponseEntity<Map> created = post("/api/v1/uploads", null, creatorAuth);
+        ResponseEntity<Map> created = post("/api/v1/uploads", Map.of("title", "Test video"), creatorAuth);
         String videoId = (String) created.getBody().get("videoId");
         String uploadId = (String) created.getBody().get("uploadId");
-        putToPresignedUrl((String) created.getBody().get("uploadUrl"), "x".getBytes(StandardCharsets.UTF_8));
+        postToPresignedForm(
+                (String) created.getBody().get("uploadUrl"),
+                (Map<String, String>) created.getBody().get("formFields"),
+                "x".getBytes(StandardCharsets.UTF_8));
         post("/api/v1/uploads/" + uploadId + "/complete", null, creatorAuth);
 
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
@@ -139,8 +142,20 @@ class ModerationPublicationFlowIT {
                 .isEqualTo("TRANSCODING"));
 
         String finalPrefix = "processed/" + videoId + "/1/";
-        stageObject(finalPrefix + "master.m3u8", "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1x1\n720p/index.m3u8\n");
-        stageObject(finalPrefix + "720p/index.m3u8", "#EXTM3U\n#EXT-X-ENDLIST\n");
+        // The worker's ladder: a master over three rungs, each with its own playlist.
+        stageObject(finalPrefix + "master.m3u8",
+                "#EXTM3U\n"
+                + "#EXT-X-STREAM-INF:BANDWIDTH=2112000,RESOLUTION=720x1280,CODECS=\"avc1.640028,mp4a.40.2\"\nhigh/index.m3u8\n"
+                + "#EXT-X-STREAM-INF:BANDWIDTH=1089000,RESOLUTION=480x854,CODECS=\"avc1.640028,mp4a.40.2\"\nmedium/index.m3u8\n"
+                + "#EXT-X-STREAM-INF:BANDWIDTH=510400,RESOLUTION=270x480,CODECS=\"avc1.640028,mp4a.40.2\"\nlow/index.m3u8\n");
+        for (String rung : List.of("high", "medium", "low")) {
+            stageObject(finalPrefix + rung + "/index.m3u8",
+                    "#EXTM3U\n#EXTINF:4.0,\nsegment_000.ts\n#EXT-X-ENDLIST\n");
+        }
+        // One segment per rung: the result below declares three, and verification counts them.
+        stageObject(finalPrefix + "high/segment_000.ts", "ts-bytes");
+        stageObject(finalPrefix + "medium/segment_000.ts", "ts-bytes");
+        stageObject(finalPrefix + "low/segment_000.ts", "ts-bytes");
         publishMediaResult(videoId, 1, "COMPLETED", finalPrefix);
 
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
@@ -189,7 +204,7 @@ class ModerationPublicationFlowIT {
         ResponseEntity<Void> reject = rest.exchange(
                 url("/internal/v1/videos/" + videoId + "/reject"),
                 HttpMethod.POST,
-                new HttpEntity<>(Map.of("reason", "policy violation"), adminAuth),
+                new HttpEntity<>(Map.of("policyCategory", "SPAM_DECEPTIVE", "reason", "policy violation"), adminAuth),
                 Void.class);
         assertThat(reject.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
@@ -236,7 +251,11 @@ class ModerationPublicationFlowIT {
         MediaEvents.Assets assets = finalPrefix == null
                 ? null
                 : new MediaEvents.Assets(
-                        finalPrefix + "master.m3u8", List.of(finalPrefix + "720p/index.m3u8"), 1, 3.0);
+                        finalPrefix + "master.m3u8", List.of(
+                                finalPrefix + "high/index.m3u8",
+                                finalPrefix + "medium/index.m3u8",
+                                finalPrefix + "low/index.m3u8"),
+                        3, 3.0);
         var payload = new MediaEvents.MediaResultCommand(
                 videoId + ":" + processingVersion, videoId, processingVersion, outcome, assets, null);
         var envelope = new EventEnvelope<>(
@@ -263,10 +282,23 @@ class ModerationPublicationFlowIT {
         }
     }
 
-    private void putToPresignedUrl(String uploadUrl, byte[] body) {
+    /** The upload URL is a presigned POST policy: its signed fields go first, the file part last. */
+    private void postToPresignedForm(String url, Map<String, String> fields, byte[] body) {
+        org.springframework.util.LinkedMultiValueMap<String, Object> form = new org.springframework.util.LinkedMultiValueMap<>();
+        fields.forEach(form::add);
+        form.add("file", new org.springframework.core.io.ByteArrayResource(body) {
+            @Override
+            public String getFilename() {
+                return "video.mp4";
+            }
+        });
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentLength(body.length);
-        rest.getRestTemplate().exchange(uploadUrl, HttpMethod.PUT, new HttpEntity<>(body, headers), Void.class);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        // Buffered, so the request carries a Content-Length: the object store refuses a chunked POST
+        // as an empty body.
+        new org.springframework.web.client.RestTemplate(new org.springframework.http.client.BufferingClientHttpRequestFactory(
+                        new org.springframework.http.client.SimpleClientHttpRequestFactory()))
+                .exchange(url, HttpMethod.POST, new HttpEntity<>(form, headers), Void.class);
     }
 
     private HttpHeaders registerAndLogin(String email) {

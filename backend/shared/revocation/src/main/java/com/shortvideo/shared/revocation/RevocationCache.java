@@ -1,7 +1,14 @@
 package com.shortvideo.shared.revocation;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -19,6 +26,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class RevocationCache {
+
+    private static final Logger log = LoggerFactory.getLogger(RevocationCache.class);
 
     private final StringRedisTemplate redis;
 
@@ -38,20 +47,36 @@ public class RevocationCache {
         }
     }
 
+    /** The restrictive sources Redis reports as active; empty when there are none or Redis cannot answer. */
+    public Set<String> activeSources(String subjectType, String subjectId) {
+        try {
+            Set<Object> fields = redis.opsForHash().keys(key(subjectType, subjectId));
+            return fields.stream().map(Object::toString).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        } catch (RuntimeException e) {
+            // As in isDenied: an outage is not a deny signal, it just leaves the durable check to decide.
+            return Set.of();
+        }
+    }
+
     void putActive(String subjectType, String subjectId, String sourceType, String reason) {
         try {
             redis.opsForHash().put(key(subjectType, subjectId), sourceType, reason == null ? "revoked" : reason);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException e) {
             // Best-effort: the durable record is authoritative and will be found
             // on the next read even if this cache write failed.
+            log.warn("Could not cache the {} revocation of {} {}; the rebuild will repair it: {}",
+                    sourceType, subjectType, subjectId, e.toString());
         }
     }
 
     void clearField(String subjectType, String subjectId, String sourceType) {
         try {
             redis.opsForHash().delete(key(subjectType, subjectId), sourceType);
-        } catch (RuntimeException ignored) {
-            // Same reasoning as putActive: durable state is authoritative.
+        } catch (RuntimeException e) {
+            // Same reasoning as putActive: durable state is authoritative. Until the reconcile pass
+            // removes the stale field, the subject stays denied by the cache, so say so.
+            log.warn("Could not clear the {} revocation of {} {} from the cache; the reconcile pass will remove it: {}",
+                    sourceType, subjectType, subjectId, e.toString());
         }
     }
 
@@ -80,12 +105,29 @@ public class RevocationCache {
         }
     }
 
-    /** All subject keys currently cached, so a rebuild can find stray subjects with no active revocation left at all. */
-    Set<String> allCachedSubjectKeys() {
-        try {
-            return redis.keys("revocation:*");
+    /**
+     * Walks every cached subject key in batches, so a rebuild can find stray subjects with no active
+     * revocation left at all. SCAN rather than KEYS: KEYS is one blocking command over the whole
+     * keyspace, which stalls every other Redis user (the revocation check on each request included)
+     * for as long as it runs. A key can appear in two batches, and the walk stops quietly if Redis
+     * becomes unreachable; the next rebuild tries again.
+     */
+    void forEachCachedSubjectKeyBatch(int batchSize, Consumer<List<String>> batch) {
+        ScanOptions options = ScanOptions.scanOptions().match("revocation:*").count(batchSize).build();
+        try (Cursor<String> cursor = redis.scan(options)) {
+            List<String> keys = new ArrayList<>(batchSize);
+            while (cursor.hasNext()) {
+                keys.add(cursor.next());
+                if (keys.size() >= batchSize) {
+                    batch.accept(keys);
+                    keys = new ArrayList<>(batchSize);
+                }
+            }
+            if (!keys.isEmpty()) {
+                batch.accept(keys);
+            }
         } catch (RuntimeException e) {
-            return Set.of();
+            // Best-effort like every other cache operation: durable state stays authoritative.
         }
     }
 

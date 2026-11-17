@@ -21,19 +21,51 @@ public class OutboxRepository {
      *
      * <p>occurred_at alone is not a total order — two events can share a timestamp —
      * so ties break on (aggregate_id, aggregate_version).
+     *
+     * <p>Picking the rows takes two steps so that its cost follows the batch size, not the backlog.
+     * {@code candidates} reads the first {@code n} rows of each source (ready, and expired
+     * leases) in index order and stops there; {@code top} keeps the first {@code n} of those.
+     * Written as one query with an OR, the planner has to read and sort every claimable row first
+     * (see V49). Only then does {@code selected} lock the rows, because FOR UPDATE cannot be applied
+     * to a UNION.
+     *
+     * <p>{@code selected} repeats the state test: a row can be claimed by someone else between
+     * the two steps, and re-checking is what stops it being claimed twice. Because the lock is
+     * taken after the choice, a claimer that finds some of its rows locked returns fewer than
+     * {@code n} rows rather than reaching past them. With one relay that never happens; with several
+     * the relay's "fewer than a full batch, so stop" test would stop it early and it would pick up
+     * again at the next poll.
      */
     private static final String CLAIM = """
-            WITH selected AS (
+            WITH candidates AS (
+                (SELECT event_id, occurred_at, aggregate_id, aggregate_version
+                 FROM platform.outbox_event
+                 WHERE status IN ('PENDING', 'RETRY') AND available_at <= now()
+                 ORDER BY occurred_at, aggregate_id, aggregate_version
+                 LIMIT ?)
+                UNION ALL
+                (SELECT event_id, occurred_at, aggregate_id, aggregate_version
+                 FROM platform.outbox_event
+                 WHERE status = 'CLAIMED' AND claimed_until < now() AND available_at <= now()
+                 ORDER BY occurred_at, aggregate_id, aggregate_version
+                 LIMIT ?)
+            ),
+            top AS (
                 SELECT event_id
-                FROM platform.outbox_event
-                WHERE (
-                    status IN ('PENDING', 'RETRY')
-                    OR (status = 'CLAIMED' AND claimed_until < now())
-                )
-                  AND available_at <= now()
+                FROM candidates
                 ORDER BY occurred_at, aggregate_id, aggregate_version
-                FOR UPDATE SKIP LOCKED
                 LIMIT ?
+            ),
+            selected AS (
+                SELECT o.event_id
+                FROM platform.outbox_event o
+                JOIN top USING (event_id)
+                WHERE (
+                    o.status IN ('PENDING', 'RETRY')
+                    OR (o.status = 'CLAIMED' AND o.claimed_until < now())
+                )
+                  AND o.available_at <= now()
+                FOR UPDATE OF o SKIP LOCKED
             )
             UPDATE platform.outbox_event o
             SET status = 'CLAIMED',
@@ -63,6 +95,39 @@ public class OutboxRepository {
             WHERE event_id = ? AND status = 'CLAIMED' AND claim_token = ?
             """;
 
+    private static final String FINALISE_BATCH = """
+            UPDATE platform.outbox_event
+            SET status = 'PUBLISHED', published_at = now(), claimed_by = NULL,
+                claim_token = NULL, claimed_until = NULL
+            WHERE event_id = ANY (?) AND status = 'CLAIMED' AND claim_token = ?
+            """;
+
+    /**
+     * Gives back rows this relay claimed but deliberately did not send, without counting an attempt
+     * (the claim already incremented it): they were held behind an earlier event of the same
+     * aggregate that failed.
+     */
+    private static final String RELEASE = """
+            UPDATE platform.outbox_event
+            SET status = 'RETRY', available_at = ?, attempt_count = attempt_count - 1,
+                claimed_by = NULL, claim_token = NULL, claimed_until = NULL
+            WHERE event_id = ANY (?) AND status = 'CLAIMED' AND claim_token = ?
+            """;
+
+    /**
+     * A claim whose lease ran out with the attempt budget already spent: the relay claimed this row
+     * that many times and never got as far as recording an outcome, which is what a payload that
+     * kills the relay looks like. {@code recordFailure} cannot catch it because it only runs in a
+     * relay that survived the send.
+     */
+    private static final String BURY_ABANDONED = """
+            UPDATE platform.outbox_event
+            SET status = 'DEAD',
+                last_error = 'relay claimed this event ' || attempt_count || ' times without recording an outcome',
+                claimed_by = NULL, claim_token = NULL, claimed_until = NULL
+            WHERE status = 'CLAIMED' AND claimed_until < now() AND attempt_count >= ?
+            """;
+
     private static final RowMapper<OutboxRecord> MAPPER = (rs, i) -> new OutboxRecord(
             rs.getObject("event_id", UUID.class),
             rs.getString("aggregate_type"),
@@ -83,13 +148,93 @@ public class OutboxRepository {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public List<OutboxRecord> claimBatch(String relayId, UUID claimToken, int batchSize, long leaseSeconds) {
-        return jdbc.query(CLAIM, MAPPER, batchSize, relayId, claimToken, (double) leaseSeconds);
+        // batchSize bounds each of the three LIMITs in CLAIM.
+        return jdbc.query(CLAIM, MAPPER, batchSize, batchSize, batchSize, relayId, claimToken, (double) leaseSeconds);
     }
 
     /** @return true when this relay still owned the claim and the row was finalised. */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean markPublished(UUID eventId, UUID claimToken) {
         return jdbc.update(FINALISE, eventId, claimToken) == 1;
+    }
+
+    /**
+     * One statement for everything the broker acknowledged, rather than a round trip per event.
+     * The claim-token check still applies to every row.
+     *
+     * @return how many rows this relay still owned and finalised; fewer than {@code eventIds.size()}
+     *     means some claims were lost to another relay
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int markPublishedBatch(List<UUID> eventIds, UUID claimToken) {
+        if (eventIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.update(connection -> {
+            var statement = connection.prepareStatement(FINALISE_BATCH);
+            statement.setArray(1, connection.createArrayOf("uuid", eventIds.toArray()));
+            statement.setObject(2, claimToken);
+            return statement;
+        });
+    }
+
+    /**
+     * Returns held-back rows to the queue, available again at {@code availableAt}: the same moment as
+     * the failed event they were held behind, so the two come back together and in order.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int release(List<UUID> eventIds, UUID claimToken, Instant availableAt) {
+        if (eventIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.update(connection -> {
+            var statement = connection.prepareStatement(RELEASE);
+            statement.setTimestamp(1, Timestamp.from(availableAt));
+            statement.setArray(2, connection.createArrayOf("uuid", eventIds.toArray()));
+            statement.setObject(3, claimToken);
+            return statement;
+        });
+    }
+
+    /**
+     * Moves events to DEAD that the relay keeps claiming but never settles (see {@link #BURY_ABANDONED}).
+     * Run before each claim, so such a row is stopped rather than claimed once more.
+     *
+     * @return how many rows were buried
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int buryAbandoned(int maxAttempts) {
+        return jdbc.update(BURY_ABANDONED, maxAttempts);
+    }
+
+    /** Events the relay gave up on; served by the partial dead index. */
+    public long countDead() {
+        Long count = jdbc.queryForObject("SELECT count(*) FROM platform.outbox_event WHERE status = 'DEAD'", Long.class);
+        return count == null ? 0 : count;
+    }
+
+    /**
+     * Age in seconds of the oldest event that is waiting to be sent: ready or retrying, or claimed
+     * with the lease already run out (a relay that died mid-batch leaves those behind). The two
+     * halves are the claim's two sources, each read from the first entry of its own index.
+     * Measured against the database clock, like the claim.
+     *
+     * @return 0 when nothing is waiting
+     */
+    public double oldestWaitingSeconds() {
+        Double age = jdbc.queryForObject("""
+                SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(oldest)), 0)::float8
+                FROM (
+                    SELECT min(occurred_at) AS oldest
+                    FROM platform.outbox_event
+                    WHERE status IN ('PENDING', 'RETRY')
+                    UNION ALL
+                    SELECT min(occurred_at)
+                    FROM platform.outbox_event
+                    WHERE status = 'CLAIMED' AND claimed_until < now()
+                ) sources
+                """, Double.class);
+        return age == null ? 0 : Math.max(0, age);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

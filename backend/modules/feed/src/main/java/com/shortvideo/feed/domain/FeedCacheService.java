@@ -2,6 +2,7 @@ package com.shortvideo.feed.domain;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,21 +18,30 @@ import org.springframework.stereotype.Component;
 class FeedCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(FeedCacheService.class);
-    private static final TypeReference<List<FeedItemView>> LIST_TYPE = new TypeReference<>() {};
+    private static final TypeReference<List<FeedRef>> LIST_TYPE = new TypeReference<>() {};
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
-    private final FeedProperties properties;
 
-    FeedCacheService(StringRedisTemplate redis, ObjectMapper objectMapper, FeedProperties properties) {
-        this.redis = redis;
+    FeedCacheService(FeedCacheRedis cacheRedis, ObjectMapper objectMapper) {
+        this.redis = cacheRedis.template();
         this.objectMapper = objectMapper;
-        this.properties = properties;
     }
 
-    List<FeedItemView> get(String viewerId, int page) {
+    /**
+     * The whole ranking is cached under one key per viewer, not one key per page.
+     * Caching page slices separately let two pages of the same feed come from two
+     * different rankings, which is how a video could show up on both page 0 and
+     * page 1 — or on neither.
+     *
+     * <p>Only {@link FeedRef}s are stored. A signed-in viewer's ranking lives for the
+     * session TTL, so the memory it holds is that key size times every viewer active
+     * in that window; carrying the title and description made each key tens of
+     * kilobytes, up to a megabyte with full-length descriptions.
+     */
+    List<FeedRef> getRanking(String viewerId) {
         try {
-            String json = redis.opsForValue().get(key(viewerId, page));
+            String json = redis.opsForValue().get(key(viewerId));
             return json == null ? null : objectMapper.readValue(json, LIST_TYPE);
         } catch (Exception e) {
             log.debug("Feed cache read failed; recomputing: {}", e.getMessage());
@@ -39,15 +49,15 @@ class FeedCacheService {
         }
     }
 
-    void put(String viewerId, int page, List<FeedItemView> items) {
+    void putRanking(String viewerId, List<FeedRef> ranking, Duration ttl) {
         try {
-            redis.opsForValue().set(key(viewerId, page), objectMapper.writeValueAsString(items), properties.getCacheTtl());
+            redis.opsForValue().set(key(viewerId), objectMapper.writeValueAsString(ranking), ttl);
         } catch (Exception e) {
-            log.debug("Feed cache write failed; page will be recomputed next time: {}", e.getMessage());
+            log.debug("Feed cache write failed; ranking will be recomputed next time: {}", e.getMessage());
         }
     }
 
-    private String key(String viewerId, int page) {
-        return "feed:" + viewerId + ":" + page;
+    private String key(String viewerId) {
+        return "feed:ranking:" + viewerId;
     }
 }

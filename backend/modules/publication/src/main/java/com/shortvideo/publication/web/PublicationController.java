@@ -1,5 +1,6 @@
 package com.shortvideo.publication.web;
 
+import java.util.UUID;
 import com.shortvideo.publication.domain.PublicationService;
 import com.shortvideo.shared.security.AuthenticatedAccount;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,8 +25,21 @@ public class PublicationController {
     @PostMapping("/{videoId}/publish")
     @Operation(summary = "Owner requests publication; the coordinator evaluates prerequisites (brief section 8)")
     public PublicationDtos.PublicationResponse publish(
-            @PathVariable String videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
         return PublicationDtos.PublicationResponse.from(
-                publicationService.requestPublish(videoId, caller.accountId()));
+                publicationService.requestPublish(videoId.toString(), caller.accountId()));
+    }
+
+    /**
+     * The reversible inverse of publish: the video returns to PRIVATE and leaves
+     * the feed, but its moderation approval survives, so re-publishing later
+     * does not queue it for review again.
+     */
+    @PostMapping("/{videoId}/unpublish")
+    @Operation(summary = "Owner withdraws publication; the video returns to PRIVATE")
+    public PublicationDtos.PublicationResponse unpublish(
+            @PathVariable UUID videoId, @AuthenticationPrincipal AuthenticatedAccount caller) {
+        return PublicationDtos.PublicationResponse.from(
+                publicationService.withdrawPublish(videoId.toString(), caller.accountId()));
     }
 }

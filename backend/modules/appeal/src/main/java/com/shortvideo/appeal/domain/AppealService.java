@@ -1,17 +1,27 @@
 package com.shortvideo.appeal.domain;
 
+import com.shortvideo.appeal.api.AppealDirectory;
 import com.shortvideo.appeal.api.AppealState;
+import com.shortvideo.moderation.api.ModerationDecisionView;
 import com.shortvideo.moderation.api.ModerationDirectory;
+import com.shortvideo.shared.audit.AdminAction;
+import com.shortvideo.shared.audit.AdminActionRecorder;
+import com.shortvideo.shared.audit.AuditActions;
+import com.shortvideo.shared.audit.AuditTargets;
 import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import com.shortvideo.video.api.VideoPlaybackView;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,7 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
  * respective modules elsewhere in this system.
  */
 @Service
-public class AppealService {
+public class AppealService implements AppealDirectory {
 
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "appeal";
@@ -33,16 +43,23 @@ public class AppealService {
     private final OutboxWriter outboxWriter;
     private final VideoPlaybackDirectory videoDirectory;
     private final ModerationDirectory moderationDirectory;
+    private final AdminActionRecorder auditRecorder;
+    /** How long after a denial the creator must wait before appealing again; zero turns it off. */
+    private final Duration resubmitCooldown;
 
     public AppealService(
             AppealJpaRepository repository,
             OutboxWriter outboxWriter,
             VideoPlaybackDirectory videoDirectory,
-            ModerationDirectory moderationDirectory) {
+            ModerationDirectory moderationDirectory,
+            AdminActionRecorder auditRecorder,
+            @Value("${shortvideo.appeal.resubmit-cooldown:24h}") Duration resubmitCooldown) {
+        this.resubmitCooldown = resubmitCooldown;
         this.repository = repository;
         this.outboxWriter = outboxWriter;
         this.videoDirectory = videoDirectory;
         this.moderationDirectory = moderationDirectory;
+        this.auditRecorder = auditRecorder;
     }
 
     @Transactional
@@ -55,52 +72,152 @@ public class AppealService {
             throw new AppealExceptions.AppealNotFound("No such video");
         }
 
-        String moderationState = moderationDirectory
+        ModerationDecisionView decision = moderationDirectory
                 .findDecision(videoId)
-                .map(d -> d.state())
-                .orElse("PENDING");
-        if (!"REJECTED".equals(moderationState)) {
-            throw new AppealExceptions.NotEligibleForAppeal("Only a rejected video may be appealed");
-        }
+                .filter(d -> "REJECTED".equals(d.state()))
+                .orElseThrow(() -> new AppealExceptions.NotEligibleForAppeal("Only a rejected video may be appealed"));
 
         UUID id = UUID.fromString(videoId);
         AppealEntity entity = repository.findById(id).orElseGet(() -> new AppealEntity(id, UUID.fromString(callerAccountId)));
-        if (!entity.submit(reason)) {
+        refuseWhileCoolingDown(entity);
+        if (!entity.submit(reason, decision.aggregateVersion())) {
             throw new AppealExceptions.NotEligibleForAppeal("An appeal is already under review for this video");
         }
-        AppealEntity saved = repository.saveAndFlush(entity);
+        AppealEntity saved;
+        try {
+            saved = repository.saveAndFlush(entity);
+        } catch (DataIntegrityViolationException e) {
+            // Two first appeals for one video raced to insert its row; the other one won, so this is a repeat.
+            throw new AppealExceptions.NotEligibleForAppeal("An appeal is already under review for this video");
+        }
         append(saved, EventTypes.VIDEO_APPEAL_SUBMITTED, reason);
         return toView(saved);
     }
 
+    /**
+     * @param expectedVersion the {@link AppealView#version()} the admin read; a decision is refused if the
+     *                        appeal has changed since, e.g. the creator resubmitted it with a new rationale
+     */
     @Transactional
-    public AppealView approve(String videoId, String decisionReason) {
-        AppealEntity entity = find(videoId);
+    public AppealView approve(String videoId, String decisionReason, long expectedVersion, String actorAccountId) {
+        AppealEntity entity = findDecidable(videoId, expectedVersion, actorAccountId);
+        refuseIfRejectionChanged(entity);
         if (!entity.approve(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
         AppealEntity saved = repository.saveAndFlush(entity);
         append(saved, EventTypes.VIDEO_APPEAL_APPROVED, decisionReason);
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.APPEAL_APPROVED, AuditTargets.VIDEO, videoId, decisionReason));
         return toView(saved);
     }
 
     @Transactional
-    public AppealView deny(String videoId, String decisionReason) {
-        AppealEntity entity = find(videoId);
+    public AppealView deny(String videoId, String decisionReason, long expectedVersion, String actorAccountId) {
+        AppealEntity entity = findDecidable(videoId, expectedVersion, actorAccountId);
         if (!entity.deny(decisionReason)) {
             throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
         }
         AppealEntity saved = repository.saveAndFlush(entity);
         append(saved, EventTypes.VIDEO_APPEAL_DENIED, decisionReason);
+        auditRecorder.record(AdminAction.of(
+                actorAccountId, AuditActions.APPEAL_DENIED, AuditTargets.VIDEO, videoId, decisionReason));
         return toView(saved);
     }
 
+    /**
+     * Owner checks the current appeal status of one of their own videos — a NONE
+     * view when no appeal has ever been submitted, matching the resting state
+     * {@link AppealEntity} itself starts in, rather than a 404.
+     */
     @Transactional(readOnly = true)
-    public List<AppealView> listPending() {
+    public AppealView getStatus(String videoId, String callerAccountId) {
+        VideoPlaybackView video = videoDirectory
+                .findForPlayback(videoId)
+                .orElseThrow(() -> new AppealExceptions.AppealNotFound("No such video"));
+        if (!video.ownerAccountId().equals(callerAccountId)) {
+            throw new AppealExceptions.AppealNotFound("No such video");
+        }
         return repository
-                .findByStateInOrderByUpdatedAtAsc(List.of(AppealState.UNDER_APPEAL, AppealState.REVIEWING))
+                .findById(UUID.fromString(videoId))
+                .map(AppealService::toView)
+                .orElseGet(() -> new AppealView(videoId, callerAccountId, AppealState.NONE, null, null, null, 0));
+    }
+
+    /** Hard ceiling on one response, however large the queue or the requested limit. */
+    public static final int MAX_PENDING_PAGE = 200;
+
+    @Transactional(readOnly = true)
+    public List<AppealView> listPending(int limit) {
+        int size = Math.min(Math.max(limit, 1), MAX_PENDING_PAGE);
+        return repository
+                .findByStateInOrderByUpdatedAtAsc(
+                        List.of(AppealState.UNDER_APPEAL, AppealState.REVIEWING), PageRequest.of(0, size))
                 .stream()
                 .map(AppealService::toView)
+                .toList();
+    }
+
+    /**
+     * Only a denial starts a cooldown: it is what keeps a creator from refilling the admin queue with the
+     * same appeal the moment it is turned down. A first appeal, and one after a reinstated video was
+     * rejected again, are new cases and wait for nothing. A denial's {@code updatedAt} is when it was decided.
+     */
+    private void refuseWhileCoolingDown(AppealEntity entity) {
+        if (entity.getState() != AppealState.DENIED || resubmitCooldown.isZero()) {
+            return;
+        }
+        Duration remaining = Duration.between(Instant.now(), entity.getUpdatedAt().plus(resubmitCooldown));
+        if (remaining.isPositive()) {
+            throw new AppealExceptions.ResubmitTooSoon(remaining);
+        }
+    }
+
+    /**
+     * The appeal an admin may decide now: not their own, still awaiting a decision, and unchanged since
+     * they read it. {@code @Version} alone only refuses two writes racing; it cannot tell that this
+     * decision was made on a copy that is no longer current.
+     */
+    private AppealEntity findDecidable(String videoId, long expectedVersion, String actorAccountId) {
+        AppealEntity entity = find(videoId);
+        if (entity.getCreatorId().toString().equals(actorAccountId)) {
+            throw new AppealExceptions.OwnAppeal("An admin may not decide an appeal of their own video");
+        }
+        if (!entity.isAwaitingDecision()) {
+            throw new AppealExceptions.AppealNotPending("Appeal is not awaiting a decision");
+        }
+        if (entity.getAggregateVersion() != expectedVersion) {
+            throw new AppealExceptions.AppealChanged("Appeal changed since it was loaded; review it again");
+        }
+        return entity;
+    }
+
+    /**
+     * An approval reverses one rejection. If the video has since been reinstated, or rejected again or
+     * reclassified, that rejection is gone, and approving would either do nothing while telling the
+     * creator it had worked or reinstate a decision nobody reviewed. The admin can still deny it.
+     */
+    private void refuseIfRejectionChanged(AppealEntity entity) {
+        boolean sameRejection = moderationDirectory
+                .findDecision(entity.getVideoId().toString())
+                .filter(d -> "REJECTED".equals(d.state()) && d.aggregateVersion() == entity.getModerationVersion())
+                .isPresent();
+        if (!sameRejection) {
+            throw new AppealExceptions.RejectionChanged(
+                    "The video's moderation decision changed after this appeal was filed; deny it and let the creator appeal again");
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ApprovedAppealView> findApprovedPage(
+            Instant decidedFrom, Instant decidedTo, ApprovedAppealView after, int limit) {
+        Instant afterAt = after == null ? decidedFrom : after.decidedAt();
+        UUID afterId = after == null ? new UUID(0, 0) : UUID.fromString(after.videoId());
+        return repository
+                .findApprovedBetweenAfter(decidedFrom, decidedTo, afterAt, afterId, PageRequest.of(0, limit))
+                .stream()
+                .map(a -> new ApprovedAppealView(a.getVideoId().toString(), a.getModerationVersion(), a.getDecidedAt()))
                 .toList();
     }
 
@@ -111,11 +228,12 @@ public class AppealService {
     }
 
     private void append(AppealEntity entity, String eventType, String reason) {
-        var payload = new AppealEvents.AppealDecided(
+        var payload = new AppealEvents.AppealStateChanged(
                 entity.getVideoId().toString(),
                 entity.getCreatorId().toString(),
                 entity.getState().name(),
                 entity.getAggregateVersion(),
+                entity.getModerationVersion(),
                 reason);
 
         outboxWriter.append(new EventEnvelope<>(
@@ -140,6 +258,7 @@ public class AppealService {
                 entity.getState(),
                 entity.getReason(),
                 entity.getDecisionReason(),
-                entity.getUpdatedAt());
+                entity.getUpdatedAt(),
+                entity.getAggregateVersion());
     }
 }

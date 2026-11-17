@@ -1,0 +1,45 @@
+# Authenticated Kafka: SASL/SCRAM over TLS on the host listener, ACLs per principal.
+# An override on top of docker-compose.yml; the default stack stays plaintext so day-to-day
+# development and CI need no credentials.
+#
+#   kafka/secure/gen-secrets.sh        # once: CA, broker cert, one random password per principal
+#   docker compose --env-file .env --env-file infrastructure/kafka/secure/generated/secrets.env \
+#     -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.secure.yml up -d
+#
+# Then start the backend and the worker with their own credentials:
+#   set -a; . infrastructure/kafka/secure/generated/client-backend.env; set +a   # backend
+#   set -a; . infrastructure/kafka/secure/generated/client-worker.env;  set +a   # media-worker
+# See docs/adr/0001-kafka-authentication-and-acls.md.
+#
+# Needs Docker Compose >= 2.24 (the !override / !reset tags).
+services:
+  kafka:
+    entrypoint: ["/bin/bash", "/etc/kafka/secure/broker-entrypoint.sh"]
+    environment: !override
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?run infrastructure/kafka/secure/gen-secrets.sh and pass its secrets.env}
+      KAFKA_BACKEND_PASSWORD: ${KAFKA_BACKEND_PASSWORD:?}
+      KAFKA_WORKER_PASSWORD: ${KAFKA_WORKER_PASSWORD:?}
+      KAFKA_UI_PASSWORD: ${KAFKA_UI_PASSWORD:?}
+    # Individual files, not the directory: ./kafka/secure/generated holds the CA's private key.
+    volumes:
+      - ./kafka/secure/broker-entrypoint.sh:/etc/kafka/secure/broker-entrypoint.sh:ro
+      - ./kafka/secure/server.properties.tmpl:/etc/kafka/secure/server.properties.tmpl:ro
+      - ./kafka/secure/generated/broker.pem:/etc/kafka/secrets/broker.pem:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --command-config /tmp/admin.properties --list || exit 1"]
+
+  kafka-init:
+    environment:
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?}
+    volumes:
+      - ./kafka/secure/init-topics-and-acls.sh:/etc/kafka/secure/init-topics-and-acls.sh:ro
+      - ./kafka/secure/acl-groups.txt:/etc/kafka/secure/acl-groups.txt:ro
+    entrypoint: ["/bin/sh", "/etc/kafka/secure/init-topics-and-acls.sh"]
+    command: !reset []
+
+  kafka-ui:
+    environment:
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: SCRAM-SHA-512
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required username="kafka-ui" password="${KAFKA_UI_PASSWORD:?}";

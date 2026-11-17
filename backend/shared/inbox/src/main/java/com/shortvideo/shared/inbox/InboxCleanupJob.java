@@ -19,7 +19,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>The retention window here must stay strictly longer than the Kafka
  * broker's own topic retention (this stack's default is 168h/7 days — see
- * {@code infrastructure/docker-compose.yml}, which sets no override). If a
+ * {@code infrastructure/docker-compose.yml}, which now states it as {@code retention.ms}). If a
  * consumed-event row were pruned while Kafka could still redeliver that
  * offset, a legitimate redelivery within the replay window would find no
  * inbox row and reapply its business effect a second time — exactly what
@@ -29,6 +29,9 @@ import org.springframework.stereotype.Component;
  */
 @Component
 class InboxCleanupJob {
+
+    /** Must stay longer than the retention of the domain topics; InboxRetentionVersusTopicsTest checks it. */
+    static final String DEFAULT_RETENTION = "240h";
 
     private static final Logger log = LoggerFactory.getLogger(InboxCleanupJob.class);
     private static final int BATCH_LIMIT = 5000;
@@ -49,13 +52,13 @@ class InboxCleanupJob {
     InboxCleanupJob(
             JdbcTemplate jdbc,
             MeterRegistry meterRegistry,
-            @Value("${shortvideo.inbox.retention:240h}") String retention) {
+            @Value("${shortvideo.inbox.retention:" + DEFAULT_RETENTION + "}") String retention) {
         this.jdbc = jdbc;
         this.retention = DurationStyle.detectAndParse(retention);
         this.deletedCounter = Counter.builder("inbox.cleanup.rows_deleted").register(meterRegistry);
     }
 
-    @Scheduled(fixedDelayString = "${shortvideo.inbox.cleanup-interval:1h}", initialDelayString = "1m")
+    @Scheduled(fixedDelayString = "${shortvideo.inbox.cleanup-interval:1h}", initialDelayString = "${shortvideo.inbox.cleanup-initial-delay:1m}")
     void sweep() {
         Instant cutoff = Instant.now().minus(retention);
         int totalDeleted = 0;
