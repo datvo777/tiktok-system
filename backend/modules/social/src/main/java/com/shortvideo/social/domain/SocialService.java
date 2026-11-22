@@ -55,6 +55,10 @@ public class SocialService implements SocialDirectory {
     public void like(String videoId, String accountId) {
         String videoOwnerId = requireEligible(videoId).creatorId();
         boolean newlyLiked = repository.like(videoId, accountId);
+        if (newlyLiked) {
+            // The count changes whoever liked it; only the notification skips the owner.
+            appendEngagement(videoId, 1, 0);
+        }
         // Liking your own video is not news to you.
         if (newlyLiked && !accountId.equals(videoOwnerId)) {
             append(EventTypes.SOCIAL_VIDEO_LIKED, new SocialEvents.VideoLiked(videoId, accountId, videoOwnerId));
@@ -63,7 +67,10 @@ public class SocialService implements SocialDirectory {
 
     @Transactional
     public void unlike(String videoId, String accountId) {
-        repository.unlike(videoId, accountId);
+        // Only when a like was actually removed, so a repeated unlike cannot drive the count down.
+        if (repository.unlike(videoId, accountId)) {
+            appendEngagement(videoId, -1, 0);
+        }
     }
 
     /**
@@ -112,6 +119,7 @@ public class SocialService implements SocialDirectory {
     public CommentView comment(String videoId, String accountId, String body) {
         String videoOwnerId = requireEligible(videoId).creatorId();
         CommentView comment = repository.addComment(videoId, accountId, body, null, resolveMentions(body));
+        appendEngagement(videoId, 0, 1);
         append(
                 EventTypes.SOCIAL_VIDEO_COMMENTED,
                 new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, comment.commentId()));
@@ -134,6 +142,7 @@ public class SocialService implements SocialDirectory {
 
         CommentView reply =
                 repository.addComment(videoId, accountId, body, parentCommentId, resolveMentions(body));
+        appendEngagement(videoId, 0, 1);
         append(
                 EventTypes.SOCIAL_COMMENT_REPLIED,
                 new SocialEvents.CommentReplied(
@@ -227,7 +236,11 @@ public class SocialService implements SocialDirectory {
             // should not be able to probe for comment ids they cannot touch.
             throw new SocialExceptions.CommentNotFound("No such comment on this video");
         }
-        repository.softDeleteComment(commentId, actorAccountId, comment.parentCommentId() == null);
+        int hidden = repository.softDeleteComment(commentId, actorAccountId, comment.parentCommentId() == null);
+        if (hidden > 0) {
+            // The comment and, for a top-level one, the replies that went with it.
+            appendEngagement(videoId, 0, -hidden);
+        }
     }
 
     /**
@@ -356,6 +369,21 @@ public class SocialService implements SocialDirectory {
                 .findVideoEligibility(videoId)
                 .filter(VideoEligibilityView::isVideoEligible)
                 .orElseThrow(() -> new SocialExceptions.VideoNotEligible("Video is not available"));
+    }
+
+    /**
+     * Records, in the transaction that changed it, how a video's like and comment totals moved.
+     * The feed's count table is brought up to date from this event rather than here, so a like
+     * of a viral video does not queue behind every other like of it on one row's lock.
+     *
+     * <p>Each event gets a fresh aggregate id like every other social event, because the relay
+     * sends one aggregate's events strictly one at a time; keying these by video would cap the
+     * most-liked video at about a hundred changes a second. Order does not matter: deltas add.
+     */
+    private void appendEngagement(String videoId, int likeDelta, int commentDelta) {
+        append(
+                EventTypes.SOCIAL_VIDEO_ENGAGEMENT_CHANGED,
+                new SocialEvents.EngagementChanged(videoId, likeDelta, commentDelta));
     }
 
     private void append(String eventType, Object payload) {

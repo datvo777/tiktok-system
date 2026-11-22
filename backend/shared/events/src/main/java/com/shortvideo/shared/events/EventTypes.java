@@ -70,6 +70,15 @@ public final class EventTypes {
     public static final String SOCIAL_VIDEO_LIKED = "social.video.liked";
 
     public static final String SOCIAL_CREATOR_FOLLOWED = "social.creator.followed";
+
+    /**
+     * A change in the number of likes and live comments on one video, as a signed
+     * delta. Unlike {@link #SOCIAL_VIDEO_LIKED} it is emitted for every like,
+     * unlike, comment, reply and comment removal, self-likes included, because its
+     * only reader is the Social module's own count table that the feed ranks on.
+     * Notification consumers ignore it.
+     */
+    public static final String SOCIAL_VIDEO_ENGAGEMENT_CHANGED = "social.video.engagement.changed";
     public static final String NOTIFICATION_CREATED = "notification.created";
 
     private EventTypes() {}

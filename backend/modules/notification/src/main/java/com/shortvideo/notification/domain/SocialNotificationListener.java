@@ -43,6 +43,11 @@ class SocialNotificationListener {
     public void onSocialEvent(String payload) {
         try {
             EventEnvelope<Map<String, Object>> envelope = EnvelopeCodec.decode(objectMapper, payload);
+            // A count delta is emitted for every like and comment and means nothing to a
+            // notification. Skipped before the claim, so it does not also cost an inbox row.
+            if (EventTypes.SOCIAL_VIDEO_ENGAGEMENT_CHANGED.equals(envelope.eventType())) {
+                return;
+            }
             if (!inbox.claim(CONSUMER, envelope.eventId())) {
                 return;
             }

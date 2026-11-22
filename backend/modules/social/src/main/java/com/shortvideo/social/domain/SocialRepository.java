@@ -137,23 +137,47 @@ class SocialRepository {
             "SELECT EXISTS (SELECT 1 FROM social.follow WHERE follower_id = ? AND followee_id = ?)";
 
     /**
-     * One grouped pass per relation instead of two correlated subqueries per video.
-     * {@code = ANY(?)} takes the whole id list as a single array parameter, so the
-     * SQL text is constant regardless of page size — no {@code IN (?,?,…)} built by
-     * string concatenation, and no statement-cache churn.
-     *
-     * <p>The two relations are counted separately and merged in Java rather than
-     * joined: joining likes to comments on video_id multiplies the rows and inflates
-     * both counts.
+     * The totals a feed ranking reads, kept per video by the engagement-count
+     * consumer from the deltas the like and comment paths emit. A video with no
+     * row has had no engagement.
      */
-    private static final String LIKE_COUNTS_FOR = """
-            SELECT video_id, count(*) AS c FROM social.video_like
-            WHERE video_id = ANY(?) GROUP BY video_id
+    private static final String ENGAGEMENT_FOR = """
+            SELECT video_id, like_count, comment_count FROM social.video_engagement
+            WHERE video_id = ANY(?)
             """;
 
-    private static final String COMMENT_COUNTS_FOR = """
-            SELECT video_id, count(*) AS c FROM social.comment
-            WHERE video_id = ANY(?) AND deleted_at IS NULL GROUP BY video_id
+    private static final String APPLY_ENGAGEMENT_DELTA = """
+            INSERT INTO social.video_engagement (video_id, like_count, comment_count, updated_at)
+            VALUES (?, ?, ?, now())
+            ON CONFLICT (video_id) DO UPDATE
+            SET like_count = social.video_engagement.like_count + EXCLUDED.like_count,
+                comment_count = social.video_engagement.comment_count + EXCLUDED.comment_count,
+                updated_at = now()
+            """;
+
+    private static final String ENGAGEMENT_PAGE = """
+            SELECT video_id FROM social.video_engagement
+            WHERE video_id > ? ORDER BY video_id LIMIT ?
+            """;
+
+    /**
+     * Recounts the given videos from the source tables and overwrites any stored total that
+     * differs. A row touched after {@code ?} (the cutoff) is left alone: a delta may still be
+     * in flight for it, and correcting now would count that delta twice.
+     */
+    private static final String RECONCILE_ENGAGEMENT = """
+            UPDATE social.video_engagement e
+            SET like_count = s.likes, comment_count = s.comments, updated_at = now()
+            FROM (
+                SELECT x.video_id,
+                       (SELECT count(*) FROM social.video_like l WHERE l.video_id = x.video_id) AS likes,
+                       (SELECT count(*) FROM social.comment c
+                         WHERE c.video_id = x.video_id AND c.deleted_at IS NULL) AS comments
+                FROM unnest(?::uuid[]) AS x(video_id)
+            ) s
+            WHERE e.video_id = s.video_id
+              AND e.updated_at < ?
+              AND (e.like_count <> s.likes OR e.comment_count <> s.comments)
             """;
 
     private static final String FOLLOWED_AMONG = """
@@ -239,8 +263,9 @@ class SocialRepository {
         return new HashSet<>(jdbc.queryForList(VIEWED_AMONG, String.class, UUID.fromString(accountId), (Object) ids));
     }
 
-    void unlike(String videoId, String accountId) {
-        jdbc.update(UNLIKE, UUID.fromString(videoId), UUID.fromString(accountId));
+    /** @return true when a like was removed, false when there was none (a repeated unlike). */
+    boolean unlike(String videoId, String accountId) {
+        return jdbc.update(UNLIKE, UUID.fromString(videoId), UUID.fromString(accountId)) > 0;
     }
 
     boolean isLiked(String videoId, String accountId) {
@@ -345,18 +370,20 @@ class SocialRepository {
     }
 
     /**
-     * @return true when this call performed the delete, false when the row was
-     *     already gone -- which makes a repeated delete idempotent rather than an
-     *     error.
+     * @return how many live comments this call hid: the comment itself plus, for a
+     *     top-level one, its replies. Zero when the row was already gone, which
+     *     makes a repeated delete idempotent rather than an error. The caller needs
+     *     the number because the video's comment count falls by exactly that much.
      */
-    boolean softDeleteComment(String commentId, String actorAccountId, boolean cascadeToReplies) {
+    int softDeleteComment(String commentId, String actorAccountId, boolean cascadeToReplies) {
         Timestamp now = Timestamp.from(Instant.now());
         UUID actor = UUID.fromString(actorAccountId);
         UUID id = UUID.fromString(commentId);
+        int hidden = 0;
         if (cascadeToReplies) {
-            jdbc.update(SOFT_DELETE_REPLIES, now, actor, id);
+            hidden += jdbc.update(SOFT_DELETE_REPLIES, now, actor, id);
         }
-        return jdbc.update(SOFT_DELETE_COMMENT, now, actor, id) > 0;
+        return hidden + jdbc.update(SOFT_DELETE_COMMENT, now, actor, id);
     }
 
     List<CommentView> listReplies(String commentId, CommentCursor cursor, int limit) {
@@ -425,35 +452,55 @@ class SocialRepository {
         return Boolean.TRUE.equals(following);
     }
 
-    /** @return likes and comments keyed by videoId, zero-filled for videos with no activity. */
+    /**
+     * @return likes and comments keyed by videoId, zero-filled for videos with no activity.
+     *     One primary-key lookup of the whole list. These are the maintained totals, so
+     *     they trail a like or comment by the few seconds its event takes to be applied.
+     */
     Map<String, EngagementCounts> engagementForAll(Collection<String> videoIds) {
         if (videoIds.isEmpty()) {
             return Map.of();
         }
         UUID[] ids = videoIds.stream().map(UUID::fromString).toArray(UUID[]::new);
 
-        Map<String, Long> likes = countBy(LIKE_COUNTS_FOR, ids);
-        Map<String, Long> comments = countBy(COMMENT_COUNTS_FOR, ids);
-
         Map<String, EngagementCounts> counts = new HashMap<>();
+        jdbc.query(
+                ENGAGEMENT_FOR,
+                rs -> {
+                    String videoId = rs.getString("video_id");
+                    // Clamped: deltas commute, so a row can dip below zero for an instant
+                    // when an unlike is applied before the like it undoes.
+                    counts.put(
+                            videoId,
+                            new EngagementCounts(
+                                    videoId,
+                                    Math.max(0, rs.getLong("like_count")),
+                                    Math.max(0, rs.getLong("comment_count"))));
+                },
+                (Object) ids);
         for (String videoId : videoIds) {
-            counts.put(
-                    videoId,
-                    new EngagementCounts(
-                            videoId, likes.getOrDefault(videoId, 0L), comments.getOrDefault(videoId, 0L)));
+            counts.putIfAbsent(videoId, new EngagementCounts(videoId, 0, 0));
         }
         return counts;
     }
 
-    private Map<String, Long> countBy(String sql, UUID[] ids) {
-        Map<String, Long> byVideo = new HashMap<>();
-        jdbc.query(
-                sql,
-                rs -> {
-                    byVideo.put(rs.getString("video_id"), rs.getLong("c"));
-                },
-                (Object) ids);
-        return byVideo;
+    void applyEngagementDelta(String videoId, int likeDelta, int commentDelta) {
+        jdbc.update(APPLY_ENGAGEMENT_DELTA, UUID.fromString(videoId), likeDelta, commentDelta);
+    }
+
+    /** Video ids that have a stored total, in id order, strictly after {@code afterVideoId} (the start when null). */
+    List<String> engagementPage(String afterVideoId, int limit) {
+        UUID after = afterVideoId == null ? new UUID(0, 0) : UUID.fromString(afterVideoId);
+        return jdbc.queryForList(ENGAGEMENT_PAGE, String.class, after, limit);
+    }
+
+    /** @return how many stored totals were wrong and have been corrected. */
+    int reconcileEngagement(Collection<String> videoIds, Instant touchedBefore) {
+        if (videoIds.isEmpty()) {
+            return 0;
+        }
+        UUID[] ids = videoIds.stream().map(UUID::fromString).toArray(UUID[]::new);
+        return jdbc.update(RECONCILE_ENGAGEMENT, ids, Timestamp.from(touchedBefore));
     }
 
     Set<String> followedAmong(String followerId, Collection<String> creatorIds) {

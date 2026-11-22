@@ -29,5 +29,12 @@ public final class SocialEvents {
 
     public record CreatorFollowed(String followerId, String followeeId) {}
 
+    /**
+     * What one action did to a video's like and live-comment totals. A delta, not
+     * a total, so applying it needs no read of the current value and two of them
+     * commute: the order they arrive in does not change where the count ends up.
+     */
+    public record EngagementChanged(String videoId, int likeDelta, int commentDelta) {}
+
     private SocialEvents() {}
 }

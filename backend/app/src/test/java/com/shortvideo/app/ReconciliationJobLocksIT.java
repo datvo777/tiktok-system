@@ -44,4 +44,9 @@ class ReconciliationJobLocksIT extends AbstractDatabaseIT {
     void theHeldReviewSweepRunsUnderASchedulerLock() {
         assertRunsUnderLock("heldReviewReconciliationJob", "heldReviewReconciliation");
     }
+
+    @Test
+    void theEngagementTotalsSweepRunsUnderASchedulerLock() {
+        assertRunsUnderLock("engagementReconciliationJob", "engagementReconciliation");
+    }
 }

@@ -22,6 +22,12 @@ public interface SocialDirectory {
      * counting views over the whole pool was the most expensive of the four
      * queries this used to run.
      *
+     * <p>Reads the maintained totals in {@code social.video_engagement} with one
+     * primary-key lookup, not a count over every like and comment, so its cost no
+     * longer grows with engagement. The totals trail a like or comment by the few
+     * seconds its event takes to be applied, which a ranking tolerates; they are
+     * not for anything that must be exact ({@link #countsFor} counts the source).
+     *
      * @return counts keyed by videoId. A video with no likes and no comments is
      *     present with zeros rather than absent, so callers need no null handling.
      */
