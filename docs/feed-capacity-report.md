@@ -119,3 +119,20 @@ Lưu ý: `evicted_keys` là bộ đếm tích lũy của Redis và lúc chạy s
 ## 8. Trạng thái repo
 
 Chưa commit. Thay đổi: module `feed` và `social`, `application.yml`, `.env.example`, `docker-compose.yml`, hai integration test mới, các file `tests/load/` và hai tài liệu trong `docs/` ([feed-capacity-benchmark.md](feed-capacity-benchmark.md) cho cách chạy, file này cho kết quả review).
+
+## 9. Đo lại ngày 2026-11-22 (sau bảng đếm sẵn) và thu nhỏ key
+
+Ma trận rút gọn, profile A, một lần chạy mỗi ô, cache ở Redis riêng 256 MB, jar build từ commit `64c7622`:
+
+| Đăng nhập | Viewer | Feed req/s | p95 page 0 (ms) | PG tx/s | Hikari pending | Lỗi | Bộ nhớ ở TTL 30 phút |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 100% | 500 | 3,3 | 20 | 125 | 0 | 0% | 23% |
+| 100% | 2000 | 13,6 | 15 | 608 | 0 | 0% | 94% |
+| 100% | 5000 | 33,3 | 11 | 1176 | 0 | 0% | 231% |
+| 30% | 500 / 2000 / 5000 | 3,3 / 13,3 / 32,9 | 22 / 20 / 16 | 178 / 158 / 512 | 0 | 0% | 8% / 24% / 69% |
+
+- **Postgres và pool không phải nút thắt** ở tải này: ở 5000 viewer đăng nhập, mỗi request feed mất trung bình 5 ms, Hikari pending luôn 0. Vì vậy O9 (snapshot dùng chung) không giải quyết được giới hạn đo thấy và **không làm**.
+- **Bộ nhớ Redis cache là giới hạn.** Mỗi viewer đăng nhập giữ một key trong 30 phút; ở mức ranking mới mỗi giây của mô hình hành vi giả định, 5000 viewer cần 619 MB. Khi đầy, `allkeys-lru` loại ranking đang dùng giữa phiên và các trang sau tính lại, nên có thể bỏ sót video (H1).
+- **Sửa:** `FeedRef.creatorId` không có chỗ nào đọc lại từ cache (creator của trang lấy từ dòng hydrate), nên bỏ; key lưu mảng id thuần thay vì mảng object. Key profile A: **20.576 → 8.288 byte**. Chạy lại ô 5000 viewer đăng nhập: bộ nhớ ở TTL **231% → 88%** của 256 MB, p95 page 0 và Postgres không đổi. Key cũ (dạng object) không parse được nên đọc là miss và tự tính lại, không cần migrate.
+- **Còn lại:** 88% vẫn trên ngưỡng 70%. Với 256 MB, mô hình này chứa khoảng 4.000 viewer đăng nhập đồng thời ở 70%. Muốn hơn thì tăng `maxmemory` của `redis-cache` hoặc giảm `ranking-session-ttl`; cả hai phụ thuộc mục tiêu tải của dự án, vẫn chưa có.
+- **Giới hạn:** chỉ profile A, một lần mỗi ô, tối đa 5000 viewer, 400 video; client và backend chung một máy; mô hình hành vi (30 video × 10 s) là giả định. Chưa đo profile B, C.

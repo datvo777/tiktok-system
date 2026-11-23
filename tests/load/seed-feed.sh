@@ -30,6 +30,7 @@ BEGIN;
 -- Bench rows are recognisable by a fixed first character of the id; nothing else uses it.
 DELETE FROM social.video_like    WHERE video_id::text LIKE 'bbbbbbbb-%';
 DELETE FROM social.comment       WHERE video_id::text LIKE 'bbbbbbbb-%';
+DELETE FROM social.video_engagement WHERE video_id::text LIKE 'bbbbbbbb-%';
 DELETE FROM eligibility.video_eligibility   WHERE video_id   LIKE 'bbbbbbbb-%';
 DELETE FROM eligibility.account_eligibility WHERE account_id LIKE 'cccccccc-%';
 
@@ -58,6 +59,14 @@ FROM generate_series(1, :videos) v, LATERAL generate_series(1, (200.0 / v)::int 
 INSERT INTO social.comment (comment_id, video_id, account_id, body, created_at)
 SELECT gen_random_uuid(), ('bbbbbbbb-0000-4000-8000-' || lpad(v::text, 12, '0'))::uuid, gen_random_uuid(), 'bench', now()
 FROM generate_series(1, :videos) v, LATERAL generate_series(1, (40.0 / v)::int + (random() * 2)::int) l;
+-- The feed ranks on the maintained totals, not on the rows above; the migration's backfill ran before these
+-- rows existed, so without this every seeded video would score zero engagement and the ranking would be flat.
+INSERT INTO social.video_engagement (video_id, like_count, comment_count)
+SELECT COALESCE(l.video_id, c.video_id), COALESCE(l.n, 0), COALESCE(c.n, 0)
+FROM (SELECT video_id, count(*) AS n FROM social.video_like WHERE video_id::text LIKE 'bbbbbbbb-%' GROUP BY video_id) l
+FULL OUTER JOIN (
+    SELECT video_id, count(*) AS n FROM social.comment WHERE deleted_at IS NULL AND video_id::text LIKE 'bbbbbbbb-%' GROUP BY video_id
+) c ON c.video_id = l.video_id;
 COMMIT;
 SELECT count(*) AS videos,
        round(avg(octet_length(title)))       AS avg_title_bytes,

@@ -18,7 +18,10 @@ import org.springframework.stereotype.Component;
 class FeedCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(FeedCacheService.class);
-    private static final TypeReference<List<FeedRef>> LIST_TYPE = new TypeReference<>() {};
+    // A plain JSON array of ids, not an array of objects: an object per video repeats its field name
+    // 200 times in every key. A key written in the older object format fails to parse, which reads as
+    // a miss and is recomputed, so no migration is needed.
+    private static final TypeReference<List<String>> LIST_TYPE = new TypeReference<>() {};
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
@@ -42,7 +45,7 @@ class FeedCacheService {
     List<FeedRef> getRanking(String viewerId) {
         try {
             String json = redis.opsForValue().get(key(viewerId));
-            return json == null ? null : objectMapper.readValue(json, LIST_TYPE);
+            return json == null ? null : decode(json);
         } catch (Exception e) {
             log.debug("Feed cache read failed; recomputing: {}", e.getMessage());
             return null;
@@ -51,10 +54,18 @@ class FeedCacheService {
 
     void putRanking(String viewerId, List<FeedRef> ranking, Duration ttl) {
         try {
-            redis.opsForValue().set(key(viewerId), objectMapper.writeValueAsString(ranking), ttl);
+            redis.opsForValue().set(key(viewerId), encode(ranking), ttl);
         } catch (Exception e) {
             log.debug("Feed cache write failed; ranking will be recomputed next time: {}", e.getMessage());
         }
+    }
+
+    String encode(List<FeedRef> ranking) throws com.fasterxml.jackson.core.JsonProcessingException {
+        return objectMapper.writeValueAsString(ranking.stream().map(FeedRef::videoId).toList());
+    }
+
+    List<FeedRef> decode(String json) throws com.fasterxml.jackson.core.JsonProcessingException {
+        return objectMapper.readValue(json, LIST_TYPE).stream().map(FeedRef::new).toList();
     }
 
     private String key(String viewerId) {

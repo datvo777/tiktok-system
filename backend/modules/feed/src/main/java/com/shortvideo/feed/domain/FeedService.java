@@ -271,10 +271,12 @@ public class FeedService {
     private static final String ANONYMOUS = "anonymous";
 
     /**
-     * Five queries for a signed-out viewer, seven for a signed-in one, however
+     * Four queries for a signed-out viewer, six for a signed-in one, however
      * large the pool: candidates (joined to creator eligibility), video
-     * revocations, account revocations, two for the counts the score uses (likes
-     * and comments), and for a signed-in viewer their follows and watch history.
+     * revocations, account revocations, one primary-key read of the maintained
+     * like and comment totals the score uses, and for a signed-in viewer their
+     * follows and watch history. The Following scope swaps the candidate query for
+     * the followed creators' videos and reads the follows once instead of twice.
      *
      * @param viewerId null for a signed-out viewer; the follow and watch-history
      *     queries are skipped rather than run against a fabricated id.
@@ -384,7 +386,7 @@ public class FeedService {
      */
     private record Ranked(List<FeedRef> refs, List<FeedItemView> rows) {
         static Ranked computed(List<FeedItemView> rows) {
-            return new Ranked(rows.stream().map(r -> new FeedRef(r.videoId(), r.creatorId())).toList(), rows);
+            return new Ranked(rows.stream().map(r -> new FeedRef(r.videoId())).toList(), rows);
         }
 
         static Ranked cached(List<FeedRef> refs) {
