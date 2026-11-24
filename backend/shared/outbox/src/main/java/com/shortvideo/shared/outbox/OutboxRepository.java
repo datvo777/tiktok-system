@@ -29,6 +29,15 @@ public class OutboxRepository {
      * (see V49). Only then does {@code selected} lock the rows, because FOR UPDATE cannot be applied
      * to a UNION.
      *
+     * <p>{@code selected} looks each of the {@code n} rows up by primary key (LATERAL) instead of
+     * joining {@code top} to the table. The outbox is nearly empty most of the time, so when
+     * PostgreSQL last analysed it almost every row was PUBLISHED and it recorded that nothing else
+     * was there. A burst adds thousands of pending rows before the next analyse, and a plain join
+     * planned from those figures expects about one claimable row: it read every claimable row and
+     * re-ran the choice of {@code top} for each (800,000 comparisons, 139 ms standalone, 0.3 to 1 s
+     * in a pipeline test) until the next automatic analyse, 13 to 58 s later. The lookup cannot be
+     * planned any other way, so the claim costs the same whatever the statistics say.
+     *
      * <p>{@code selected} repeats the state test: a row can be claimed by someone else between
      * the two steps, and re-checking is what stops it being claimed twice. Because the lock is
      * taken after the choice, a claimer that finds some of its rows locked returns fewer than
@@ -58,14 +67,18 @@ public class OutboxRepository {
             ),
             selected AS (
                 SELECT o.event_id
-                FROM platform.outbox_event o
-                JOIN top USING (event_id)
-                WHERE (
-                    o.status IN ('PENDING', 'RETRY')
-                    OR (o.status = 'CLAIMED' AND o.claimed_until < now())
-                )
-                  AND o.available_at <= now()
-                FOR UPDATE OF o SKIP LOCKED
+                FROM top
+                CROSS JOIN LATERAL (
+                    SELECT o.event_id
+                    FROM platform.outbox_event o
+                    WHERE o.event_id = top.event_id
+                      AND (
+                          o.status IN ('PENDING', 'RETRY')
+                          OR (o.status = 'CLAIMED' AND o.claimed_until < now())
+                      )
+                      AND o.available_at <= now()
+                    FOR UPDATE OF o SKIP LOCKED
+                ) o
             )
             UPDATE platform.outbox_event o
             SET status = 'CLAIMED',
@@ -148,6 +161,13 @@ public class OutboxRepository {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public List<OutboxRecord> claimBatch(String relayId, UUID claimToken, int batchSize, long leaseSeconds) {
+        // Plan every claim for the table as it is now. The relay polls every 500 ms whether or not
+        // anything is waiting, so the driver's prepared statement runs many times against an empty
+        // outbox, and the server then reuses a plan made for that: a sequential scan under a nested
+        // loop, cheap on an empty table and 3.2 s once 8,000 rows are pending (1.5 ms when planned
+        // for that table). Planning costs about 0.2 ms, once per poll. LOCAL ends with this
+        // transaction, so nothing else on the connection is affected.
+        jdbc.execute("SET LOCAL plan_cache_mode = force_custom_plan");
         // batchSize bounds each of the three LIMITs in CLAIM.
         return jdbc.query(CLAIM, MAPPER, batchSize, batchSize, batchSize, relayId, claimToken, (double) leaseSeconds);
     }

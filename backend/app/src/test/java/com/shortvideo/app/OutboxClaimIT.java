@@ -19,7 +19,11 @@ import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * What a claim picks, against the real table: the oldest claimable rows first whichever source they
@@ -39,6 +43,15 @@ class OutboxClaimIT extends AbstractDatabaseIT {
 
     @Autowired
     OutboxRepository outbox;
+
+    @Value("${spring.datasource.url}")
+    String url;
+
+    @Value("${spring.datasource.username}")
+    String username;
+
+    @Value("${spring.datasource.password}")
+    String password;
 
     @AfterEach
     void cleanUp() {
@@ -155,6 +168,86 @@ class OutboxClaimIT extends AbstractDatabaseIT {
 
         assertThat(claimed).doesNotHaveDuplicates().hasSize(rows);
         assertThat(new HashSet<>(claimed)).isEqualTo(mine);
+    }
+
+    /**
+     * The relay polls every 500 ms whether or not anything is waiting, so the driver's prepared
+     * claim statement is run many times against an empty outbox, and the server then settles on a
+     * plan it reuses for that connection. That plan (a sequential scan joined with a nested loop)
+     * is cheap on an empty table and ruinous on a large one: measured on PostgreSQL 17.4 it took
+     * 3.2 s once 8,000 rows were pending, where a plan made for that table took 1.5 ms. In a
+     * pipeline test it showed as claims of 130 to 370 ms that held the relay to about 200 rows a
+     * second. A claim has to be planned for the table it finds.
+     *
+     * <p>The setting only lives inside the claim's transaction, so the test runs the claim inside a
+     * transaction of its own and reads it back before rolling everything back.
+     */
+    @Test
+    void aClaimIsPlannedForTheTableItFindsNotFromAPlanCachedWhileTheOutboxWasEmpty() {
+        SingleConnectionDataSource dataSource = new SingleConnectionDataSource(url, username, password, true);
+        try {
+            JdbcTemplate template = new JdbcTemplate(dataSource);
+            OutboxRepository repository = new OutboxRepository(template);
+            TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+
+            String planCacheMode = transaction.execute(status -> {
+                repository.claimBatch("relay-it", UUID.randomUUID(), 1, LEASE_SECONDS);
+                status.setRollbackOnly(); // the claim may have taken someone else's row; keep none of it
+                return template.queryForObject("SHOW plan_cache_mode", String.class);
+            });
+
+            assertThat(planCacheMode).isEqualTo("force_custom_plan");
+        } finally {
+            dataSource.destroy();
+        }
+    }
+
+    /**
+     * The outbox is empty or nearly so most of the time, so when PostgreSQL last analysed it, almost
+     * every row was PUBLISHED and it recorded that nothing else was there. A burst then adds
+     * thousands of pending rows before the next analyse, and a claim planned from those figures
+     * expects about one claimable row. It joined the 100 chosen rows to every claimable row with a
+     * nested loop that re-ran the whole choice for each of them: 800,000 comparisons, 139 ms in a
+     * standalone database and 300 ms to 1 s in a pipeline test, held there for 13 to 58 seconds until
+     * the next automatic analyse. A claim must cost the same whatever the statistics say.
+     */
+    @Test
+    void aClaimStaysFastWhenTheStatisticsSayNothingIsWaiting() {
+        jdbc.update(
+                """
+                INSERT INTO platform.outbox_event (
+                    event_id, aggregate_type, aggregate_id, event_type, schema_version, aggregate_version,
+                    payload, occurred_at, available_at, status, published_at
+                )
+                SELECT gen_random_uuid(), ?, gen_random_uuid()::text, 'claim.it', 1, 1, '{}'::jsonb,
+                       ?::timestamptz + n * interval '1 millisecond', now() - interval '1 hour', 'PUBLISHED', now()
+                FROM generate_series(1, 100000) n
+                """,
+                AGGREGATE_TYPE,
+                Timestamp.from(EPOCH));
+        jdbc.execute("ANALYZE platform.outbox_event");
+        jdbc.update(
+                """
+                INSERT INTO platform.outbox_event (
+                    event_id, aggregate_type, aggregate_id, event_type, schema_version, aggregate_version,
+                    payload, occurred_at, available_at, status
+                )
+                SELECT gen_random_uuid(), ?, gen_random_uuid()::text, 'claim.it', 1, 1, '{}'::jsonb,
+                       ?::timestamptz + n * interval '1 millisecond', now() - interval '1 hour', 'PENDING'
+                FROM generate_series(1, 20000) n
+                """,
+                AGGREGATE_TYPE,
+                Timestamp.from(EPOCH));
+
+        long slowestMs = 0;
+        for (int i = 0; i < 3; i++) {
+            long start = System.nanoTime();
+            List<OutboxRecord> claimed = outbox.claimBatch("relay-it", UUID.randomUUID(), 100, LEASE_SECONDS);
+            slowestMs = Math.max(slowestMs, (System.nanoTime() - start) / 1_000_000);
+            assertThat(claimed).hasSize(100);
+        }
+
+        assertThat(slowestMs).as("slowest of three claims, in ms").isLessThan(100);
     }
 
     private static List<UUID> ids(List<OutboxRecord> records) {
