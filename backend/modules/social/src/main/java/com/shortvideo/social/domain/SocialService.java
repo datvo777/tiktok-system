@@ -34,16 +34,19 @@ public class SocialService implements SocialDirectory {
     private final EligibilityDirectory eligibilityDirectory;
     private final AccountDirectory accountDirectory;
     private final OutboxWriter outboxWriter;
+    private final CommentRateLimiter commentRateLimiter;
 
     public SocialService(
             SocialRepository repository,
             EligibilityDirectory eligibilityDirectory,
             AccountDirectory accountDirectory,
-            OutboxWriter outboxWriter) {
+            OutboxWriter outboxWriter,
+            CommentRateLimiter commentRateLimiter) {
         this.repository = repository;
         this.eligibilityDirectory = eligibilityDirectory;
         this.accountDirectory = accountDirectory;
         this.outboxWriter = outboxWriter;
+        this.commentRateLimiter = commentRateLimiter;
     }
 
     /**
@@ -117,6 +120,8 @@ public class SocialService implements SocialDirectory {
 
     @Transactional
     public CommentView comment(String videoId, String accountId, String body) {
+        // Before any read: a throttled call should cost a counter increment, not a lookup.
+        commentRateLimiter.checkAllowed(accountId);
         String videoOwnerId = requireEligible(videoId).creatorId();
         CommentView comment = repository.addComment(videoId, accountId, body, null, resolveMentions(body));
         appendEngagement(videoId, 0, 1);
@@ -134,6 +139,7 @@ public class SocialService implements SocialDirectory {
      */
     @Transactional
     public CommentView reply(String videoId, String parentCommentId, String accountId, String body) {
+        commentRateLimiter.checkAllowed(accountId);
         String videoOwnerId = requireEligible(videoId).creatorId();
         // One query both validates the parent and yields the person to notify.
         String parentAuthorId = repository

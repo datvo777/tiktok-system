@@ -72,4 +72,14 @@ class GlobalExceptionHandlerTest {
 
         assertThat(problem.getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
     }
+
+    @Test
+    void aCommentThrottleIsAnswered429WithRetryAfter() {
+        var response = new GlobalExceptionHandler()
+                .commentRateLimited(new com.shortvideo.social.domain.SocialExceptions.CommentRateLimited(
+                        java.time.Duration.ofMinutes(10)));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("600");
+    }
 }

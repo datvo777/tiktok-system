@@ -412,6 +412,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Invalid follow", e.getMessage());
     }
 
+    @ExceptionHandler(SocialExceptions.CommentRateLimited.class)
+    public ResponseEntity<ProblemDetail> commentRateLimited(SocialExceptions.CommentRateLimited e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Too many comments",
+                        "You have commented too many times recently. Try again later."));
+    }
+
     @ExceptionHandler(SocialExceptions.CommentNotFound.class)
     public ProblemDetail commentNotFound(SocialExceptions.CommentNotFound e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
