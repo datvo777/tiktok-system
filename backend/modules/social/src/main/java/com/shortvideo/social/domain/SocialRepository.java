@@ -16,11 +16,37 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 @Repository
 class SocialRepository {
+
+    private static final Logger log = LoggerFactory.getLogger(SocialRepository.class);
+
+    /**
+     * The ids of a batch lookup as uuids, leaving out any that are not one.
+     *
+     * <p>The ids a feed ranking asks about come from the eligibility projection, whose id columns
+     * are VARCHAR(36) and so accept any short string. {@code UUID.fromString} on one of them throws,
+     * and because the lookup serves a whole candidate pool, one malformed row in the projection would
+     * fail the ranking for every viewer, signed in or not, until someone found and deleted it. An
+     * id that is not a uuid cannot have a like, a follow or a view here, so leaving it out answers
+     * the question correctly (none, zero) and costs the other 199 videos nothing.
+     */
+    static UUID[] parseUuids(Collection<String> ids) {
+        List<UUID> parsed = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            try {
+                parsed.add(UUID.fromString(id));
+            } catch (IllegalArgumentException e) {
+                log.warn("Ignoring an id that is not a uuid in a batch lookup: {}", id);
+            }
+        }
+        return parsed.toArray(UUID[]::new);
+    }
 
     private static final String LIKE = """
             INSERT INTO social.video_like (video_id, account_id, created_at)
@@ -259,7 +285,7 @@ class SocialRepository {
         if (videoIds.isEmpty()) {
             return Set.of();
         }
-        UUID[] ids = videoIds.stream().map(UUID::fromString).toArray(UUID[]::new);
+        UUID[] ids = parseUuids(videoIds);
         return new HashSet<>(jdbc.queryForList(VIEWED_AMONG, String.class, UUID.fromString(accountId), (Object) ids));
     }
 
@@ -461,7 +487,7 @@ class SocialRepository {
         if (videoIds.isEmpty()) {
             return Map.of();
         }
-        UUID[] ids = videoIds.stream().map(UUID::fromString).toArray(UUID[]::new);
+        UUID[] ids = parseUuids(videoIds);
 
         Map<String, EngagementCounts> counts = new HashMap<>();
         jdbc.query(
@@ -507,7 +533,7 @@ class SocialRepository {
         if (creatorIds.isEmpty()) {
             return Set.of();
         }
-        UUID[] ids = creatorIds.stream().map(UUID::fromString).toArray(UUID[]::new);
+        UUID[] ids = parseUuids(creatorIds);
         return new HashSet<>(
                 jdbc.queryForList(FOLLOWED_AMONG, String.class, UUID.fromString(followerId), ids));
     }
