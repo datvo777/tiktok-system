@@ -82,4 +82,21 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
         assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("600");
     }
+
+    @Test
+    void anUnreachableDatabaseIsRetryableNotAnInternalError() {
+        var handler = new GlobalExceptionHandler();
+        var failures = java.util.List.<Exception>of(
+                new org.springframework.dao.DataAccessResourceFailureException("connection refused"),
+                new org.springframework.jdbc.CannotGetJdbcConnectionException("pool exhausted"),
+                new org.springframework.dao.QueryTimeoutException("statement timeout"),
+                new org.springframework.transaction.CannotCreateTransactionException("no connection"));
+
+        for (Exception failure : failures) {
+            var response = handler.databaseUnavailable(failure);
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("5");
+        }
+    }
 }

@@ -25,7 +25,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -33,6 +35,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authorization.AuthorizationDeniedException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -518,6 +521,31 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 HttpStatus.CONFLICT,
                 "Conflict",
                 "The block on this item was set by a different decision; nothing was changed. Reload it and review its current state");
+    }
+
+    /**
+     * The database could not be reached or did not answer in time: an exhausted pool, a restart, a
+     * failover, a statement timeout. That is a dependency being down, not this service failing, so
+     * the answer is 503 with Retry-After, which a client can act on, instead of the catch-all's 500,
+     * which reads as a bug and which clients do not retry. A warning rather than an error with a
+     * stack trace: during an outage every request lands here and the trace repeats the same cause.
+     *
+     * <p>Deliberately narrow. Constraint violations and other data errors are still ours to fix and
+     * stay 500; an optimistic-lock conflict has its own 409 above.
+     */
+    @ExceptionHandler({
+        DataAccessResourceFailureException.class,
+        QueryTimeoutException.class,
+        CannotCreateTransactionException.class
+    })
+    public ResponseEntity<ProblemDetail> databaseUnavailable(Exception e) {
+        log.warn("Database unavailable: {}", e.toString());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "5")
+                .body(problem(
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Temporarily unavailable",
+                        "The service is temporarily unavailable. Try again shortly."));
     }
 
     @ExceptionHandler(Exception.class)
