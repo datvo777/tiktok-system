@@ -9,6 +9,14 @@ creator mà viewer đang follow.
 > trên máy local, mỗi trường hợp đo **một lần**. Chúng đủ để thấy xu hướng
 > (nhanh gấp trăm lần hay không), chưa đủ để dùng làm con số tuyệt đối.
 
+> **Cập nhật (V52).** Feed không còn sắp theo `updated_at` mà theo `first_eligible_at`
+> (lần đầu video đủ điều kiện, không đổi khi xuất bản lại), với index
+> `video_eligibility_eligible_first_idx`. Phần phân tích bên dưới vẫn đúng với tên cũ:
+> đọc `updated_at` là `first_eligible_at` và `video_eligibility_eligible_updated_idx` là
+> `video_eligibility_eligible_first_idx`. Đo lại trên cùng quy mô (1,5 triệu video, 20.000
+> creator, Postgres 17, một lần): pool toàn cục 0,4 ms bằng index mới; Following với 500
+> creator ngừng đăng từ lâu 19,5 ms qua `video_eligibility_creator_idx` và top-N sort.
+
 ---
 
 ## 1. Câu query

@@ -32,4 +32,43 @@ public record VideoEligibilityView(
         long moderationVersionSource,
         long publicationVersionSource,
         long metadataVersionSource,
-        Instant updatedAt) {}
+        Instant updatedAt,
+        Instant firstEligibleAt) {
+
+    /** For a row that has no first-eligible time to report (never eligible, or built without one). */
+    public VideoEligibilityView(
+            String videoId,
+            String creatorId,
+            String title,
+            String description,
+            String processingState,
+            Integer processingVersion,
+            String durabilityState,
+            String moderationState,
+            String publicationState,
+            boolean publicationIntentRequested,
+            String assetLifecycleState,
+            String legalServingState,
+            boolean isVideoEligible,
+            long processingVersionSource,
+            long moderationVersionSource,
+            long publicationVersionSource,
+            long metadataVersionSource,
+            Instant updatedAt) {
+        this(
+                videoId, creatorId, title, description, processingState, processingVersion, durabilityState,
+                moderationState, publicationState, publicationIntentRequested, assetLifecycleState,
+                legalServingState, isVideoEligible, processingVersionSource, moderationVersionSource,
+                publicationVersionSource, metadataVersionSource, updatedAt, null);
+    }
+
+    /**
+     * How old the video is for ranking: when it first became eligible, not when its row was last
+     * written. {@code updatedAt} moves on every publish toggle, moderation decision and asset
+     * lifecycle change, so ranking on it let any of those make an old video look new. Falls back to
+     * {@code updatedAt} for a row without a first-eligible time.
+     */
+    public Instant rankedSince() {
+        return firstEligibleAt != null ? firstEligibleAt : updatedAt;
+    }
+}

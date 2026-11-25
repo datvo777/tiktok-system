@@ -116,25 +116,43 @@ class EligibilityRepository {
             WHERE eligibility.video_eligibility.publication_version_source < EXCLUDED.publication_version_source
             """;
 
+    /**
+     * Decides {@code is_video_eligible} and, in the same statement, stamps {@code first_eligible_at}
+     * the first time the answer is yes. Once set it is never changed: a later unpublish and publish,
+     * or a reinstatement, finds it set and leaves it, which is the point of the column.
+     *
+     * <p>One statement, so the flag and the stamp cannot disagree if the caller is not inside a
+     * transaction. The subquery is what lets the stamp see the new flag; a {@code SET} expression
+     * sees only the row as it was.
+     */
     private static final String RECOMPUTE_ELIGIBILITY = """
-            UPDATE eligibility.video_eligibility
-            SET is_video_eligible = (
-                processing_state = 'READY'
-                AND durability_state = 'DURABLE'
-                AND asset_lifecycle_state = 'ACTIVE'
-                AND legal_serving_state = 'CLEAR'
-                AND moderation_state IN ('APPROVED', 'REINSTATED')
-                AND publication_state = 'PUBLISHED'
-                AND publication_intent_requested = true
-            )
-            WHERE video_id = ?
+            UPDATE eligibility.video_eligibility v
+            SET is_video_eligible = c.eligible,
+                first_eligible_at = CASE
+                    WHEN c.eligible THEN COALESCE(v.first_eligible_at, ?)
+                    ELSE v.first_eligible_at
+                END
+            FROM (
+                SELECT (
+                    processing_state = 'READY'
+                    AND durability_state = 'DURABLE'
+                    AND asset_lifecycle_state = 'ACTIVE'
+                    AND legal_serving_state = 'CLEAR'
+                    AND moderation_state IN ('APPROVED', 'REINSTATED')
+                    AND publication_state = 'PUBLISHED'
+                    AND publication_intent_requested = true
+                ) AS eligible
+                FROM eligibility.video_eligibility
+                WHERE video_id = ?
+            ) c
+            WHERE v.video_id = ?
             """;
 
     private static final String FIND_VIDEO = """
             SELECT video_id, creator_id, title, description, processing_state, processing_version, durability_state,
                    moderation_state, publication_state, publication_intent_requested, asset_lifecycle_state,
                    legal_serving_state, is_video_eligible, processing_version_source,
-                   moderation_version_source, publication_version_source, metadata_version_source, updated_at
+                   moderation_version_source, publication_version_source, metadata_version_source, updated_at, first_eligible_at
             FROM eligibility.video_eligibility WHERE video_id = ?
             """;
 
@@ -147,7 +165,7 @@ class EligibilityRepository {
             SELECT video_id, creator_id, title, description, processing_state, processing_version, durability_state,
                    moderation_state, publication_state, publication_intent_requested, asset_lifecycle_state,
                    legal_serving_state, is_video_eligible, processing_version_source,
-                   moderation_version_source, publication_version_source, metadata_version_source, updated_at
+                   moderation_version_source, publication_version_source, metadata_version_source, updated_at, first_eligible_at
             FROM eligibility.video_eligibility WHERE video_id = ANY(?)
             """;
 
@@ -175,7 +193,7 @@ class EligibilityRepository {
             SELECT video_id, creator_id, title, description, processing_state, processing_version, durability_state,
                    moderation_state, publication_state, publication_intent_requested, asset_lifecycle_state,
                    legal_serving_state, is_video_eligible, processing_version_source,
-                   moderation_version_source, publication_version_source, metadata_version_source, updated_at
+                   moderation_version_source, publication_version_source, metadata_version_source, updated_at, first_eligible_at
             FROM eligibility.video_eligibility
             WHERE is_video_eligible = true
             ORDER BY updated_at DESC
@@ -192,12 +210,12 @@ class EligibilityRepository {
             SELECT v.video_id, v.creator_id, v.title, v.description, v.processing_state, v.processing_version, v.durability_state,
                    v.moderation_state, v.publication_state, v.publication_intent_requested, v.asset_lifecycle_state,
                    v.legal_serving_state, v.is_video_eligible, v.processing_version_source,
-                   v.moderation_version_source, v.publication_version_source, v.metadata_version_source, v.updated_at
+                   v.moderation_version_source, v.publication_version_source, v.metadata_version_source, v.updated_at, v.first_eligible_at
             FROM eligibility.video_eligibility v
             JOIN eligibility.account_eligibility a ON a.account_id = v.creator_id
             WHERE v.is_video_eligible = true
               AND a.is_account_eligible = true
-            ORDER BY v.updated_at DESC
+            ORDER BY v.first_eligible_at DESC NULLS LAST
             LIMIT ?
             """;
 
@@ -205,10 +223,10 @@ class EligibilityRepository {
      * As {@link #FIND_ELIGIBLE_WITH_ELIGIBLE_CREATOR}, restricted to the given
      * creators. Served by {@code video_eligibility_creator_idx}.
      *
-     * <p>{@code ORDER BY v.updated_at + interval '0'} is deliberate; do not
-     * "simplify" it to {@code ORDER BY v.updated_at}. With the plain column the
+     * <p>{@code ORDER BY v.first_eligible_at + interval '0'} is deliberate; do not
+     * "simplify" it to {@code ORDER BY v.first_eligible_at}. With the plain column the
      * planner assumes the followed creators' videos are spread evenly through time
-     * and walks {@code video_eligibility_eligible_updated_idx} newest-first,
+     * and walks {@code video_eligibility_eligible_first_idx} newest-first,
      * filtering by creator. For creators who have not posted in a while that
      * discards over a million rows (about 1.3 s measured on 1.5M videos). The
      * expression is not the indexed column, so that scan can no longer supply the
@@ -220,13 +238,13 @@ class EligibilityRepository {
             SELECT v.video_id, v.creator_id, v.title, v.description, v.processing_state, v.processing_version, v.durability_state,
                    v.moderation_state, v.publication_state, v.publication_intent_requested, v.asset_lifecycle_state,
                    v.legal_serving_state, v.is_video_eligible, v.processing_version_source,
-                   v.moderation_version_source, v.publication_version_source, v.metadata_version_source, v.updated_at
+                   v.moderation_version_source, v.publication_version_source, v.metadata_version_source, v.updated_at, v.first_eligible_at
             FROM eligibility.video_eligibility v
             JOIN eligibility.account_eligibility a ON a.account_id = v.creator_id
             WHERE v.creator_id = ANY(?)
               AND v.is_video_eligible = true
               AND a.is_account_eligible = true
-            ORDER BY v.updated_at + interval '0' DESC
+            ORDER BY v.first_eligible_at + interval '0' DESC NULLS LAST
             LIMIT ?
             """;
 
@@ -292,7 +310,7 @@ class EligibilityRepository {
     }
 
     void recomputeEligibility(String videoId) {
-        jdbc.update(RECOMPUTE_ELIGIBILITY, videoId);
+        jdbc.update(RECOMPUTE_ELIGIBILITY, Timestamp.from(java.time.Instant.now()), videoId, videoId);
     }
 
     void upsertAccount(AccountEligibilityView view) {
@@ -344,6 +362,7 @@ class EligibilityRepository {
     }
 
     private static VideoEligibilityView mapVideo(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        Timestamp firstEligibleAt = rs.getTimestamp("first_eligible_at");
         return new VideoEligibilityView(
                 rs.getString("video_id"),
                 rs.getString("creator_id"),
@@ -362,7 +381,8 @@ class EligibilityRepository {
                 rs.getLong("moderation_version_source"),
                 rs.getLong("publication_version_source"),
                 rs.getLong("metadata_version_source"),
-                rs.getTimestamp("updated_at").toInstant());
+                rs.getTimestamp("updated_at").toInstant(),
+                firstEligibleAt == null ? null : firstEligibleAt.toInstant());
     }
 
     private static AccountEligibilityView mapAccount(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
