@@ -35,18 +35,21 @@ public class SocialService implements SocialDirectory {
     private final AccountDirectory accountDirectory;
     private final OutboxWriter outboxWriter;
     private final CommentRateLimiter commentRateLimiter;
+    private final SocialWriteRateLimiter writeRateLimiter;
 
     public SocialService(
             SocialRepository repository,
             EligibilityDirectory eligibilityDirectory,
             AccountDirectory accountDirectory,
             OutboxWriter outboxWriter,
-            CommentRateLimiter commentRateLimiter) {
+            CommentRateLimiter commentRateLimiter,
+            SocialWriteRateLimiter writeRateLimiter) {
         this.repository = repository;
         this.eligibilityDirectory = eligibilityDirectory;
         this.accountDirectory = accountDirectory;
         this.outboxWriter = outboxWriter;
         this.commentRateLimiter = commentRateLimiter;
+        this.writeRateLimiter = writeRateLimiter;
     }
 
     /**
@@ -56,6 +59,7 @@ public class SocialService implements SocialDirectory {
      */
     @Transactional
     public void like(String videoId, String accountId) {
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.LIKE, accountId);
         String videoOwnerId = requireEligible(videoId).creatorId();
         boolean newlyLiked = repository.like(videoId, accountId);
         if (newlyLiked) {
@@ -91,6 +95,7 @@ public class SocialService implements SocialDirectory {
      */
     @Transactional
     public void recordView(String videoId, String accountId, long watchedMs, boolean completed) {
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.VIEW, accountId);
         requireEligible(videoId);
         repository.recordView(videoId, accountId, watchedMs, completed);
     }
@@ -103,6 +108,7 @@ public class SocialService implements SocialDirectory {
 
     @Transactional
     public void share(String videoId, String accountId) {
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.SHARE, accountId);
         requireEligible(videoId);
         repository.share(videoId, accountId);
     }
@@ -297,6 +303,7 @@ public class SocialService implements SocialDirectory {
         if (followerId.equals(followeeId)) {
             throw new SocialExceptions.CannotFollowSelf("Cannot follow your own account");
         }
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.FOLLOW, followerId);
         accountDirectory
                 .find(followeeId)
                 .filter(AccountView::isEligible)

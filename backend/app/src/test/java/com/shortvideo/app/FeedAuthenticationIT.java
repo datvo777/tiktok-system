@@ -175,6 +175,21 @@ class FeedAuthenticationIT extends AbstractAuthRedisIT {
         assertThat(second).isLessThan(first);
     }
 
+    // ------------------------------------------------------------------ social write limit, over HTTP
+
+    @Test
+    void followingInALoopIsAnswered429WithRetryAfterWhileUnfollowingStillWorks() {
+        Session viewer = registerAndLogin();
+        String follow = "/api/v1/creators/" + registerAndLogin().accountId() + "/follow";
+        redis.opsForValue().set("social:follow:account:" + viewer.accountId(), "100", java.time.Duration.ofMinutes(10));
+
+        var refused = exchange(HttpMethod.POST, follow, viewer.token());
+
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(refused.getHeaders().getFirst(org.springframework.http.HttpHeaders.RETRY_AFTER)).isEqualTo("600");
+        assertThat(status(HttpMethod.DELETE, follow, viewer.token())).isEqualTo(HttpStatus.NO_CONTENT);
+    }
+
     private static long invocations(Object spy, String method) {
         return mockingDetails(spy).getInvocations().stream()
                 .filter(i -> i.getMethod().getName().equals(method))

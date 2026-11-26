@@ -42,6 +42,18 @@ public final class SocialExceptions {
     }
 
     /** Too many comments or replies from one account in the window; answered 429 with Retry-After. */
+    /** A like, follow, share or view past the per-account limit. */
+    public static class WriteRateLimited extends RuntimeException {
+        private final java.time.Duration retryAfter;
+
+        public WriteRateLimited(java.time.Duration retryAfter) {
+            super("Too many requests");
+            this.retryAfter = retryAfter;
+        }
+
+        public java.time.Duration retryAfter() { return retryAfter; }
+    }
+
     public static class CommentRateLimited extends RuntimeException {
         private final java.time.Duration retryAfter;
 

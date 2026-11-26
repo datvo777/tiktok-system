@@ -43,7 +43,7 @@ class SocialServiceTest {
     @Test
     void profileForSuspendedAndUnknownAccountProduceTheIdenticalNotFoundResponse() {
         AccountDirectory accountDirectory = mock(AccountDirectory.class);
-        SocialService service = new SocialService(null, null, accountDirectory, null, null);
+        SocialService service = new SocialService(null, null, accountDirectory, null, null, mock(SocialWriteRateLimiter.class));
 
         String suspendedId = UUID.randomUUID().toString();
         when(accountDirectory.find(suspendedId)).thenReturn(Optional.of(suspendedAccount(suspendedId)));
@@ -62,7 +62,7 @@ class SocialServiceTest {
     @Test
     void followOfSuspendedAndUnknownAccountProduceTheIdenticalNotFoundResponse() {
         AccountDirectory accountDirectory = mock(AccountDirectory.class);
-        SocialService service = new SocialService(null, null, accountDirectory, null, null);
+        SocialService service = new SocialService(null, null, accountDirectory, null, null, mock(SocialWriteRateLimiter.class));
         String followerId = UUID.randomUUID().toString();
 
         String suspendedId = UUID.randomUUID().toString();
@@ -96,7 +96,7 @@ class SocialServiceTest {
         EligibilityDirectory eligibilityDirectory = mock(EligibilityDirectory.class);
         AccountDirectory accountDirectory = mock(AccountDirectory.class);
         OutboxWriter outboxWriter = mock(OutboxWriter.class);
-        SocialService service = new SocialService(repository, eligibilityDirectory, accountDirectory, outboxWriter, mock(CommentRateLimiter.class));
+        SocialService service = new SocialService(repository, eligibilityDirectory, accountDirectory, outboxWriter, mock(CommentRateLimiter.class), mock(SocialWriteRateLimiter.class));
 
         String videoId = UUID.randomUUID().toString();
         String creatorId = UUID.randomUUID().toString();
@@ -131,7 +131,7 @@ class SocialServiceTest {
         EligibilityDirectory eligibilityDirectory = mock(EligibilityDirectory.class);
         AccountDirectory accountDirectory = mock(AccountDirectory.class);
         OutboxWriter outboxWriter = mock(OutboxWriter.class);
-        SocialService service = new SocialService(repository, eligibilityDirectory, accountDirectory, outboxWriter, mock(CommentRateLimiter.class));
+        SocialService service = new SocialService(repository, eligibilityDirectory, accountDirectory, outboxWriter, mock(CommentRateLimiter.class), mock(SocialWriteRateLimiter.class));
 
         String videoId = UUID.randomUUID().toString();
         String creatorId = UUID.randomUUID().toString();
@@ -161,7 +161,7 @@ class SocialServiceTest {
     private final SocialRepository repository = mock(SocialRepository.class);
     private final EligibilityDirectory eligibility = mock(EligibilityDirectory.class);
     private final OutboxWriter outbox = mock(OutboxWriter.class);
-    private final SocialService service = new SocialService(repository, eligibility, mock(AccountDirectory.class), outbox, mock(CommentRateLimiter.class));
+    private final SocialService service = new SocialService(repository, eligibility, mock(AccountDirectory.class), outbox, mock(CommentRateLimiter.class), mock(SocialWriteRateLimiter.class));
     private final String videoId = UUID.randomUUID().toString();
     private final String ownerId = UUID.randomUUID().toString();
     private final String viewerId = UUID.randomUUID().toString();

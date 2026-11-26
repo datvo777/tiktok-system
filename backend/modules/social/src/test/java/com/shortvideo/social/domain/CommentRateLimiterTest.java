@@ -58,7 +58,9 @@ class CommentRateLimiterTest {
         var eligibility = mock(EligibilityDirectory.class);
         var outbox = mock(OutboxWriter.class);
         var rateLimiter = mock(CommentRateLimiter.class);
-        var service = new SocialService(repository, eligibility, mock(AccountDirectory.class), outbox, rateLimiter);
+        var service = new SocialService(
+                repository, eligibility, mock(AccountDirectory.class), outbox, rateLimiter,
+                mock(SocialWriteRateLimiter.class));
         String account = UUID.randomUUID().toString();
         doThrow(new SocialExceptions.CommentRateLimited(WINDOW)).when(rateLimiter).checkAllowed(account);
 

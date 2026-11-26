@@ -425,6 +425,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                         "You have commented too many times recently. Try again later."));
     }
 
+    @ExceptionHandler(SocialExceptions.WriteRateLimited.class)
+    public ResponseEntity<ProblemDetail> socialWriteRateLimited(SocialExceptions.WriteRateLimited e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfter().toSeconds()))
+                .body(problem(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Too many requests",
+                        "You have done that too many times recently. Try again later."));
+    }
+
     @ExceptionHandler(SocialExceptions.CommentNotFound.class)
     public ProblemDetail commentNotFound(SocialExceptions.CommentNotFound e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage());
