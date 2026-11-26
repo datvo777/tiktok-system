@@ -175,6 +175,33 @@ class FeedAuthenticationIT extends AbstractAuthRedisIT {
         assertThat(second).isLessThan(first);
     }
 
+    // ------------------------------------------------------------------ a cached value that cannot be read
+
+    @Test
+    void aCorruptCachedRankingIsRecomputedAndOverwritten() {
+        redis.opsForValue().set("feed:ranking:anonymous", "{not json", java.time.Duration.ofSeconds(30));
+
+        assertThat(status(HttpMethod.GET, "/api/v1/feed", null)).isEqualTo(HttpStatus.OK);
+
+        assertThat(redis.opsForValue().get("feed:ranking:anonymous")).startsWith("[").endsWith("]");
+    }
+
+    // ------------------------------------------------------------------ response caching
+
+    /**
+     * The feed sets no cache headers of its own and relies on Spring Security's defaults. A signed-in
+     * viewer's page is theirs alone, so a shared cache in front of the application must never keep it.
+     */
+    @Test
+    void neitherASignedInNorASignedOutFeedPageMayBeStoredByACache() {
+        Session viewer = registerAndLogin();
+
+        assertThat(exchange(HttpMethod.GET, "/api/v1/feed", viewer.token()).getHeaders().getCacheControl())
+                .contains("no-store");
+        assertThat(exchange(HttpMethod.GET, "/api/v1/feed", null).getHeaders().getCacheControl())
+                .contains("no-store");
+    }
+
     // ------------------------------------------------------------------ social write limit, over HTTP
 
     @Test
