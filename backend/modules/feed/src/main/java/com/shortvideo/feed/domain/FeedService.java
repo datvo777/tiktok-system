@@ -7,9 +7,12 @@ import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.social.api.EngagementCounts;
 import com.shortvideo.social.api.SocialDirectory;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
@@ -63,6 +66,7 @@ public class FeedService {
     private final FeedScorer scorer;
     private final FeedCacheService cache;
     private final FeedProperties properties;
+    private final MeterRegistry meters;
     private final ConcurrentMap<String, CompletableFuture<Ranked>> inFlight = new ConcurrentHashMap<>();
 
     public FeedService(
@@ -71,13 +75,15 @@ public class FeedService {
             DurableRevocationReader revocationReader,
             FeedScorer scorer,
             FeedCacheService cache,
-            FeedProperties properties) {
+            FeedProperties properties,
+            MeterRegistry meters) {
         this.eligibilityDirectory = eligibilityDirectory;
         this.socialDirectory = socialDirectory;
         this.revocationReader = revocationReader;
         this.scorer = scorer;
         this.cache = cache;
         this.properties = properties;
+        this.meters = meters;
     }
 
     public FeedPage feed(String viewerId, int page) {
@@ -139,13 +145,26 @@ public class FeedService {
     }
 
     private Ranked rankAndCache(String viewerId, String identity, Scope scope, String cacheKey) {
-        List<FeedItemView> rows = rank(viewerId, identity, scope);
+        List<FeedItemView> rows =
+                rankingTimer(viewerId, scope).record(() -> rank(viewerId, identity, scope));
         Ranked ranking = Ranked.computed(rows);
         cache.putRanking(
                 cacheKey,
                 ranking.refs(),
                 viewerId != null ? properties.getRankingSessionTtl() : properties.getCacheTtl());
         return ranking;
+    }
+
+    /**
+     * How long computing one ranking takes, not counting the cache write; its count is how many
+     * rankings were computed. Both tags have two values, so this is four series.
+     */
+    private Timer rankingTimer(String viewerId, Scope scope) {
+        return Timer.builder("feed.ranking.build")
+                .description("Time to compute one feed ranking")
+                .tag("scope", scope.name().toLowerCase(Locale.ROOT))
+                .tag("viewer", viewerId == null ? "anonymous" : "signed_in")
+                .register(meters);
     }
 
     /**

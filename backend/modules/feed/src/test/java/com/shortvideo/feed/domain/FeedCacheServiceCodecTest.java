@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.IntStream;
@@ -18,7 +19,8 @@ import org.junit.jupiter.api.Test;
  */
 class FeedCacheServiceCodecTest {
 
-    private final FeedCacheService cache = new FeedCacheService(mock(FeedCacheRedis.class), new ObjectMapper());
+    private final FeedCacheService cache = new FeedCacheService(
+            mock(FeedCacheRedis.class), new ObjectMapper(), new SimpleMeterRegistry());
 
     @Test
     void aRankingRoundTripsInOrder() throws Exception {

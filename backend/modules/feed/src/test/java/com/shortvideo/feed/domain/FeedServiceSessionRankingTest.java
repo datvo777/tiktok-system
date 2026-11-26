@@ -13,6 +13,7 @@ import com.shortvideo.eligibility.api.VideoEligibilityView;
 import com.shortvideo.shared.revocation.DurableRevocationReader;
 import com.shortvideo.shared.revocation.RevocationSubjects;
 import com.shortvideo.social.api.SocialDirectory;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -43,6 +44,7 @@ class FeedServiceSessionRankingTest {
     private final Set<String> viewed = new HashSet<>();
     private final Set<String> revokedVideos = new HashSet<>();
     private final FeedProperties properties = new FeedProperties();
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private final ClockedCache cache = new ClockedCache();
     private final List<VideoEligibilityView> candidates = new ArrayList<>();
     private FeedService service;
@@ -75,7 +77,8 @@ class FeedServiceSessionRankingTest {
         when(revocations.activeAmong(eq(RevocationSubjects.VIDEO), anyCollection()))
                 .thenAnswer(inv -> revokedVideos);
 
-        service = new FeedService(eligibility, social, revocations, new FeedScorer(properties), cache, properties);
+        service = new FeedService(
+                eligibility, social, revocations, new FeedScorer(properties), cache, properties, meters);
     }
 
     @Test
@@ -193,6 +196,24 @@ class FeedServiceSessionRankingTest {
         return order;
     }
 
+    @Test
+    void onlyAComputedRankingIsTimedNotAPageCutFromTheCache() {
+        service.feed(VIEWER, 0);
+        service.feed(VIEWER, 1);
+        service.feed(null, 0);
+        service.feed(null, 0);
+
+        assertThat(rankingsTimed("signed_in")).isEqualTo(1);
+        assertThat(rankingsTimed("anonymous")).isEqualTo(1);
+    }
+
+    private long rankingsTimed(String viewer) {
+        return meters.get("feed.ranking.build")
+                .tags("scope", "for_you", "viewer", viewer)
+                .timer()
+                .count();
+    }
+
     private static List<String> ids(FeedService.FeedPage page) {
         return page.items().stream().map(FeedItemView::videoId).toList();
     }
@@ -213,7 +234,7 @@ class FeedServiceSessionRankingTest {
         ClockedCache() {
             // The constructor reads the template off its Redis holder, so the holder cannot be null;
             // this subclass overrides every method that would use the template.
-            super(mock(FeedCacheRedis.class), null);
+            super(mock(FeedCacheRedis.class), null, new SimpleMeterRegistry());
         }
 
         void advance(Duration by) {

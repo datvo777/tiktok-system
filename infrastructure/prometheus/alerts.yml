@@ -41,6 +41,23 @@ groups:
             (outbox.events.failed, relay logs). If the relay is healthy but slow, the claim query is the
             next suspect: EXPLAIN it against platform.outbox_event (outbox_event_ready_idx).
 
+      - alert: FeedCacheFailing
+        # The feed swallows cache errors and ranks from PostgreSQL, so a broken cache Redis does not
+        # fail any request: it only multiplies the database's feed load until the pool gives out.
+        expr: >-
+          sum(increase(feed_cache_reads_total{result="error"}[5m]))
+          + sum(increase(feed_cache_write_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The feed cache is failing
+          description: >-
+            Rankings cannot be read from or written to the cache, so requests that would have been served
+            from it are ranked from PostgreSQL. Check the cache Redis (shortvideo.feed.cache-redis-host,
+            or the application's Redis when unset) and the "Feed cache" warnings in the backend log.
+            Watch feed_ranking_build_seconds_count and the Hikari pool.
+
       - alert: UploadCleanupFailing
         # Failed with nothing reaped in the same window: stuck, not just one bad session.
         expr: increase(upload_cleanup_failed_total[30m]) > 0 and increase(upload_cleanup_reaped_total[30m]) == 0
