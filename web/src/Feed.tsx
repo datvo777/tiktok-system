@@ -146,6 +146,10 @@ export function Feed() {
     queryFn: ({ pageParam }: { pageParam: number }) => getFeed(pageParam, scope),
     initialPageParam: 0,
     getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.page + 1 : undefined),
+    // Either would refetch every page already scrolled through, and swap the list
+    // under the viewer for no action of theirs.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   // Switching tabs starts a different list; staying on slide 12 of the old one
