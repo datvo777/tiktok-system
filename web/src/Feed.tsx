@@ -51,6 +51,7 @@ import {
 import { Avatar, formatCount, formatHandle, relativeTime, splitMentions } from './ui';
 import { creatorPath, navigate, shareUrl } from './router';
 import { useRequireAccount, useViewer } from './viewer';
+import { dedupeByVideoId } from './feedState';
 import { attachHls, detachHls } from './Upload';
 
 /** Where the viewer's sound preference survives a reload. */
@@ -159,7 +160,7 @@ export function Feed() {
     if (containerRef.current) containerRef.current.scrollTop = 0;
   }, [scope]);
 
-  const items: FeedItem[] = feed.data?.pages.flatMap((p) => p.items) ?? [];
+  const items: FeedItem[] = dedupeByVideoId(feed.data?.pages.flatMap((p) => p.items) ?? []);
 
   // One video fills the viewport and scroll-snaps to the next, so "which
   // slide is active" is just which one is currently aligned to the top of
