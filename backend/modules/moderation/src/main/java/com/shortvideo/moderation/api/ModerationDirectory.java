@@ -1,5 +1,6 @@
 package com.shortvideo.moderation.api;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -10,4 +11,10 @@ import java.util.Optional;
 public interface ModerationDirectory {
 
     Optional<ModerationDecisionView> findDecision(String videoId);
+
+    /**
+     * Video ids of records that are PENDING but not in the review queue, in id order, strictly after
+     * {@code afterVideoId} ({@code null} starts from the beginning).
+     */
+    List<String> findHeldPage(String afterVideoId, int limit);
 }

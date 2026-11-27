@@ -14,5 +14,13 @@ public final class VideoExceptions {
         public VideoNotReady(String message) { super(message); }
     }
 
+    /**
+     * The object store could not be asked (unreachable, timed out, refused), as opposed to
+     * answering that an object is not there. Whatever was being decided has not been decided.
+     */
+    public static class AssetStoreUnavailable extends RuntimeException {
+        public AssetStoreUnavailable(String message, Throwable cause) { super(message, cause); }
+    }
+
     private VideoExceptions() {}
 }

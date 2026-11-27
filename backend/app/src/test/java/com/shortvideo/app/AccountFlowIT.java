@@ -7,7 +7,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
@@ -17,12 +16,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Milestone 1 acceptance, end to end against a real PostgreSQL.
@@ -32,26 +27,13 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * cannot send headers. A test that passed a header here would "prove" a path the
  * browser can never exercise.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@ActiveProfiles("test")
-@Testcontainers
-class AccountFlowIT {
-
-    @Container
-    @SuppressWarnings("resource")
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17.4-alpine")
-            .withDatabaseName("short_video")
-            .withUsername("short_video_app")
-            .withPassword("short_video_app");
+class AccountFlowIT extends AbstractDatabaseIT {
 
     @DynamicPropertySource
     static void datasource(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        // Not reachable in this test; nothing here publishes, and the relay is off
-        // under the "test" profile.
-        registry.add("spring.kafka.bootstrap-servers", () -> "localhost:1");
+        // These tests log in repeatedly from one address; throttling is exercised
+        // deliberately in SessionLifecycleIT instead.
+        registry.add("shortvideo.login-rate-limit.enabled", () -> "false");
     }
 
     @Autowired

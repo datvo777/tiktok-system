@@ -6,5 +6,9 @@ public final class ModerationExceptions {
         public ModerationRecordNotFound(String message) { super(message); }
     }
 
+    public static class InvalidCursor extends RuntimeException {
+        public InvalidCursor(String message) { super(message); }
+    }
+
     private ModerationExceptions() {}
 }

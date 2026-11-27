@@ -8,10 +8,17 @@ import com.shortvideo.shared.events.AggregateTypes;
 import com.shortvideo.shared.events.EventEnvelope;
 import com.shortvideo.shared.events.EventTypes;
 import com.shortvideo.shared.outbox.OutboxWriter;
+import com.shortvideo.social.api.EngagementCounts;
 import com.shortvideo.social.api.SocialCounts;
 import com.shortvideo.social.api.SocialDirectory;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SocialService implements SocialDirectory {
 
+    private static final Logger log = LoggerFactory.getLogger(SocialService.class);
     private static final String PRODUCER = "short-video-backend";
     private static final String MODULE = "social";
 
@@ -26,37 +34,268 @@ public class SocialService implements SocialDirectory {
     private final EligibilityDirectory eligibilityDirectory;
     private final AccountDirectory accountDirectory;
     private final OutboxWriter outboxWriter;
+    private final CommentRateLimiter commentRateLimiter;
+    private final SocialWriteRateLimiter writeRateLimiter;
 
     public SocialService(
             SocialRepository repository,
             EligibilityDirectory eligibilityDirectory,
             AccountDirectory accountDirectory,
-            OutboxWriter outboxWriter) {
+            OutboxWriter outboxWriter,
+            CommentRateLimiter commentRateLimiter,
+            SocialWriteRateLimiter writeRateLimiter) {
         this.repository = repository;
         this.eligibilityDirectory = eligibilityDirectory;
         this.accountDirectory = accountDirectory;
         this.outboxWriter = outboxWriter;
+        this.commentRateLimiter = commentRateLimiter;
+        this.writeRateLimiter = writeRateLimiter;
     }
 
+    /**
+     * Idempotent. The event is emitted only when a row was actually inserted, so
+     * a client that re-sends a like — a retry, a double tap — does not produce a
+     * second notification for the creator.
+     */
     @Transactional
     public void like(String videoId, String accountId) {
-        requireEligible(videoId);
-        repository.like(videoId, accountId);
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.LIKE, accountId);
+        String videoOwnerId = requireEligible(videoId).creatorId();
+        boolean newlyLiked = repository.like(videoId, accountId);
+        if (newlyLiked) {
+            // The count changes whoever liked it; only the notification skips the owner.
+            appendEngagement(videoId, 1, 0);
+        }
+        // Liking your own video is not news to you.
+        if (newlyLiked && !accountId.equals(videoOwnerId)) {
+            append(EventTypes.SOCIAL_VIDEO_LIKED, new SocialEvents.VideoLiked(videoId, accountId, videoOwnerId));
+        }
     }
 
     @Transactional
     public void unlike(String videoId, String accountId) {
-        repository.unlike(videoId, accountId);
+        // Only when a like was actually removed, so a repeated unlike cannot drive the count down.
+        if (repository.unlike(videoId, accountId)) {
+            appendEngagement(videoId, -1, 0);
+        }
+    }
+
+    /**
+     * Records that this viewer watched the video.
+     *
+     * <p>Called once the viewer has actually watched enough for it to count --
+     * the client decides the threshold, this records the fact. Idempotent per
+     * viewer in the sense that matters: a rewatch bumps their existing row rather
+     * than inflating the public view count, which is distinct viewers.
+     *
+     * <p>Deliberately emits no event. A view is the highest-volume fact on the
+     * platform by a wide margin, and putting one outbox row and one Kafka message
+     * behind every play would swamp the relay for a signal nothing reacts to
+     * synchronously.
+     */
+    @Transactional
+    public void recordView(String videoId, String accountId, long watchedMs, boolean completed) {
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.VIEW, accountId);
+        requireEligible(videoId);
+        repository.recordView(videoId, accountId, watchedMs, completed);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> viewedAmong(String viewerId, Collection<String> videoIds) {
+        return repository.viewedAmong(viewerId, videoIds);
+    }
+
+    @Transactional
+    public void share(String videoId, String accountId) {
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.SHARE, accountId);
+        requireEligible(videoId);
+        repository.share(videoId, accountId);
+    }
+
+    /**
+     * @param accountId null for a signed-out viewer. The totals are public; only
+     *     {@code liked} is viewer-relative, and with no viewer it is false.
+     */
+    @Transactional(readOnly = true)
+    public VideoCountsView videoCounts(String videoId, String accountId) {
+        requireEligible(videoId);
+        SocialCounts counts = repository.countsFor(videoId);
+        return new VideoCountsView(counts, accountId != null && repository.isLiked(videoId, accountId));
     }
 
     @Transactional
     public CommentView comment(String videoId, String accountId, String body) {
+        // Before any read: a throttled call should cost a counter increment, not a lookup.
+        commentRateLimiter.checkAllowed(accountId);
         String videoOwnerId = requireEligible(videoId).creatorId();
-        CommentView comment = repository.addComment(videoId, accountId, body);
+        CommentView comment = repository.addComment(videoId, accountId, body, null, resolveMentions(body));
+        appendEngagement(videoId, 0, 1);
         append(
                 EventTypes.SOCIAL_VIDEO_COMMENTED,
                 new SocialEvents.VideoCommented(videoId, accountId, videoOwnerId, comment.commentId()));
         return comment;
+    }
+
+    /**
+     * A reply is addressed to the author of the comment it answers, which is why
+     * this emits {@code SOCIAL_COMMENT_REPLIED} rather than reusing the top-level
+     * comment event: that event names the video owner as recipient, so replies
+     * used to notify the wrong person and leave the right one in silence.
+     */
+    @Transactional
+    public CommentView reply(String videoId, String parentCommentId, String accountId, String body) {
+        commentRateLimiter.checkAllowed(accountId);
+        String videoOwnerId = requireEligible(videoId).creatorId();
+        // One query both validates the parent and yields the person to notify.
+        String parentAuthorId = repository
+                .topLevelCommentAuthor(parentCommentId, videoId)
+                .orElseThrow(() -> new SocialExceptions.CommentNotFound("No such comment on this video"));
+
+        CommentView reply =
+                repository.addComment(videoId, accountId, body, parentCommentId, resolveMentions(body));
+        appendEngagement(videoId, 0, 1);
+        append(
+                EventTypes.SOCIAL_COMMENT_REPLIED,
+                new SocialEvents.CommentReplied(
+                        videoId, accountId, parentAuthorId, videoOwnerId, parentCommentId, reply.commentId()));
+        return reply;
+    }
+
+    /**
+     * Resolved at write time, not read time: a handle is not reserved once its
+     * owner changes or gives it up, so re-parsing the raw {@code @}-mention text
+     * on every read would let an old mention silently start pointing at whoever
+     * holds that handle now (see {@link AccountDirectory#findAllByHandle}).
+     *
+     * <p>Keeps the literal matched handle alongside the resolved account id
+     * (rather than just the id) so a reader can find the exact span in the
+     * body again later without re-checking anyone's current handle, and
+     * iterates {@code handles} — not {@code resolved.values()} — to preserve
+     * the order the mentions first appeared in.
+     */
+    private List<CommentMention> resolveMentions(String body) {
+        Set<String> handles = Mentions.parse(body);
+        if (handles.isEmpty()) {
+            return List.of();
+        }
+        Map<String, AccountView> resolved = accountDirectory.findAllByHandle(handles);
+        return handles.stream()
+                .filter(resolved::containsKey)
+                .map(handle -> new CommentMention(handle, resolved.get(handle).accountId()))
+                .toList();
+    }
+
+    /** Default page size; the client may ask for less, never for more. */
+    public static final int COMMENT_PAGE_SIZE = 50;
+    public static final int MAX_COMMENT_PAGE_SIZE = 100;
+
+    @Transactional(readOnly = true)
+    public CommentPage listComments(String videoId, String cursor, int limit) {
+        requireEligible(videoId);
+        int size = boundedPageSize(limit);
+        // One extra row answers "is there another page?" without a count query;
+        // it is dropped before the page is returned.
+        List<CommentView> rows =
+                repository.listComments(videoId, CommentCursors.decode(cursor), size + 1);
+        return withAuthorNames(CommentPage.of(rows, size));
+    }
+
+    @Transactional(readOnly = true)
+    public CommentPage listReplies(String videoId, String parentCommentId, String cursor, int limit) {
+        requireEligible(videoId);
+        if (repository.topLevelCommentAuthor(parentCommentId, videoId).isEmpty()) {
+            throw new SocialExceptions.CommentNotFound("No such comment on this video");
+        }
+        int size = boundedPageSize(limit);
+        List<CommentView> rows =
+                repository.listReplies(parentCommentId, CommentCursors.decode(cursor), size + 1);
+        return withAuthorNames(CommentPage.of(rows, size));
+    }
+
+    private static int boundedPageSize(int requested) {
+        if (requested <= 0) {
+            return COMMENT_PAGE_SIZE;
+        }
+        return Math.min(requested, MAX_COMMENT_PAGE_SIZE);
+    }
+
+    /**
+     * Removes a comment. Permitted to its author, and to the owner of the video
+     * it sits on — a creator moderating their own comment section is the other
+     * half of why this exists.
+     *
+     * <p>Soft: the row is retained and only its visibility changes, so replies
+     * are not orphaned and an abuse investigation can still see what was said.
+     * Deleting a top-level comment takes its replies with it, because answers to
+     * a question nobody can see any more are not worth showing.
+     *
+     * <p>Idempotent — deleting an already-deleted comment reports success rather
+     * than an error, since the caller's intended state is the one that holds.
+     */
+    @Transactional
+    public void deleteComment(String videoId, String commentId, String actorAccountId) {
+        String videoOwnerId = requireEligible(videoId).creatorId();
+        var comment = repository
+                .findForDelete(commentId)
+                .filter(c -> c.videoId().equals(videoId))
+                .orElse(null);
+        if (comment == null) {
+            return; // already deleted, or never existed on this video
+        }
+        if (!actorAccountId.equals(comment.accountId()) && !actorAccountId.equals(videoOwnerId)) {
+            // Indistinguishable from "no such comment" on purpose: a caller
+            // should not be able to probe for comment ids they cannot touch.
+            throw new SocialExceptions.CommentNotFound("No such comment on this video");
+        }
+        int hidden = repository.softDeleteComment(commentId, actorAccountId, comment.parentCommentId() == null);
+        if (hidden > 0) {
+            // The comment and, for a top-level one, the replies that went with it.
+            appendEngagement(videoId, 0, -hidden);
+        }
+    }
+
+    /**
+     * Resolves every author on the page in one query.
+     *
+     * <p>Comments used to render as {@code @a1b2c3d4e5} -- the first ten hex
+     * characters of the author's UUID, fabricated client-side -- because the
+     * payload carried no name at all and there is no username in this system.
+     * One batched lookup here is what turns a thread of hex into a thread of
+     * people.
+     */
+    private CommentPage withAuthorNames(CommentPage page) {
+        if (page.items().isEmpty()) {
+            return page;
+        }
+        Set<String> authorIds =
+                page.items().stream().map(CommentView::accountId).collect(java.util.stream.Collectors.toSet());
+        Map<String, AccountView> authors = accountDirectory.findAll(authorIds);
+        Map<String, String> names = authors.entrySet().stream()
+                .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, e -> e.getValue().displayName()));
+        Map<String, String> handles = authors.entrySet().stream()
+                .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, e -> e.getValue().handle()));
+        return new CommentPage(page.items(), page.nextCursor(), names, handles);
+    }
+
+    /**
+     * One page of comments, the cursor that continues it (null at the end), and
+     * the display name of every author on the page.
+     */
+    public record CommentPage(
+            List<CommentView> items,
+            String nextCursor,
+            Map<String, String> authorNames,
+            Map<String, String> authorHandles) {
+        static CommentPage of(List<CommentView> rows, int pageSize) {
+            if (rows.size() <= pageSize) {
+                return new CommentPage(List.copyOf(rows), null, Map.of(), Map.of());
+            }
+            List<CommentView> page = List.copyOf(rows.subList(0, pageSize));
+            CommentView last = page.get(page.size() - 1);
+            return new CommentPage(
+                    page, CommentCursors.encode(last.createdAt(), last.commentId()), Map.of(), Map.of());
+        }
     }
 
     @Transactional
@@ -64,10 +303,14 @@ public class SocialService implements SocialDirectory {
         if (followerId.equals(followeeId)) {
             throw new SocialExceptions.CannotFollowSelf("Cannot follow your own account");
         }
+        writeRateLimiter.checkAllowed(SocialWriteRateLimiter.Action.FOLLOW, followerId);
         accountDirectory
                 .find(followeeId)
                 .filter(AccountView::isEligible)
-                .orElseThrow(() -> new SocialExceptions.CreatorNotFound("No such creator"));
+                .orElseThrow(() -> {
+                    log.debug("Follow attempted on ineligible/suspended account {}", followeeId);
+                    return new SocialExceptions.CreatorNotFound("No such creator");
+                });
         if (repository.follow(followerId, followeeId)) {
             append(EventTypes.SOCIAL_CREATOR_FOLLOWED, new SocialEvents.CreatorFollowed(followerId, followeeId));
         }
@@ -78,17 +321,30 @@ public class SocialService implements SocialDirectory {
         repository.unfollow(followerId, followeeId);
     }
 
+    /**
+     * A non-active creator answers "not found" rather than returning their state.
+     * Reporting {@code SUSPENDED} told any signed-in user which accounts had been
+     * actioned — the one place that leaked it, while the login path, the video
+     * reads and the media gateway all take care not to.
+     */
     @Transactional(readOnly = true)
-    public CreatorProfileView profile(String accountId) {
+    public CreatorProfileView profile(String accountId, String viewerId) {
         AccountView account = accountDirectory
                 .find(accountId)
-                .orElseThrow(() -> new SocialExceptions.CreatorNotFound("No such creator"));
+                .filter(AccountView::isEligible)
+                .orElseThrow(() -> {
+                    log.debug("Creator profile requested for ineligible/suspended account {}", accountId);
+                    return new SocialExceptions.CreatorNotFound("No such creator");
+                });
         return new CreatorProfileView(
                 account.accountId(),
                 account.displayName(),
-                account.state().name(),
+                account.handle(),
+                account.bio(),
                 repository.followerCount(accountId),
-                repository.followingCount(accountId));
+                repository.followingCount(accountId),
+                // Viewer-relative, and false when there is no viewer.
+                viewerId != null && !accountId.equals(viewerId) && repository.isFollowing(viewerId, accountId));
     }
 
     @Override
@@ -103,11 +359,44 @@ public class SocialService implements SocialDirectory {
         return repository.isFollowing(followerId, followeeId);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, EngagementCounts> engagementForAll(Collection<String> videoIds) {
+        return repository.engagementForAll(videoIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> followedAmong(String followerId, Collection<String> creatorIds) {
+        return repository.followedAmong(followerId, creatorIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> followedCreators(String followerId, int limit) {
+        return repository.followedCreators(followerId, limit);
+    }
+
     private VideoEligibilityView requireEligible(String videoId) {
         return eligibilityDirectory
                 .findVideoEligibility(videoId)
                 .filter(VideoEligibilityView::isVideoEligible)
                 .orElseThrow(() -> new SocialExceptions.VideoNotEligible("Video is not available"));
+    }
+
+    /**
+     * Records, in the transaction that changed it, how a video's like and comment totals moved.
+     * The feed's count table is brought up to date from this event rather than here, so a like
+     * of a viral video does not queue behind every other like of it on one row's lock.
+     *
+     * <p>Each event gets a fresh aggregate id like every other social event, because the relay
+     * sends one aggregate's events strictly one at a time; keying these by video would cap the
+     * most-liked video at about a hundred changes a second. Order does not matter: deltas add.
+     */
+    private void appendEngagement(String videoId, int likeDelta, int commentDelta) {
+        append(
+                EventTypes.SOCIAL_VIDEO_ENGAGEMENT_CHANGED,
+                new SocialEvents.EngagementChanged(videoId, likeDelta, commentDelta));
     }
 
     private void append(String eventType, Object payload) {

@@ -27,6 +27,12 @@ public class VideoEntity {
     @Column(name = "owner_account_id", nullable = false, updatable = false)
     private UUID ownerAccountId;
 
+    @Column(name = "title", length = 150, updatable = false)
+    private String title;
+
+    @Column(name = "description", length = 2000, updatable = false)
+    private String description;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "processing_state", nullable = false, length = 30)
     private ProcessingState processingState;
@@ -48,6 +54,10 @@ public class VideoEntity {
 
     @Column(name = "failure_class", length = 20)
     private String failureClass;
+
+    /** Which try of the current processingVersion's job is in flight; 1 for the first. */
+    @Column(name = "transcode_attempt", nullable = false)
+    private int transcodeAttempt = 1;
 
     @Column(name = "source_object_key", length = 500)
     private String sourceObjectKey;
@@ -78,10 +88,12 @@ public class VideoEntity {
 
     protected VideoEntity() {}
 
-    public VideoEntity(UUID videoId, UUID ownerAccountId) {
+    public VideoEntity(UUID videoId, UUID ownerAccountId, String title, String description) {
         Instant now = Instant.now();
         this.videoId = videoId;
         this.ownerAccountId = ownerAccountId;
+        this.title = title;
+        this.description = description;
         this.processingState = ProcessingState.CREATED;
         this.durabilityState = DurabilityState.PENDING;
         this.assetLifecycleState = AssetLifecycleState.ACTIVE;
@@ -96,6 +108,7 @@ public class VideoEntity {
         this.sourceObjectKey = sourceObjectKey;
         this.processingVersion = nextVersion;
         this.processingState = ProcessingState.TRANSCODING;
+        this.transcodeAttempt = 1;
         this.failureClass = null;
         this.updatedAt = Instant.now();
         return nextVersion;
@@ -113,10 +126,35 @@ public class VideoEntity {
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * A TRANSIENT failure with budget left: stay TRANSCODING for the same processingVersion and
+     * count the next try. The caller re-dispatches the same jobId (brief section 11.1).
+     */
+    public int retryTranscode() {
+        this.transcodeAttempt++;
+        this.updatedAt = Instant.now();
+        return this.transcodeAttempt;
+    }
+
     public void markFailed(String failureClass) {
         this.processingState = ProcessingState.FAILED;
         this.failureClass = failureClass;
         this.updatedAt = Instant.now();
+    }
+
+    /**
+     * CREATED -> EXPIRED: the owning upload session's presigned URL expired
+     * without a completed upload, so this draft will never receive a source
+     * object. A no-op once processing has actually started, so a completed
+     * upload racing the reaper is never downgraded.
+     */
+    public boolean expireIfCreated() {
+        if (this.processingState != ProcessingState.CREATED) {
+            return false;
+        }
+        this.processingState = ProcessingState.EXPIRED;
+        this.updatedAt = Instant.now();
+        return true;
     }
 
     /** ACTIVE -> REJECTED_RETAINED: the asset stays in place pending a possible appeal (brief section 18, Milestone 6). */
@@ -130,17 +168,26 @@ public class VideoEntity {
     }
 
     /**
-     * REJECTED_RETAINED/QUARANTINED -> ACTIVE, only if the underlying assets are
-     * still verifiably present (brief section 18: "asset lifecycle returns to
-     * ACTIVE if valid"). An invalid restore is a no-op, not an error: the video
-     * stays exactly where it was.
+     * REJECTED_RETAINED -> ACTIVE after a successful appeal, only if the underlying assets are still
+     * verifiably present (brief section 18: "asset lifecycle returns to ACTIVE if valid"). A quarantine
+     * is an admin hold independent of moderation, so a reinstatement leaves it in place; only
+     * {@link #releaseQuarantine} lifts it. An invalid restore is a no-op, not an error: the video stays
+     * exactly where it was.
      */
-    public boolean restoreIfValid(boolean assetsValid) {
-        if (this.assetLifecycleState != AssetLifecycleState.REJECTED_RETAINED
-                && this.assetLifecycleState != AssetLifecycleState.QUARANTINED) {
-            return false;
-        }
-        if (!assetsValid) {
+    public boolean restoreAfterReinstatement(boolean assetsValid) {
+        return moveToActive(AssetLifecycleState.REJECTED_RETAINED, assetsValid);
+    }
+
+    /**
+     * QUARANTINED -> ACTIVE, only if the underlying assets are still verifiably present. Refuses any
+     * other state, so an admin restore can never lift a rejection's retention.
+     */
+    public boolean releaseQuarantine(boolean assetsValid) {
+        return moveToActive(AssetLifecycleState.QUARANTINED, assetsValid);
+    }
+
+    private boolean moveToActive(AssetLifecycleState from, boolean assetsValid) {
+        if (this.assetLifecycleState != from || !assetsValid) {
             return false;
         }
         this.assetLifecycleState = AssetLifecycleState.ACTIVE;
@@ -159,6 +206,13 @@ public class VideoEntity {
         this.assetLifecycleState = AssetLifecycleState.QUARANTINED;
         this.updatedAt = Instant.now();
         return true;
+    }
+
+    /** True once an admin or the owner has removed the video; removal is terminal. */
+    public boolean isRemoved() {
+        return this.assetLifecycleState == AssetLifecycleState.DELETE_SCHEDULED
+                || this.assetLifecycleState == AssetLifecycleState.DELETION_IN_PROGRESS
+                || this.assetLifecycleState == AssetLifecycleState.DELETED;
     }
 
     /** Any non-terminal state -> DELETE_SCHEDULED: an admin "remove video" action (brief section 18). */
@@ -185,6 +239,7 @@ public class VideoEntity {
         this.processingVersion = nextVersion;
         this.processingState = ProcessingState.TRANSCODING;
         this.durabilityState = DurabilityState.PENDING;
+        this.transcodeAttempt = 1;
         this.failureClass = null;
         this.updatedAt = Instant.now();
         return nextVersion;
@@ -192,12 +247,15 @@ public class VideoEntity {
 
     public UUID getVideoId() { return videoId; }
     public UUID getOwnerAccountId() { return ownerAccountId; }
+    public String getTitle() { return title; }
+    public String getDescription() { return description; }
     public ProcessingState getProcessingState() { return processingState; }
     public Integer getProcessingVersion() { return processingVersion; }
     public DurabilityState getDurabilityState() { return durabilityState; }
     public AssetLifecycleState getAssetLifecycleState() { return assetLifecycleState; }
     public LegalServingState getLegalServingState() { return legalServingState; }
     public String getFailureClass() { return failureClass; }
+    public int getTranscodeAttempt() { return transcodeAttempt; }
     public String getSourceObjectKey() { return sourceObjectKey; }
     public String getMasterPlaylistKey() { return masterPlaylistKey; }
     public List<String> getVariantPlaylists() { return variantPlaylists; }

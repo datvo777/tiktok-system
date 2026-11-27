@@ -3,11 +3,15 @@ package com.shortvideo.app.reconciliation;
 import com.shortvideo.account.api.AccountDirectory;
 import com.shortvideo.eligibility.api.EligibilityCorrector;
 import com.shortvideo.eligibility.api.EligibilityDirectory;
+import com.shortvideo.eligibility.api.ReconciliationFailureTracker;
 import com.shortvideo.moderation.api.ModerationDirectory;
 import com.shortvideo.publication.api.PublicationDirectory;
 import com.shortvideo.video.api.VideoPlaybackDirectory;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -31,18 +35,40 @@ public class EligibilityReconciliationJob {
     private static final Logger log = LoggerFactory.getLogger(EligibilityReconciliationJob.class);
     private static final int SWEEP_LIMIT = 2000;
 
+    /**
+     * Consecutive sweep failures (not consecutive minutes — an id is only revisited
+     * once per rotation, see {@link #accountSweepCursor}) after which an id is no
+     * longer treated as an ordinary transient blip and gets escalated to
+     * {@code ERROR} instead of {@code WARN}. Chosen to rule out a single self-healing
+     * blip without waiting many rotations to flag something that is really stuck.
+     */
+    private static final int STUCK_THRESHOLD = 3;
+
     private final EligibilityDirectory eligibilityDirectory;
     private final EligibilityCorrector corrector;
+    private final ReconciliationFailureTracker failures;
     private final VideoPlaybackDirectory videoDirectory;
     private final ModerationDirectory moderationDirectory;
     private final PublicationDirectory publicationDirectory;
     private final AccountDirectory accountDirectory;
     private final Counter videosSwept;
     private final Counter accountsSwept;
+    private final Counter videosFailed;
+    private final Counter accountsFailed;
+
+    /**
+     * Keyset cursor into {@link AccountDirectory#allAccountIds}, advanced after each
+     * sweep and reset to {@code null} once a page comes back short — so repeated runs
+     * rotate through every account over time instead of resweeping the same
+     * {@link #SWEEP_LIMIT}-sized page forever. Touched only from {@link #reconcile()},
+     * which {@code @Scheduled(fixedDelay)} never runs concurrently with itself.
+     */
+    private String accountSweepCursor;
 
     public EligibilityReconciliationJob(
             EligibilityDirectory eligibilityDirectory,
             EligibilityCorrector corrector,
+            ReconciliationFailureTracker failures,
             VideoPlaybackDirectory videoDirectory,
             ModerationDirectory moderationDirectory,
             PublicationDirectory publicationDirectory,
@@ -50,12 +76,15 @@ public class EligibilityReconciliationJob {
             MeterRegistry meters) {
         this.eligibilityDirectory = eligibilityDirectory;
         this.corrector = corrector;
+        this.failures = failures;
         this.videoDirectory = videoDirectory;
         this.moderationDirectory = moderationDirectory;
         this.publicationDirectory = publicationDirectory;
         this.accountDirectory = accountDirectory;
         this.videosSwept = Counter.builder("eligibility.reconciliation.videos_swept").register(meters);
         this.accountsSwept = Counter.builder("eligibility.reconciliation.accounts_swept").register(meters);
+        this.videosFailed = Counter.builder("eligibility.reconciliation.videos_failed").register(meters);
+        this.accountsFailed = Counter.builder("eligibility.reconciliation.accounts_failed").register(meters);
     }
 
     @Scheduled(fixedDelayString = "${shortvideo.reconciliation.interval:5m}", initialDelayString = "30s")
@@ -65,6 +94,8 @@ public class EligibilityReconciliationJob {
     }
 
     private void reconcileVideos() {
+        Map<String, Integer> streaks = loadStreaks("video");
+        List<String> recovered = new ArrayList<>();
         for (String videoId : eligibilityDirectory.allTrackedVideoIds(SWEEP_LIMIT)) {
             try {
                 videoDirectory.findForPlayback(videoId).ifPresent(v -> corrector.correctVideoProcessing(
@@ -88,23 +119,85 @@ public class EligibilityReconciliationJob {
                                 p.videoId(), p.ownerAccountId(), p.state(), p.intent(), p.aggregateVersion()));
 
                 videosSwept.increment();
+                if (streaks.containsKey(videoId)) {
+                    recovered.add(videoId);
+                }
             } catch (RuntimeException e) {
                 // One bad row must not abort the sweep; the next pass tries again.
-                log.warn("Reconciliation failed for video {}: {}", videoId, e.getMessage());
+                recordFailure(videosFailed, "video", videoId, e);
             }
+        }
+        clearRecovered("video", recovered);
+    }
+
+    /**
+     * Unlike {@link #reconcileVideos()}, this reads {@link AccountDirectory}'s own
+     * source of truth rather than a list of ids the eligibility projection already
+     * tracks — so it also catches an account whose very first projection event was
+     * lost and therefore never created a row here at all, not just one whose existing
+     * row has drifted.
+     */
+    private void reconcileAccounts() {
+        List<String> accountIds = accountDirectory.allAccountIds(accountSweepCursor, SWEEP_LIMIT);
+        accountSweepCursor = accountIds.size() < SWEEP_LIMIT ? null : accountIds.get(accountIds.size() - 1);
+
+        Map<String, Integer> streaks = loadStreaks("account");
+        List<String> recovered = new ArrayList<>();
+        for (String accountId : accountIds) {
+            try {
+                accountDirectory.find(accountId).ifPresent(a -> {
+                    corrector.correctAccount(a.accountId(), a.state().name(), a.aggregateVersion());
+                    accountsSwept.increment();
+                });
+                if (streaks.containsKey(accountId)) {
+                    recovered.add(accountId);
+                }
+            } catch (RuntimeException e) {
+                // One bad row must not abort the sweep; the next pass tries again.
+                recordFailure(accountsFailed, "account", accountId, e);
+            }
+        }
+        clearRecovered("account", recovered);
+    }
+
+    /**
+     * Bumps {@code failedCounter} and either logs a routine {@code WARN} or, once
+     * {@code id} has now missed {@link #STUCK_THRESHOLD} sweeps in a row, escalates to
+     * {@code ERROR} — the signal that this is not a blip healing on its own and wants a
+     * human, not just a line in a dashboard nobody is watching.
+     */
+    private void recordFailure(Counter failedCounter, String kind, String id, RuntimeException e) {
+        failedCounter.increment();
+        int streak = 1;
+        try {
+            streak = failures.recordFailure(kind, id, e.getMessage());
+        } catch (RuntimeException trackerError) {
+            log.warn("Could not persist failure streak for {} {}: {}", kind, id, trackerError.getMessage());
+        }
+        if (streak >= STUCK_THRESHOLD) {
+            log.error(
+                    "Reconciliation for {} {} has failed {} sweeps in a row — looks permanently stuck, not transient: {}",
+                    kind, id, streak, e.getMessage());
+        } else {
+            log.warn("Reconciliation failed for {} {}: {}", kind, id, e.getMessage());
         }
     }
 
-    private void reconcileAccounts() {
-        for (String accountId : eligibilityDirectory.allTrackedAccountIds(SWEEP_LIMIT)) {
-            try {
-                accountDirectory
-                        .find(accountId)
-                        .ifPresent(a -> corrector.correctAccount(a.accountId(), a.state().name(), a.aggregateVersion()));
-                accountsSwept.increment();
-            } catch (RuntimeException e) {
-                log.warn("Reconciliation failed for account {}: {}", accountId, e.getMessage());
-            }
+    // Tracker trouble must never abort a sweep; streak detection just degrades for that pass.
+    private Map<String, Integer> loadStreaks(String kind) {
+        try {
+            return failures.streaks(kind);
+        } catch (RuntimeException e) {
+            log.warn("Could not load {} failure streaks: {}", kind, e.getMessage());
+            return Map.of();
+        }
+    }
+
+    private void clearRecovered(String kind, List<String> ids) {
+        try {
+            failures.clear(kind, ids);
+        } catch (RuntimeException e) {
+            log.warn("Could not clear {} failure streaks: {}", kind, e.getMessage());
         }
     }
 }

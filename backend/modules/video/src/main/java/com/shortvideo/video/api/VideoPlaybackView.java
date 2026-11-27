@@ -15,6 +15,20 @@ public record VideoPlaybackView(
         LegalServingState legalServingState,
         long aggregateVersion) {
 
+    /**
+     * What staff may watch: the same as an owner preview, except that a video retained after a rejection is
+     * still watchable, since deciding an appeal means seeing what was rejected. A quarantined or removed
+     * video is not.
+     */
+    public boolean moderatorPreviewEligible(int requestedProcessingVersion) {
+        return processingState == ProcessingState.READY
+                && durabilityState == DurabilityState.DURABLE
+                && (assetLifecycleState == AssetLifecycleState.ACTIVE
+                        || assetLifecycleState == AssetLifecycleState.REJECTED_RETAINED)
+                && currentProcessingVersion != null
+                && currentProcessingVersion == requestedProcessingVersion;
+    }
+
     public boolean ownerPreviewEligible(int requestedProcessingVersion) {
         return processingState == ProcessingState.READY
                 && durabilityState == DurabilityState.DURABLE

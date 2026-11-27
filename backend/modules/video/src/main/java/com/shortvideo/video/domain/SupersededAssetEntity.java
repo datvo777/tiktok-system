@@ -42,6 +42,10 @@ public class SupersededAssetEntity {
     @Column(name = "variant_playlists", updatable = false)
     private List<String> variantPlaylists = List.of();
 
+    /** The prefix to purge when it is not the processed prefix derived from the version; see {@link #prefix()}. */
+    @Column(name = "purge_prefix", length = 600, updatable = false)
+    private String purgePrefix;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "state", nullable = false, length = 30)
     private AssetLifecycleState state;
@@ -65,6 +69,23 @@ public class SupersededAssetEntity {
         this.state = AssetLifecycleState.DELETE_SCHEDULED;
         this.createdAt = now;
         this.updatedAt = now;
+    }
+
+    /**
+     * The verified source of a removed video. A removed video is terminal (restore only
+     * applies to quarantined or rejected-retained ones), so nothing can need its source again.
+     * Processing version 0 is a placeholder: real versions start at 1, and this row's prefix is
+     * explicit rather than derived from it.
+     */
+    public static SupersededAssetEntity sourceOf(UUID videoId) {
+        SupersededAssetEntity row = new SupersededAssetEntity(videoId, 0, null, List.of());
+        row.purgePrefix = "sources/" + videoId + "/";
+        return row;
+    }
+
+    /** What the cleanup job removes for this row. */
+    public String prefix() {
+        return purgePrefix != null ? purgePrefix : "processed/" + videoId + "/" + processingVersion + "/";
     }
 
     public void markDeletionInProgress() {

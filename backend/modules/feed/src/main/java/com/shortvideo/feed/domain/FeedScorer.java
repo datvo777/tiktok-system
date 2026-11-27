@@ -1,7 +1,7 @@
 package com.shortvideo.feed.domain;
 
 import com.shortvideo.eligibility.api.VideoEligibilityView;
-import com.shortvideo.social.api.SocialCounts;
+import com.shortvideo.social.api.EngagementCounts;
 import java.time.Duration;
 import java.time.Instant;
 import org.springframework.stereotype.Component;
@@ -21,8 +21,8 @@ class FeedScorer {
         this.properties = properties;
     }
 
-    double score(VideoEligibilityView video, SocialCounts counts, boolean followedCreator, double explorationSample) {
-        double freshness = freshnessScore(video.updatedAt());
+    double score(VideoEligibilityView video, EngagementCounts counts, boolean followedCreator, double explorationSample) {
+        double freshness = freshnessScore(video.rankedSince());
         double social = counts.likeCount() * properties.getLikeWeight() + counts.commentCount() * properties.getCommentWeight();
         double followBoost = followedCreator ? properties.getFollowedCreatorBoost() : 0;
         double exploration = explorationSample * properties.getExplorationWeight();
@@ -30,8 +30,8 @@ class FeedScorer {
     }
 
     /** Exponential decay from freshnessWeight toward 0 over roughly a day. */
-    private double freshnessScore(Instant updatedAt) {
-        long ageSeconds = Math.max(0, Duration.between(updatedAt, Instant.now()).getSeconds());
+    private double freshnessScore(Instant since) {
+        long ageSeconds = Math.max(0, Duration.between(since, Instant.now()).getSeconds());
         double decay = Math.exp(-ageSeconds / (24.0 * 3600));
         return properties.getFreshnessWeight() * decay;
     }
